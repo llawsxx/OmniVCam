@@ -1,0 +1,6 @@
+loop_random
+# go [relative number] goto [filename] loop_list loop_single loop_random
+# go:跳转指定步数，比如go 1即播放下一个，go 2下两个，go -1前一个
+# goto:搜索播放列表，如搜索不到即播放输入的地址，播放完会继续列表播放，例子：goto D:\1.MP4	video_filter='bwdif=1'
+# loop_list loop_single loop_random 设置播放模式：循环列表，单曲循环，随机播放
+# 本文件保存即生效，无需重启程序

@@ -1,0 +1,2 @@
+D:\example.mp4	seek_time=10
+D:\example.ts

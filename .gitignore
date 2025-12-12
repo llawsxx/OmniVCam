@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+ffmpeg_deps/
+OmniVCam/current_play_file.txt
+OmniVCam/log.txt
