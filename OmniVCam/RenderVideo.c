@@ -87,8 +87,11 @@ int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_
 		}
 	}
 
-	if (q->center_count != -1 && q->count >= q->center_count) {
+	if (q->center_count != -1 && q->count >= q->center_count && q->reached_center == 0) {
 		q->reached_center = 1;
+		if (q->front) {
+			q->front->reset = 1;
+		}
 	}
 end:
 	LeaveCriticalSection(&q->mutex);
@@ -104,7 +107,6 @@ int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int*reset) 
 
 	if (q->left_count != -1 && q->center_count != -1 && q->count <= q->left_count && q->reached_center == 1) {
 		q->reached_center = 0;
-		*reset = 1;
 	}
 
 	if (!q->front || (q->center_count != -1 && !q->reached_center))
@@ -153,6 +155,8 @@ void frame_queue_clean(frame_queue* q)
 {
 	EnterCriticalSection(&q->mutex);
 	q->reached_center = 0;
+	q->last_interval = AV_NOPTS_VALUE;
+	q->last_pts_value = AV_NOPTS_VALUE;
 	if (!q->front)
 	{
 		LeaveCriticalSection(&q->mutex);
@@ -1649,7 +1653,7 @@ void control_output_speed(inout_context* ctx)
 		ctx->output_drop_frame_time = -delay;
 		//假如输出慢了超过1秒，可能是因为Receive被阻塞了，就重设一下output_start_clock_time，使得delay等于0
 		if (delay < -1 * 1000000) {
-			//ctx->output_start_clock_time = get_current_time(0) - ctx->output_video_pts_time;
+			ctx->output_start_clock_time = get_current_time(0) - ctx->output_video_pts_time;
 			printf("reset output_start_clock_time %I64d ...\r",ctx->output_start_clock_time);
 		}
 	}
@@ -1752,7 +1756,7 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	else{
 		int64_t offset_diff = timestamp + ctx->output_time_offset - output_pts_time;
 		//printf("%I64d\n", offset_diff);
-		if (offset_diff > 3 * 1000000 || offset_diff < -3 * 1000000)
+		if (offset_diff > 5 * 1000000 || offset_diff < -5 * 1000000)
 		{
 			ctx->output_time_offset = output_pts_time - timestamp;
 			ret = 1;
