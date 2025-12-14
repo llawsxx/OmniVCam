@@ -876,7 +876,7 @@ HRESULT RegisterFilterClass() {
 
     // 注册 CLSID
     swprintf_s(keyPath, L"CLSID\\%s", clsid);
-    hr = RegCreateKeyEx(HKEY_CLASSES_ROOT, keyPath, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+    hr = RegCreateKeyEx(HKEY_CLASSES_ROOT, (LPWSTR)keyPath, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
     if (SUCCEEDED(hr)) {
         RegSetValueEx(hKey, NULL, 0, REG_SZ, (BYTE*)L"OmniVCam Virtual Camera", 48);
         RegCloseKey(hKey);
@@ -884,14 +884,14 @@ HRESULT RegisterFilterClass() {
 
     // 注册 InprocServer32
     swprintf_s(keyPath, L"CLSID\\%s\\InprocServer32", clsid);
-    hr = RegCreateKeyEx(HKEY_CLASSES_ROOT, keyPath, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+    hr = RegCreateKeyEx(HKEY_CLASSES_ROOT, (LPWSTR)keyPath, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
     if (SUCCEEDED(hr)) {
         wchar_t modulePath[MAX_PATH];
-        GetModuleFileName(g_hInstance, modulePath, MAX_PATH);
+        GetModuleFileName(g_hInstance, (LPWSTR)modulePath, MAX_PATH);
         RegSetValueEx(hKey, NULL, 0, REG_SZ, (BYTE*)modulePath, (wcslen(modulePath) + 1) * sizeof(wchar_t));
 
         // 设置线程模型
-        RegSetValueEx(hKey, L"ThreadingModel", 0, REG_SZ, (BYTE*)L"Both", 10);
+        RegSetValueEx(hKey, (LPWSTR)L"ThreadingModel", 0, REG_SZ, (BYTE*)L"Both", 10);
         RegCloseKey(hKey);
     }
 
@@ -905,10 +905,10 @@ void UnregisterFilterClass() {
     StringFromGUID2(CLSID_OmniVCam, clsid, 39);
 
     swprintf_s(keyPath, L"CLSID\\%s\\InprocServer32", clsid);
-    RegDeleteKey(HKEY_CLASSES_ROOT, keyPath);
+    RegDeleteKey(HKEY_CLASSES_ROOT, (LPWSTR)keyPath);
 
     swprintf_s(keyPath, L"CLSID\\%s", clsid);
-    RegDeleteKey(HKEY_CLASSES_ROOT, keyPath);
+    RegDeleteKey(HKEY_CLASSES_ROOT, (LPWSTR)keyPath);
 }
 
 
@@ -998,26 +998,24 @@ HRESULT UnregisterVideoCaptureDevice() {
     return hr;
 }
 
-// 在 OmniVCam.cpp 中修复注册函数
 STDAPI DllRegisterServer() {
-    HRESULT hr = S_OK;
-
+    HRESULT hr = CoInitialize(NULL);
     // 先尝试取消注册，清理可能存在的旧注册
     DllUnregisterServer();
 
     // 注册 CLSID
     hr = RegisterFilterClass();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) goto end;
 
     // 注册为视频捕获设备
     hr = RegisterVideoCaptureDevice();
-    if (FAILED(hr)) return hr;
-
+end:
+    CoUninitialize();
     return hr;
 }
 
 STDAPI DllUnregisterServer() {
-    HRESULT hr = S_OK;
+    HRESULT hr = CoInitialize(NULL);
 
     // 取消注册视频捕获设备
     hr = UnregisterVideoCaptureDevice();
@@ -1025,6 +1023,7 @@ STDAPI DllUnregisterServer() {
     // 取消注册 CLSID
     UnregisterFilterClass();
 
+    CoUninitialize();
     return hr;
 }
 
@@ -1033,13 +1032,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         g_hInstance = hModule;
         DisableThreadLibraryCalls(hModule);
-
-        // 初始化 COM（用于注册）
-        CoInitialize(NULL);
     }
     else if (dwReason == DLL_PROCESS_DETACH) {
-        // 清理 COM
-        CoUninitialize();
     }
     return TRUE;
 }
@@ -1083,7 +1077,10 @@ const
 CLSID CLSID_SampleGrabber = { 0xC1F400A0, 0x3F08, 0x11d3, { 0x9F, 0x0B, 0x00, 0x60, 0x08, 0x03, 0x9E, 0x37 } };
 
 int main() {
-    HRESULT hr = CoInitialize(NULL);
+    avdevice_register_all();
+
+    HRESULT hr;
+    hr = CoInitialize(NULL);
     while (0) {
         CComPtr<IBaseFilter> pFilter;
 
@@ -1209,7 +1206,7 @@ int main() {
             OAFilterState pfs;
             hr = control->GetState(0, &pfs);
         }
-        av_usleep(2 * 1000000);
+        av_usleep(3000 * 1000000);
         //control->Pause();
         //av_usleep(2 * 1000000);
         //control->Run();

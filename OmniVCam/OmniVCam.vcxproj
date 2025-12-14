@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="DebugExe|Win32">
+      <Configuration>DebugExe</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DebugExe|x64">
+      <Configuration>DebugExe</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
       <Platform>Win32</Platform>
@@ -74,6 +82,13 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='DebugExe|Win32'">
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='DebugExe|x64'">
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -163,6 +178,18 @@
       <AdditionalDependencies>strmbase.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x64;$(SolutionDir)ffmpeg_deps\lib</AdditionalLibraryDirectories>
     </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugExe|x64'">
+    <Link>
+      <AdditionalDependencies>strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x64;$(SolutionDir)ffmpeg_deps\lib</AdditionalLibraryDirectories>
+    </Link>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SolutionDir)\deps\include;$(SolutionDir)ffmpeg_deps\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <Optimization>Disabled</Optimization>
+    </ClCompile>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

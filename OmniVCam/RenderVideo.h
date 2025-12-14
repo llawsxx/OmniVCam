@@ -37,6 +37,7 @@ extern AVRational DSHOW_TB;
 typedef struct avframe_node {
 	AVFrame* frame;
 	int64_t frame_id;//用于标记帧是否来自于同一个文件，open_input一次，此id更新。
+	int reset;
 	struct avframe_node* next;
 }avframe_node;
 
@@ -44,8 +45,12 @@ typedef struct frame_queue {
 	avframe_node* front, * rear;
 	int count;
 	int max_count;
+	int left_count;
+	int right_count;
+	int center_count;
 	int64_t last_pts_value;
 	int64_t last_interval;
+	int reached_center; //对实时流有用，当达到center时，reached_center设置为1，就可以一直读，读到数量left_count时reached_center重设为0，如果数量大于等于right_count，则清除到center位置
 	CRITICAL_SECTION mutex;
 	CONDITION_VARIABLE cond;
 }frame_queue;
@@ -83,11 +88,13 @@ typedef struct filter_context {
 typedef struct inout_context {
 	char* input_name;
 	char* current_status_file_name;
+	CRITICAL_SECTION input_change_mutex;
 	AVFormatContext* fmt_ctx;
 	codec_context decoders[3];
 	packet_queue queues[3];//one video one audio one subtitle
 	filter_context filter_contexts[2];
 	frame_queue* frame_queues[2];//output queue, should convert to output format
+
 	struct SwsContext* sws_ctx;
 	SwrContext* swr_ctx;
 	AVSubtitle sub;
@@ -97,6 +104,7 @@ typedef struct inout_context {
 
 	enum AVPixelFormat hw_pix_fmt;
 	enum AVHWDeviceType hw_type;
+	AVBufferRef* hw_device_ctx;
 
 	int last_frame_width;
 	int last_frame_height;
@@ -139,6 +147,7 @@ typedef struct inout_context {
 	AVChannelLayout output_audio_layout;
 
 	int64_t output_time_per_video_frame;
+	int64_t output_time_per_audio_frame;
 	int64_t output_video_pts_time;
 	int64_t output_audio_pts_time;
 	int64_t output_frame_count;
