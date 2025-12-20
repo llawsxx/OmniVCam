@@ -774,7 +774,7 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 }
 
 int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDictionary ** dict_opts, inout_context* ctx,
-	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int video_queue_left_count,int video_queue_right_count)
+	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int queue_left_count,int queue_right_count)
 {	
 	int ret = -1;
 	AVFormatContext* fmt_ctx = NULL;
@@ -825,7 +825,11 @@ int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDict
 	}
 	ctx->input_frame_id = av_gettime_relative();
 
-	frame_queue_set(ctx->frame_queues[0], video_queue_left_count, video_queue_right_count);
+	if(ctx->decoders[0].index >= 0)
+		frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count);
+	else {
+		frame_queue_set(ctx->frame_queues[1], queue_left_count, queue_right_count);
+	}
 
 	return ret;
 
@@ -1776,10 +1780,10 @@ int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快
 	if (!is_video && ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
 
 	int64_t output_pts_time = (is_video ? ctx->output_video_pts_time : ctx->output_audio_pts_time);
-	int64_t diff_less_then = (is_video ? ctx->output_time_per_video_frame : (ctx->output_time_per_audio_frame));
+	int64_t interval = (is_video ? ctx->output_time_per_video_frame : ctx->output_time_per_audio_frame);
 
 	int64_t diff = timestamp + ctx->output_time_offset - output_pts_time;
-	if (diff >= 0 && diff < diff_less_then)
+	if (diff >= -0.6 * interval && diff < 0.6 * interval) //假如刚好有diff是-0.6001 * interval，那么会return 0，假如输入帧率和输出帧率相等，读取的下一帧diff就会是0.3999 * interval左右，允许有0.2001 * interval的抖动
 		return 1;
 	else if (diff > 0)
 		return 2;
@@ -1891,7 +1895,9 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 	int drop_video_frame = 0;
 	int drop_audio_frame = 0;
+	int64_t last_in_sync_audio_pts = AV_NOPTS_VALUE;
 	int reset;
+	int audio_in_sync = 0;
 	while (1)
 	{
 		if (ctx->output_exit) break;
@@ -1900,7 +1906,8 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 		while (ctx->output_audio_pts_time <= ctx->output_video_pts_time)
 		{
-			int audio_in_sync = 0;
+		audio_loop:
+			audio_in_sync = 0;
 			while (is_in_sync(ctx, fifo_out_audio_frame->pts, 0) == 0) {
 				while (!is_audio_fifo_full_fill(ctx))
 				{
@@ -1927,6 +1934,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 					else {
 						if (last_audio_sync_diff != AV_NOPTS_VALUE && last_audio_sync_diff < 0 && ctx->output_current_audio_frame_id >= ctx->output_current_video_frame_id) {
 							ctx->output_time_offset = AV_NOPTS_VALUE;
+							last_audio_sync_diff = AV_NOPTS_VALUE;
 						}
 						goto audio_output;
 					}
@@ -1944,10 +1952,13 @@ HRESULT WINAPI output_thread(LPVOID p)
 				}
 			}
 
-			if (is_in_sync(ctx, fifo_out_audio_frame->pts, 0) == 1) {
+			if (is_in_sync(ctx, fifo_out_audio_frame->pts, 0) == 1 && (last_in_sync_audio_pts == AV_NOPTS_VALUE || last_in_sync_audio_pts != fifo_out_audio_frame->pts)) {
 				audio_in_sync = 1;
-				//音频只应该insync一次
-				fifo_out_audio_frame->pts = AV_NOPTS_VALUE;
+				last_in_sync_audio_pts = fifo_out_audio_frame->pts;
+			}
+			else {
+				if (update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 1))
+					goto audio_loop;
 			}
 
 		audio_output:
@@ -1988,6 +1999,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 			else {
 				if (last_video_sync_diff != AV_NOPTS_VALUE && last_video_sync_diff < 0 && ctx->output_current_video_frame_id >= ctx->output_current_audio_frame_id) {
 					ctx->output_time_offset = AV_NOPTS_VALUE;
+					last_video_sync_diff = AV_NOPTS_VALUE;
 				}
 				goto video_output;
 			}
