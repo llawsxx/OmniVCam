@@ -2240,7 +2240,6 @@ int set_stream_index_from_file(inout_context* ctx, char* filename)
 	int i = 0;
 	while (fgets(buf, sizeof(buf), fp))
 	{
-		trim_string(buf, '#');
 		for (int i = 0; i < 3; i++)
 		{
 			if (strstr(buf, key[i]))

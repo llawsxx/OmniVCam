@@ -388,7 +388,6 @@ int update_play_list_from_file(play_list_context *list_ctx,char *filename)
 	while (fgets(buffer, sizeof(buffer), fp)!=NULL)
 	{
 		trim_string(buffer, '\n');
-		trim_string(buffer, '#');
 		trim_space(buffer, buffer2);
 		//printf(buffer2);
 		if (strlen(buffer2) > 0)
@@ -451,7 +450,6 @@ char* get_filter_text(char* filename)//请自行free返回结果,不完善，随便写的
 	char buf2[1024] = {0};
 	if (fgets(buf, sizeof(buf), fp))
 	{
-		trim_string(buf, '#');
 		trim_space(buf, buf2);
 	}
 	fclose(fp);
@@ -474,7 +472,6 @@ int control_input_playing(char* control_file,char *output,int output_size)
 	while (fgets(buf, sizeof(buf), fp))
 	{
 		trim_string(buf, '\n');
-		trim_string(buf, '#');
 		trim_space(buf, buf2);
 		if (strlen(buf2) > 0) break;
 	}
