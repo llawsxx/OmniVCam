@@ -989,7 +989,7 @@ HRESULT UnregisterVideoCaptureDevice() {
         IID_IFilterMapper2, (void**)&pFilterMapper);
     if (SUCCEEDED(hr)) {
         pFilterMapper->UnregisterFilter(&CLSID_VideoInputDeviceCategory,
-            L"OmniVCam",
+            NULL,
             CLSID_OmniVCam);
 
         pFilterMapper->Release();
