@@ -421,6 +421,7 @@ inout_context* inout_context_alloc(
 	ctx->output_time_per_audio_frame = av_rescale_q_rnd(audio_out_nb_samples, (AVRational) { 1, audio_out_sample_rate }, UNIVERSAL_TB, AV_ROUND_UP);
 	ctx->output_audio_fifo = audio_fifo;
 	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
 	ctx->last_packet_time = AV_NOPTS_VALUE;
@@ -516,6 +517,7 @@ void inout_context_reset_input(inout_context* ctx)
 		frame_queue_set(ctx->frame_queues[i], -1, -1);
 	}
 	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 	LeaveCriticalSection(&ctx->input_change_mutex);
 
 	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++)
@@ -1760,11 +1762,15 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	else{
 		int64_t offset_diff = timestamp + ctx->output_time_offset - output_pts_time;
 		//printf("%I64d\n", offset_diff);
-		if (offset_diff > 5 * 1000000 || offset_diff < -5 * 1000000)
+		if (offset_diff > 5 * 1000000 || offset_diff < -5 * 1000000) // 相差超过5秒就调整，1秒仅可调一次
 		{
-			ctx->output_time_offset = output_pts_time - timestamp;
-			ret = 1;
-			goto end;
+			int64_t current_time = av_gettime_relative();
+			if (ctx->output_time_offset_last_adjust_time == AV_NOPTS_VALUE || current_time - ctx->output_time_offset_last_adjust_time > 1 * 1000000) {
+				ctx->output_time_offset_last_adjust_time = current_time;
+				ctx->output_time_offset = output_pts_time - timestamp;
+				ret = 1;
+				goto end;
+			}
 		}
 	}
 end:
@@ -1890,11 +1896,8 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 	av_samples_set_silence(empty_audio_frame->data, 0, empty_audio_frame->nb_samples, empty_audio_frame->ch_layout.nb_channels, empty_audio_frame->format);
 	int64_t last_video_sync_diff = AV_NOPTS_VALUE;
-	int64_t last_video_pts = AV_NOPTS_VALUE;
 	int64_t last_audio_sync_diff = AV_NOPTS_VALUE;
 
-	int drop_video_frame = 0;
-	int drop_audio_frame = 0;
 	int64_t last_in_sync_audio_pts = AV_NOPTS_VALUE;
 	int reset;
 	int audio_in_sync = 0;
@@ -1924,10 +1927,6 @@ HRESULT WINAPI output_thread(LPVOID p)
 					}
 					if (ret >= 0)
 					{
-						if (drop_audio_frame) {
-							drop_audio_frame = 0;
-							continue;
-						}
 						last_audio_sync_diff = get_sync_diff(ctx, audio_frame->pts);
 						fill_audio_fifo(ctx, audio_frame);
 					}
@@ -1940,14 +1939,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 					}
 				}
 				if (audio_fifo_read_frame(ctx, fifo_out_audio_frame) > 0) {
-					if (update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 0)) {
-						//丢帧是为了让音视频PTS越来越接近，代码待验证
-						if (fifo_out_audio_frame->pts != AV_NOPTS_VALUE && last_video_pts != AV_NOPTS_VALUE)
-							if (fifo_out_audio_frame->pts > last_video_pts)
-								drop_video_frame = 1;
-							else
-								drop_audio_frame = 1;
-					}
+					update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 0);
 					continue;
 				}
 			}
@@ -1988,11 +1980,6 @@ HRESULT WINAPI output_thread(LPVOID p)
 			}
 			if (ret >= 0)
 			{
-				if (drop_video_frame) {
-					drop_video_frame = 0;
-					continue;
-				}
-				last_video_pts = video_frame->pts;
 				update_offset_if_needed(ctx, video_frame->pts, 1);
 				last_video_sync_diff = get_sync_diff(ctx, video_frame->pts);
 			}

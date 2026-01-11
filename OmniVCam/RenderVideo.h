@@ -153,6 +153,7 @@ typedef struct inout_context {
 	int64_t output_frame_count;
 	int64_t output_sample_count;
 	int64_t output_time_offset;
+	int64_t output_time_offset_last_adjust_time;
 	int64_t output_last_audio_frame_pts; //UNIVERSAL_TB  用于计算fifo后音频的pts
 	int output_last_audio_nb_samples; //用于计算fifo后音频的pts
 	int output_audio_nb_samples; //用于计算fifo后音频的pts
