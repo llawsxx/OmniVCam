@@ -53,4 +53,4 @@ int control_input_playing(char* control_file, char* output, int output_size);
 char* trim_string(char* buffer, char token);
 void trim_space(char* strIn, char* strOut);
 char* trim_string(char* buffer, char token);
-int parse_params_string_to_dict(const char* params_str, AVDictionary** options_dict, char delimiter);
+int64_t get_txt_num(char* filename);

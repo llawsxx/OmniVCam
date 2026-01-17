@@ -33,8 +33,8 @@ BOOL sleepto(uint64_t time_target, uint64_t start_time)
 		return FALSE;
 
 	milliseconds = (uint32_t)((time_target - t) / 1000);
-	if (milliseconds > 1)
-		Sleep(milliseconds - 1);
+	if (milliseconds > 0)
+		Sleep(milliseconds);
 
 	return TRUE;
 }

@@ -1645,21 +1645,24 @@ void stop_read(inout_context* ctx, int force)
 void control_output_speed(inout_context* ctx)
 {
 	//暂时不把sleepto函数的内容拆出来，好像会影响计时和睡眠的精度？？？
-
-	int64_t current_time = get_current_time(ctx->output_start_clock_time);
+	int64_t start_clock_time_with_shift = ctx->output_start_clock_time + ctx->output_start_shift_time;
+	int64_t current_time = get_current_time(start_clock_time_with_shift);
 	int64_t delay = ctx->output_video_pts_time - current_time;
 	ctx->output_delayed_time = -delay;
 
-	if (sleepto(ctx->output_video_pts_time, ctx->output_start_clock_time))
+	if (sleepto(ctx->output_video_pts_time, start_clock_time_with_shift))
 	{
 		ctx->output_last_pause_time = delay;
-			//printf("Output pause : %I64d output_avg_render_time : %I64d diff_after_delay: %I64d\n", delay,ctx->output_avg_render_time, ctx->output_video_pts_time - (av_gettime_relative() - ctx->output_start_clock_time));
+			printf("Output pause : %I64d diff_after_delay: %I64d\n", delay, ctx->output_video_pts_time - (av_gettime_relative() - start_clock_time_with_shift));
 	}
 	else {
 		ctx->output_drop_frame_time = -delay;
 		//假如输出慢了超过1秒，可能是因为Receive被阻塞了，就重设一下output_start_clock_time，使得delay等于0
 		if (delay < -1 * 1000000) {
-			ctx->output_start_clock_time = get_current_time(0) - ctx->output_video_pts_time;
+			int64_t new_output_start_clock_time = get_current_time(0) - ctx->output_video_pts_time;
+			//为了重设后output_start_shift_time仍有效，做以下处理。避免误差累积，使用output_first_start_clock_time作计算
+			int64_t frame_amount_diff = av_rescale_q(new_output_start_clock_time - start_clock_time_with_shift, (AVRational) { 1, AV_TIME_BASE }, (AVRational) { ctx->output_fps.den, ctx->output_fps.num });
+			ctx->output_start_clock_time = ctx->output_first_start_clock_time + av_rescale_q(frame_amount_diff, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, (AVRational) { 1, AV_TIME_BASE });
 			printf("reset output_start_clock_time %I64d ...\r",ctx->output_start_clock_time);
 		}
 	}
@@ -1789,7 +1792,7 @@ int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快
 	int64_t interval = (is_video ? ctx->output_time_per_video_frame : ctx->output_time_per_audio_frame);
 
 	int64_t diff = timestamp + ctx->output_time_offset - output_pts_time;
-	if (diff >= -0.6 * interval && diff < 0.6 * interval) //假如刚好有diff是-0.6001 * interval，那么会return 0，假如输入帧率和输出帧率相等，读取的下一帧diff就会是0.3999 * interval左右，允许有0.2001 * interval的抖动
+	if (diff >= -0.75 * interval && diff < 0.75 * interval) //假如刚好有diff是-0.7501 * interval，那么会return 0，假如输入帧率和输出帧率相等，读取的下一帧diff就会是0.2499 * interval左右，允许有0.5001 * interval的抖动
 		return 1;
 	else if (diff > 0)
 		return 2;
@@ -1901,6 +1904,9 @@ HRESULT WINAPI output_thread(LPVOID p)
 	int64_t last_in_sync_audio_pts = AV_NOPTS_VALUE;
 	int reset;
 	int audio_in_sync = 0;
+
+	ctx->output_first_start_clock_time = ctx->output_start_clock_time = get_current_time(0);
+
 	while (1)
 	{
 		if (ctx->output_exit) break;
@@ -2025,8 +2031,6 @@ end:
 int start_output(inout_context* ctx)
 {
 	HANDLE out_thread;
-
-	ctx->output_start_clock_time = get_current_time(0);
 
 	if (open_thread(&out_thread, output_thread, ctx) < 0)
 	{
@@ -2280,6 +2284,7 @@ DWORD main_thread(LPVOID p) {
 	char* audio_filter_file = NULL;
 	char* control_file_name = NULL;
 	char* index_file_name = NULL;
+	char* output_start_shift_file_name = NULL;
 	AVRational frame_rate = opts->video_out_fps;
 	if (!table) return -1;
 	char* buf = NULL, * buf2 = NULL, str[1024] = { 0 }, time_str[20] = { 0 }, str2[1024] = { 0 }, hw_decode[16] = "";
@@ -2305,12 +2310,14 @@ DWORD main_thread(LPVOID p) {
 	filter_file = get_paremeter_table_content(table, "config", "filter_file", TRUE);
 	audio_filter_file = get_paremeter_table_content(table, "config", "audio_filter_file", TRUE);
 	index_file_name = get_paremeter_table_content(table, "config", "index_file", TRUE);
+	output_start_shift_file_name = get_paremeter_table_content(table, "config", "output_start_time_shift", TRUE);
 
 	play_list_file = join_path_free_filename(pathvar, play_list_file);
 	control_file_name = join_path_free_filename(pathvar, control_file_name);
 	filter_file = join_path_free_filename(pathvar, filter_file);
 	audio_filter_file = join_path_free_filename(pathvar, audio_filter_file);
 	index_file_name = join_path_free_filename(pathvar, index_file_name);
+	output_start_shift_file_name = join_path_free_filename(pathvar, output_start_shift_file_name);
 
 	if (buf = get_paremeter_table_content(table, "config", "hw_decode", FALSE)) strcpy_s(hw_decode, sizeof(hw_decode), buf);
 	if (buf = get_paremeter_table_content(table, "config", "reopen_at_list_update", FALSE)) reopen_at_list_update = atoi(buf);
@@ -2341,6 +2348,7 @@ DWORD main_thread(LPVOID p) {
 	int64_t last_audio_filters_mtime = 0;
 	int64_t last_inputs_mtime = 0;
 	int64_t last_indexs_mtime = 0;
+	int64_t last_shift_mtime = 0;
 
 	int seek_number = 1;
 	int play_mode = 3;//loop_list,loop_single,loop_random
@@ -2591,6 +2599,14 @@ DWORD main_thread(LPVOID p) {
 			av_free(buf);
 		}
 
+		if ((ret = is_file_changed(output_start_shift_file_name, last_shift_mtime)) > 0)
+		{
+			last_shift_mtime = ret;
+			int64_t shift = get_txt_num(output_start_shift_file_name);
+			ctx->output_start_shift_time = shift;
+			printf("output start time shift: %I64d\n", shift);
+		}
+
 		av_usleep(500000);
 	}
 end:
@@ -2622,6 +2638,8 @@ end:
 		av_free(audio_filter_file);
 	if (index_file_name)
 		av_free(index_file_name);
+	if (output_start_shift_file_name)
+		av_free(output_start_shift_file_name);
 
 	if (play_dict)
 		av_dict_free(&play_dict);

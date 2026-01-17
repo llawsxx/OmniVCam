@@ -455,6 +455,23 @@ char* get_filter_text(char* filename)//请自行free返回结果,不完善，随便写的
 	fclose(fp);
 	return av_strdup(buf2);
 }
+
+int64_t get_txt_num(char* filename)
+{
+	if (!filename)
+		return 0;
+	FILE* fp = fopen(filename, "r");
+	if (!fp) return 0;
+	char buf[64];
+	char buf2[64] = { 0 };
+	if (fgets(buf, sizeof(buf), fp))
+	{
+		trim_space(buf, buf2);
+	}
+	fclose(fp);
+	return atoll(buf2);
+}
+
 //*out_ret : 1:搜索 2：移动位置 3:设置列表循环 4：单曲循环 5:随机播放   1,2,3时，要看*output内容
 
 int control_input_playing(char* control_file,char *output,int output_size)

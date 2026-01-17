@@ -162,7 +162,9 @@ typedef struct inout_context {
 	AVAudioFifo* output_audio_fifo;//用output audio的来初始化
 	HANDLE output_thread;
 	int output_exit;//强制退出标志
+	int64_t output_first_start_clock_time;
 	int64_t output_start_clock_time;
+	int64_t output_start_shift_time;
 	//int64_t output_last_clock_time;
 	int64_t output_delayed_time;//输出慢了多少时间
 	int64_t output_last_pause_time;
