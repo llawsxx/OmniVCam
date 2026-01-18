@@ -2286,6 +2286,7 @@ DWORD main_thread(LPVOID p) {
 	char* index_file_name = NULL;
 	char* output_start_shift_file_name = NULL;
 	AVRational frame_rate = opts->video_out_fps;
+	const char* config_path = opts->config_path;
 	if (!table) return -1;
 	char* buf = NULL, * buf2 = NULL, str[1024] = { 0 }, time_str[20] = { 0 }, str2[1024] = { 0 }, hw_decode[16] = "";
 	int video_frame_buffer = 10, audio_frame_buffer = 50, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000, reopen_at_list_update = 0;
@@ -2293,10 +2294,12 @@ DWORD main_thread(LPVOID p) {
 	char* play_filename = NULL;
 	AVDictionary* play_dict = NULL;
 	AVDictionary* play_dict_in_list = NULL;
-	char* pathvar;
-	pathvar = getenv(CONFIG_ROOT_ENV);
-	if (pathvar)
-		printf("%s=%s\n", CONFIG_ROOT_ENV, pathvar);
+	char* pathvar = NULL;
+	if(config_path){
+		pathvar = getenv(config_path);
+		if (pathvar)
+			printf("%s=%s\n", config_path, pathvar);
+	}
 
 	char* config_file_name = join_path(pathvar, "config.ini");
 	char* current_play_file_name = join_path(pathvar, "current_play_file.txt");
@@ -2695,10 +2698,10 @@ int main15() {
 }
 
 int main14() {
-	char* pathvar;
-	pathvar = getenv(CONFIG_ROOT_ENV);
-	if (pathvar)
-		printf("CONFIG_ROOT_ENV=%s", pathvar);
+	char* pathvar = "OMNI_VCAM_CONFIG";
+	//pathvar = getenv(CONFIG_ROOT_ENV);
+	//if (pathvar)
+	//	printf("CONFIG_ROOT_ENV=%s", pathvar);
 
 
 	while (1) {

@@ -193,6 +193,7 @@ typedef struct inout_options {
 	void (*audio_callback)(void* priv, AVFrame*);
 	void *callback_private;
 	int send_exit;
+	const char* config_path;
 }inout_options;
 
 int open_thread(HANDLE* thread, LPTHREAD_START_ROUTINE start, LPVOID arg);

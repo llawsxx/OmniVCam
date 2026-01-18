@@ -9,7 +9,6 @@
 #include <libavutil/time.h>
 #include <stdlib.h>
 
-#define CONFIG_ROOT_ENV "OMNI_VCAM_CONFIG"
 
 #ifdef _WIN32
 #define PATH_SEPARATOR '\\'

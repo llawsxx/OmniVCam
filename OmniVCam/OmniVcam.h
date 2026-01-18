@@ -16,6 +16,17 @@ extern "C"{
 // {8B1F6F00-9A2B-4C87-9A1F-3D5A0C8B3E1A}
 DEFINE_GUID(CLSID_OmniVCam,
     0x8b1f6f00, 0x9a2b, 0x4c87, 0x9a, 0x1f, 0x3d, 0x5a, 0xc, 0x8b, 0x3e, 0x1a);
+DEFINE_GUID(CLSID_OmniVCam2,
+    0x8b1f6f00, 0x9a2b, 0x4c87, 0x9a, 0x1f, 0x3d, 0x5a, 0xc, 0x8b, 0x3e, 0x1b);
+DEFINE_GUID(CLSID_OmniVCam3,
+    0x8b1f6f00, 0x9a2b, 0x4c87, 0x9a, 0x1f, 0x3d, 0x5a, 0xc, 0x8b, 0x3e, 0x1c);
+DEFINE_GUID(CLSID_OmniVCam4,
+    0x8b1f6f00, 0x9a2b, 0x4c87, 0x9a, 0x1f, 0x3d, 0x5a, 0xc, 0x8b, 0x3e, 0x1d);
+
+#define CONFIG_ROOT_ENV "OMNI_VCAM_CONFIG"
+#define CONFIG_ROOT_ENV2 "OMNI_VCAM_CONFIG2"
+#define CONFIG_ROOT_ENV3 "OMNI_VCAM_CONFIG3"
+#define CONFIG_ROOT_ENV4 "OMNI_VCAM_CONFIG4"
 
 #ifdef DEBUG
     #define DEBUG_LOG_REF() printf("%s refCount: %ld address: %p\n",__FUNCTION__, m_refCount, (void*)this);
@@ -150,7 +161,7 @@ private:
 
 class OmniVCam : public IBaseFilter,public INonDelegatingUnknown, public DShowBase {
 public:
-    OmniVCam();
+    OmniVCam(const GUID *clsId,const char* configPath);
     ~OmniVCam();
 
     // IUnknown
@@ -213,7 +224,8 @@ private:
     OmniVideoPin* m_videoPin;
     inout_options* m_renderOpts;
     HANDLE m_renderThread;
-    
+    const GUID* m_clsId;
+    const char* m_configPath;
 };
 
 

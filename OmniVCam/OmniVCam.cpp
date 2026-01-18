@@ -390,7 +390,7 @@ STDMETHODIMP OmniMediaTypeEnum::Clone(IEnumMediaTypes** ppEnum) {
 }
 
 
-OmniVCam::OmniVCam() : m_refCount(1), m_state(State_Stopped), m_clock(NULL), m_graph(NULL), m_renderThread(NULL), m_renderOpts(NULL) {
+OmniVCam::OmniVCam(const GUID* clsId,const char* configPath) : m_refCount(1), m_state(State_Stopped), m_clock(NULL), m_graph(NULL), m_renderThread(NULL), m_renderOpts(NULL), m_clsId(clsId),m_configPath(configPath){
     InitializeCriticalSection(&m_cs);
     m_videoPin = new OmniVideoPin(this);
     m_audioPin = new OmniAudioPin(this);
@@ -478,7 +478,7 @@ STDMETHODIMP_(ULONG) OmniVCam::Release() {
 
 // IPersist
 STDMETHODIMP OmniVCam::GetClassID(CLSID* pClsID) {
-    *pClsID = CLSID_OmniVCam;
+    *pClsID = *m_clsId;
     return S_OK;
 }
 
@@ -582,6 +582,7 @@ STDMETHODIMP OmniVCam::Run(REFERENCE_TIME tStart) {
         m_renderOpts->audio_callback = PushAudioFrameHelper;
         m_renderOpts->callback_private = this;
         m_renderOpts->send_exit = 0;
+        m_renderOpts->config_path = m_configPath;
         if (open_thread(&m_renderThread, main_thread, m_renderOpts) < 0) {
             hr = S_FALSE;
         }
@@ -815,6 +816,11 @@ AM_MEDIA_TYPE* FormatManager::CreateAudioMediaType(const AudioFormat& format) co
 
 class OmniVCamClassFactory : public IClassFactory, public DShowBase {
 public:
+
+    OmniVCamClassFactory(const GUID& clsId, const char* configPath) {
+        m_clsId = clsId;
+        m_configPath = configPath;
+    }
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) {
         if (riid == IID_IUnknown || riid == IID_IClassFactory) {
@@ -834,7 +840,7 @@ public:
         if (pUnkOuter != NULL) return CLASS_E_NOAGGREGATION;
         //要注册一下，不然用不了dshow
         avdevice_register_all();
-        OmniVCam* pFilter = new OmniVCam();
+        OmniVCam* pFilter = new OmniVCam(&m_clsId, m_configPath);
         if (!pFilter) return E_OUTOFMEMORY;
 
         HRESULT hr = pFilter->QueryInterface(riid, ppv);
@@ -848,17 +854,31 @@ public:
         else InterlockedDecrement(&g_cLocks);
         return S_OK;
     }
+
+    bool IsClassID(REFCLSID rclsid) {
+        return m_clsId == rclsid;
+    }
+private:
+    GUID m_clsId;
+    const char *m_configPath;
 };
 
 
 
-
-// DLL exports
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv) {
-    if (rclsid != CLSID_OmniVCam) return CLASS_E_CLASSNOTAVAILABLE;
+    static OmniVCamClassFactory factories[] = {
+        OmniVCamClassFactory(CLSID_OmniVCam, CONFIG_ROOT_ENV),
+        OmniVCamClassFactory(CLSID_OmniVCam2, CONFIG_ROOT_ENV2),
+        OmniVCamClassFactory(CLSID_OmniVCam3, CONFIG_ROOT_ENV3),
+        OmniVCamClassFactory(CLSID_OmniVCam4, CONFIG_ROOT_ENV4)
+    };
 
-    static OmniVCamClassFactory factory;
-    return factory.QueryInterface(riid, ppv);
+    for (auto& factory : factories) {
+        if (factory.IsClassID(rclsid)) {
+            return factory.QueryInterface(riid, ppv);
+        }
+    }
+    return CLASS_E_CLASSNOTAVAILABLE;
 }
 
 STDAPI DllCanUnloadNow() {
@@ -866,19 +886,18 @@ STDAPI DllCanUnloadNow() {
 }
 
 
-HRESULT RegisterFilterClass() {
+HRESULT RegisterFilterClass(REFGUID rguid, LPCWSTR filterName) {
     HRESULT hr = S_OK;
     HKEY hKey = NULL;
     wchar_t clsid[39];
     wchar_t keyPath[256];
-
-    StringFromGUID2(CLSID_OmniVCam, clsid, 39);
+    StringFromGUID2(rguid, clsid, 39);
 
     // 注册 CLSID
     swprintf_s(keyPath, L"CLSID\\%s", clsid);
     hr = RegCreateKeyEx(HKEY_CLASSES_ROOT, (LPWSTR)keyPath, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
     if (SUCCEEDED(hr)) {
-        RegSetValueEx(hKey, NULL, 0, REG_SZ, (BYTE*)L"OmniVCam Virtual Camera", 48);
+        RegSetValueEx(hKey, NULL, 0, REG_SZ, (BYTE*)filterName, 48);
         RegCloseKey(hKey);
     }
 
@@ -898,11 +917,11 @@ HRESULT RegisterFilterClass() {
     return hr;
 }
 
-void UnregisterFilterClass() {
+void UnregisterFilterClass(REFGUID rguid) {
     wchar_t clsid[39];
     wchar_t keyPath[256];
 
-    StringFromGUID2(CLSID_OmniVCam, clsid, 39);
+    StringFromGUID2(rguid, clsid, 39);
 
     swprintf_s(keyPath, L"CLSID\\%s\\InprocServer32", clsid);
     RegDeleteKey(HKEY_CLASSES_ROOT, (LPWSTR)keyPath);
@@ -912,8 +931,7 @@ void UnregisterFilterClass() {
 }
 
 
-// 在 RegisterVideoCaptureDevice 中更新支持的媒体类型
-HRESULT RegisterVideoCaptureDevice() {
+HRESULT RegisterVideoCaptureDevice(REFGUID rguid, LPCWSTR filterName) {
     HRESULT hr = S_OK;
     IFilterMapper2* pFilterMapper = NULL;
 
@@ -934,7 +952,7 @@ HRESULT RegisterVideoCaptureDevice() {
     // 视频Pin - 支持多种视频格式
     rp2[0].dwFlags = REG_PINFLAG_B_OUTPUT;
     rp2[0].cInstances = 1;
-    rp2[0].nMediaTypes = 5; // 支持4种视频格式
+    rp2[0].nMediaTypes = 5; // 支持5种视频格式
 
     REGPINTYPES videoMediaTypes[5];
     videoMediaTypes[0].clsMajorType = &MEDIATYPE_Video;
@@ -969,8 +987,8 @@ HRESULT RegisterVideoCaptureDevice() {
     rf2.rgPins2 = rp2;
 
     // 注册为视频捕获源
-    hr = pFilterMapper->RegisterFilter(CLSID_OmniVCam,
-        L"OmniVCam Virtual Camera",
+    hr = pFilterMapper->RegisterFilter(rguid,
+        filterName,
         NULL,
         &CLSID_VideoInputDeviceCategory,
         NULL,
@@ -981,7 +999,7 @@ HRESULT RegisterVideoCaptureDevice() {
 }
 
 
-HRESULT UnregisterVideoCaptureDevice() {
+HRESULT UnregisterVideoCaptureDevice(REFGUID rguid) {
     HRESULT hr = S_OK;
     IFilterMapper2* pFilterMapper = NULL;
 
@@ -990,7 +1008,7 @@ HRESULT UnregisterVideoCaptureDevice() {
     if (SUCCEEDED(hr)) {
         pFilterMapper->UnregisterFilter(&CLSID_VideoInputDeviceCategory,
             NULL,
-            CLSID_OmniVCam);
+            rguid);
 
         pFilterMapper->Release();
     }
@@ -1002,14 +1020,24 @@ STDAPI DllRegisterServer() {
     HRESULT hr = CoInitialize(NULL);
     // 先尝试取消注册，清理可能存在的旧注册
     DllUnregisterServer();
-
     // 注册 CLSID
-    hr = RegisterFilterClass();
-    if (FAILED(hr)) goto end;
-
-    // 注册为视频捕获设备
-    hr = RegisterVideoCaptureDevice();
-end:
+    
+    hr = RegisterFilterClass(CLSID_OmniVCam, L"OmniVCam Virtual Camera");
+    if (SUCCEEDED(hr)) {
+        hr = RegisterVideoCaptureDevice(CLSID_OmniVCam, L"OmniVCam Virtual Camera");
+    }
+    hr = RegisterFilterClass(CLSID_OmniVCam2, L"OmniVCam Virtual Camera 2");
+    if (SUCCEEDED(hr)) {
+        hr = RegisterVideoCaptureDevice(CLSID_OmniVCam2, L"OmniVCam Virtual Camera 2");
+    }
+    hr = RegisterFilterClass(CLSID_OmniVCam3, L"OmniVCam Virtual Camera 3");
+    if (SUCCEEDED(hr)) {
+        hr = RegisterVideoCaptureDevice(CLSID_OmniVCam3, L"OmniVCam Virtual Camera 3");
+    }
+    hr = RegisterFilterClass(CLSID_OmniVCam4, L"OmniVCam Virtual Camera 4");
+    if (SUCCEEDED(hr)) {
+        hr = RegisterVideoCaptureDevice(CLSID_OmniVCam4, L"OmniVCam Virtual Camera 4");
+    }
     CoUninitialize();
     return hr;
 }
@@ -1018,10 +1046,16 @@ STDAPI DllUnregisterServer() {
     HRESULT hr = CoInitialize(NULL);
 
     // 取消注册视频捕获设备
-    hr = UnregisterVideoCaptureDevice();
+    UnregisterVideoCaptureDevice(CLSID_OmniVCam);
+    UnregisterVideoCaptureDevice(CLSID_OmniVCam2);
+    UnregisterVideoCaptureDevice(CLSID_OmniVCam3);
+    UnregisterVideoCaptureDevice(CLSID_OmniVCam4);
 
     // 取消注册 CLSID
-    UnregisterFilterClass();
+    UnregisterFilterClass(CLSID_OmniVCam);
+    UnregisterFilterClass(CLSID_OmniVCam2);
+    UnregisterFilterClass(CLSID_OmniVCam3);
+    UnregisterFilterClass(CLSID_OmniVCam4);
 
     CoUninitialize();
     return hr;
@@ -1084,7 +1118,7 @@ int main() {
     while (0) {
         CComPtr<IBaseFilter> pFilter;
 
-        OmniVCam* pFilterVCam = new OmniVCam();
+        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV);
         if (!pFilterVCam) return E_OUTOFMEMORY;
 
         hr = pFilterVCam->QueryInterface(IID_PPV_ARGS(&pFilter));
@@ -1107,7 +1141,7 @@ int main() {
         CComPtr<IEnumMediaTypes> pMediaType = NULL;
         CComPtr<IEnumPins> pEnumPins = NULL;
 
-        OmniVCam* pFilterVCam = new OmniVCam();
+        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV);
         if (!pFilterVCam) return E_OUTOFMEMORY;
 
         hr = pFilterVCam->QueryInterface(IID_PPV_ARGS(&pFilter));
