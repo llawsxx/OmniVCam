@@ -5,7 +5,7 @@
 OmniVideoPin::OmniVideoPin(OmniVCam* pFilter)
     : m_pFilter(pFilter), m_refCount(1), m_connectedPin(NULL),
     m_allocator(NULL), m_streaming(false), m_startTime(0),
-    m_currentFpsNumerator(30), m_currentFpsDenominator(1),m_currentWidth(1920),m_currentHeight(1080),m_currentFormat(AV_PIX_FMT_RGB24), m_frameCount(0) {
+    m_currentFpsNumerator(30), m_currentFpsDenominator(1),m_currentWidth(1920),m_currentHeight(1080),m_currentFormat(AV_PIX_FMT_BGR24), m_frameCount(0) {
     InitMediaType();
     DEBUG_LOG_REF()
 }
