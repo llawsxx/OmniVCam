@@ -786,7 +786,7 @@ int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDict
 		goto end;
 	}
 	ctx->last_clock_time = av_gettime_relative();
-	fmt_ctx->flags |= AVFMT_FLAG_NONBLOCK;
+	//fmt_ctx->flags |= AVFMT_FLAG_NONBLOCK;
 	fmt_ctx->interrupt_callback.callback = input_call_back;
 	fmt_ctx->interrupt_callback.opaque = ctx;
 	if(probesize > 0)
