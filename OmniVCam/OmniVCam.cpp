@@ -716,11 +716,11 @@ void FormatManager::InitializeVideoFormats() {
     };
 
     static const PixelFormat pixelFormats[] = {
-        { MEDIASUBTYPE_RGB24, L"RGB24" },
-        { MEDIASUBTYPE_IYUV, L"IYUV" },
         { MEDIASUBTYPE_YUY2, L"YUY2" },
         { MEDIASUBTYPE_NV12, L"NV12" },
+        { MEDIASUBTYPE_IYUV, L"IYUV" },
         { MEDIASUBTYPE_RGB32, L"RGB32" },
+        { MEDIASUBTYPE_RGB24, L"RGB24" }
     };
 
     // 定义所有支持的分辨率
@@ -752,14 +752,14 @@ void FormatManager::InitializeVideoFormats() {
     };
 
     static const FrameRate frameRates[] = {
-        {30000, 1001, L"29.97fps"},
+        {60, 1, L"60fps"},
         {30, 1, L"30fps"},
         {50, 1, L"50fps"},
-        {60000, 1001, L"59.94fps"},
-        {60, 1, L"60fps"},
-        {24000, 1001, L"23.976fps"},
-        {24, 1, L"24fps"},
         {25, 1, L"25fps"},
+        {24, 1, L"24fps"},
+        {30000, 1001, L"29.97fps"},
+        {60000, 1001, L"59.94fps"},
+        {24000, 1001, L"23.976fps"},
     };
 
     // 生成所有视频格式组合
