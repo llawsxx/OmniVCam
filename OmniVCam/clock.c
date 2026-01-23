@@ -3,39 +3,53 @@
 static BOOL have_clockfreq = FALSE;
 static LARGE_INTEGER clock_freq;
 
-//directshow use 100ns as time unit
-//OBS虚拟摄像头特意把clock分一个文件出来，有特别原因？可能会影响时钟准确性？
 
-uint64_t get_current_time(uint64_t start_time)
+uint64_t util_mul_div64(uint64_t num, uint64_t mul, uint64_t div)
 {
-	LARGE_INTEGER current_time;
-	double time_val;
+	const uint64_t rem = num % div;
+	return (num / div) * mul + (rem * mul) / div;
+}
 
+static inline uint64_t get_clockfreq(void)
+{
 	if (!have_clockfreq) {
 		QueryPerformanceFrequency(&clock_freq);
 		have_clockfreq = TRUE;
 	}
 
-	QueryPerformanceCounter(&current_time);
-	time_val = (double)current_time.QuadPart;
-	time_val *= 1000000.0;
-	time_val /= (double)clock_freq.QuadPart;
-
-	return (uint64_t)time_val - start_time;
+	return clock_freq.QuadPart;
 }
 
-BOOL sleepto(uint64_t time_target, uint64_t start_time)
+
+uint64_t os_gettime_ns(void)
 {
-	uint64_t t = get_current_time(start_time);
-	uint32_t milliseconds;
-
-	if (t >= time_target)
-		return FALSE;
-
-	milliseconds = (uint32_t)((time_target - t) / 1000);
-	if (milliseconds > 0)
-		Sleep(milliseconds);
-
-	return TRUE;
+	LARGE_INTEGER current_time;
+	QueryPerformanceCounter(&current_time);
+	return util_mul_div64(current_time.QuadPart, 1000000000, get_clockfreq());
 }
 
+BOOL os_sleepto_ns(uint64_t time_target)
+{
+	const uint64_t freq = get_clockfreq();
+	const LONGLONG count_target = util_mul_div64(time_target, freq, 1000000000);
+
+	LARGE_INTEGER count;
+	QueryPerformanceCounter(&count);
+
+	const BOOL stall = count.QuadPart < count_target;
+	if (stall) {
+		const DWORD milliseconds = (DWORD)(((count_target - count.QuadPart) * 1000.0) / freq);
+		if (milliseconds > 1)
+			Sleep(milliseconds - 1);
+
+		for (;;) {
+			QueryPerformanceCounter(&count);
+			if (count.QuadPart >= count_target)
+				break;
+
+			YieldProcessor();
+		}
+	}
+
+	return stall;
+}

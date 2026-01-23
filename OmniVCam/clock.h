@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
 
-uint64_t get_current_time(uint64_t start_time);
-BOOL sleepto(uint64_t time_target, uint64_t start_time);
+uint64_t util_mul_div64(uint64_t num, uint64_t mul, uint64_t div);
+uint64_t os_gettime_ns(void);
+BOOL os_sleepto_ns(uint64_t time_target);

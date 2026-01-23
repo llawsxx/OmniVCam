@@ -3,6 +3,7 @@
 #include "Utils.h"
 #include "clock.h"
 AVRational UNIVERSAL_TB = { 1,1000000 };
+AVRational NS_TB = { 1,1000000000 };
 AVRational DSHOW_TB = { 1,10000000 };
 #define COND_TIMEOUT 100
 
@@ -372,7 +373,7 @@ void free_thread(HANDLE* thread)
 inout_context* inout_context_alloc(
 	int video_out_width, int video_out_height,int video_out_format,AVRational video_out_fps,
 	int audio_out_sample_rate,int audio_out_format,const AVChannelLayout *audio_out_layout, int audio_out_nb_samples,
-	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count)
+	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count,int use_fixed_frame_interval)
 {
 	inout_context* ctx = (inout_context*)av_mallocz(sizeof(inout_context));
 	AVAudioFifo* audio_fifo = NULL;
@@ -414,7 +415,7 @@ inout_context* inout_context_alloc(
 	ctx->output_frame_format = video_out_format;
 	ctx->output_fps = video_out_fps;
 	ctx->output_time_per_video_frame = av_rescale_q_rnd(1, (AVRational) { video_out_fps.den, video_out_fps.num }, UNIVERSAL_TB, AV_ROUND_UP);
-	ctx->output_detect_speed_interval = 1 * 1000000;
+	ctx->output_video_interval_ns = use_fixed_frame_interval ? util_mul_div64(1000000000ULL, video_out_fps.den, video_out_fps.num) : 0;
 	ctx->output_audio_sample_rate = audio_out_sample_rate;
 	ctx->output_audio_format = audio_out_format;
 	ctx->output_audio_nb_samples = audio_out_nb_samples;
@@ -1644,34 +1645,26 @@ void stop_read(inout_context* ctx, int force)
 
 void control_output_speed(inout_context* ctx)
 {
-	//暂时不把sleepto函数的内容拆出来，好像会影响计时和睡眠的精度？？？
 	int64_t start_clock_time_with_shift = ctx->output_start_clock_time + ctx->output_start_shift_time;
-	int64_t current_time = get_current_time(start_clock_time_with_shift);
-	int64_t delay = ctx->output_video_pts_time - current_time;
-	ctx->output_delayed_time = -delay;
-
-	if (sleepto(ctx->output_video_pts_time, start_clock_time_with_shift))
+	if (os_sleepto_ns(ctx->output_next_target_clock_time_ns + start_clock_time_with_shift))
 	{
-		ctx->output_last_pause_time = delay;
-			printf("Output pause : %I64d diff_after_delay: %I64d\n", delay, ctx->output_video_pts_time - (av_gettime_relative() - start_clock_time_with_shift));
+		printf("diff_after_sleep: %I64d ns\n", (ctx->output_next_target_clock_time_ns - ((int64_t)os_gettime_ns() - start_clock_time_with_shift)));
 	}
 	else {
-		ctx->output_drop_frame_time = -delay;
-		//假如输出慢了超过1秒，可能是因为Receive被阻塞了，就重设一下output_start_clock_time，使得delay等于0
-		if (delay < -1 * 1000000) {
-			int64_t new_output_start_clock_time = get_current_time(0) - ctx->output_video_pts_time;
-			//为了重设后output_start_shift_time仍有效，做以下处理。避免误差累积，使用output_first_start_clock_time作计算
-			int64_t frame_amount_diff = av_rescale_q(new_output_start_clock_time - start_clock_time_with_shift, (AVRational) { 1, AV_TIME_BASE }, (AVRational) { ctx->output_fps.den, ctx->output_fps.num });
-			ctx->output_start_clock_time = ctx->output_first_start_clock_time + av_rescale_q(frame_amount_diff, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, (AVRational) { 1, AV_TIME_BASE });
-			printf("reset output_start_clock_time %I64d ...\r",ctx->output_start_clock_time);
+		int64_t new_output_start_clock_time = (int64_t)os_gettime_ns() - ctx->output_next_target_clock_time_ns;
+		int64_t count;
+		if (ctx->output_video_interval_ns) {
+			count = (new_output_start_clock_time - (ctx->output_first_start_clock_time + ctx->output_start_shift_time)) / ctx->output_video_interval_ns;
+			if(count > 0)
+				ctx->output_start_clock_time = ctx->output_first_start_clock_time + count * ctx->output_video_interval_ns;
 		}
-	}
-	//显示信息
-	if ((ctx->output_video_pts_time - ctx->output_last_detect_pts_time >= ctx->output_detect_speed_interval))
-	{
-		ctx->output_last_detect_pts_time = ctx->output_video_pts_time;
-		//printf("Time:%lld Output pause:%lldμs\r", ctx->output_video_pts_time, delay);
-		return;
+		else {
+			count = av_rescale_q(new_output_start_clock_time - (ctx->output_first_start_clock_time + ctx->output_start_shift_time), NS_TB, (AVRational) { ctx->output_fps.den, ctx->output_fps.num });
+			if (count > 0)
+				ctx->output_start_clock_time = ctx->output_first_start_clock_time + av_rescale_q(count, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, NS_TB);
+		}
+		if(count > 0)
+			printf("reset output_start_clock_time %I64d\n",ctx->output_start_clock_time);
 	}
 }
 
@@ -1817,10 +1810,9 @@ int output_audio(inout_context* ctx,AVFrame *frame)
 	if (ctx->audio_callback) {
 		ctx->audio_callback(ctx->callback_private, frame);
 	}
-	ctx->output_sample_count += frame->nb_samples;
 	ctx->output_audio_pts_time = av_rescale_q(ctx->output_sample_count,
 		(AVRational) {1, ctx->output_audio_sample_rate}, UNIVERSAL_TB);
-
+	ctx->output_sample_count += frame->nb_samples;
 	//printf("output audio: %lld", ctx->output_audio_pts_time);
 	return 0;
 }
@@ -1832,9 +1824,18 @@ int output_video(inout_context* ctx, AVFrame* frame)
 	if (ctx->video_callback) {
 		ctx->video_callback(ctx->callback_private, frame);
 	}
-	ctx->output_frame_count += 1;
 	ctx->output_video_pts_time = av_rescale_q(ctx->output_frame_count,
 		(AVRational) { ctx->output_fps.den, ctx->output_fps.num }, UNIVERSAL_TB);
+	if (ctx->output_video_interval_ns) {
+		ctx->output_next_target_clock_time_ns = ctx->output_frame_count * ctx->output_video_interval_ns;
+	}
+	else {
+		ctx->output_next_target_clock_time_ns = av_rescale_q(ctx->output_frame_count,
+			(AVRational) {
+			ctx->output_fps.den, ctx->output_fps.num
+		}, NS_TB);
+	}
+	ctx->output_frame_count += 1;
 	//printf("output video: %lld", ctx->output_video_pts_time);
 	return 0;
 }
@@ -1905,7 +1906,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 	int reset;
 	int audio_in_sync = 0;
 
-	ctx->output_first_start_clock_time = ctx->output_start_clock_time = get_current_time(0);
+	ctx->output_first_start_clock_time = ctx->output_start_clock_time = os_gettime_ns();
 
 	while (1)
 	{
@@ -2285,6 +2286,7 @@ DWORD main_thread(LPVOID p) {
 	char* control_file_name = NULL;
 	char* index_file_name = NULL;
 	char* output_start_shift_file_name = NULL;
+	int use_fixed_frame_interval = 0;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
 	if (!table) return -1;
@@ -2329,6 +2331,7 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "audio_frame_buffer", FALSE)) audio_frame_buffer = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "packet_queue_size", FALSE)) packet_queue_size = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "timeout", FALSE)) timeout = atoi(buf);
+	if (buf = get_paremeter_table_content(table, "config", "use_fixed_frame_interval", FALSE)) use_fixed_frame_interval = atoi(buf);
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
 
@@ -2337,7 +2340,7 @@ DWORD main_thread(LPVOID p) {
 
 	AVChannelLayout ch_layout = { 0 };
 	av_channel_layout_default(&ch_layout, opts->audio_out_channels);
-	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, 1024, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer);
+	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, 1024, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval);
 	av_channel_layout_uninit(&ch_layout);
 	if (!ctx) {
 		goto end;
@@ -2606,7 +2609,7 @@ DWORD main_thread(LPVOID p) {
 		{
 			last_shift_mtime = ret;
 			int64_t shift = get_txt_num(output_start_shift_file_name);
-			ctx->output_start_shift_time = shift;
+			ctx->output_start_shift_time = shift * 1000LL;
 			printf("output start time shift: %I64d\n", shift);
 		}
 
@@ -2757,7 +2760,7 @@ int main11() {
 	while (1) {
 		AVChannelLayout ch_layout = { 0 };
 		av_channel_layout_default(&ch_layout, 2);
-		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10);
+		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1);
 		av_channel_layout_uninit(&ch_layout);
 		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1);
 		inout_context_reset_input(ctx);

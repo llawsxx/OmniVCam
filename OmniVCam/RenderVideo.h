@@ -149,6 +149,8 @@ typedef struct inout_context {
 	int64_t output_time_per_video_frame;
 	int64_t output_time_per_audio_frame;
 	int64_t output_video_pts_time;
+	int64_t output_next_target_clock_time_ns;
+	int64_t output_video_interval_ns; //为了适配OBS的下一帧时间计算方法
 	int64_t output_audio_pts_time;
 	int64_t output_frame_count;
 	int64_t output_sample_count;
@@ -166,13 +168,7 @@ typedef struct inout_context {
 	int64_t output_start_clock_time;
 	int64_t output_start_shift_time;
 	//int64_t output_last_clock_time;
-	int64_t output_delayed_time;//输出慢了多少时间
-	int64_t output_last_pause_time;
-	int64_t output_drop_frame_time;//丢多少时间的帧
 	AVRational output_fps;
-	int64_t output_last_detect_pts_time;
-	int64_t output_detect_speed_interval;
-	int64_t output_last_force_refresh_time;
 
 	void (*video_callback)(void* priv, AVFrame*);
 	void (*audio_callback)(void* priv, AVFrame*);
