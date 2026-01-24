@@ -2431,6 +2431,9 @@ DWORD main_thread(LPVOID p) {
 			}
 		}
 		if (is_input_exit(ctx)) {
+			av_dict_free(&play_dict);
+			play_dict_in_list = NULL;
+			play_filename = NULL;
 			switch (play_mode)
 			{
 			case 3:
@@ -2449,7 +2452,6 @@ DWORD main_thread(LPVOID p) {
 			if (list_item) {
 				play_filename = list_item->value;
 				play_dict_in_list = list_item->dict;
-				av_dict_free(&play_dict);
 			}
 
 		input:
