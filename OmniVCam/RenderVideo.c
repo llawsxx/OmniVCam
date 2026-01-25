@@ -2061,7 +2061,7 @@ int is_input_exit(inout_context* ctx)
 {
 	if (ctx->test_card_running) return 0;
 	int decoder_all_exit = 1;
-	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
+	for (int i = 0; i < 2; i++) {
 		if (ctx->decoders[i].avctx && !ctx->decoders[i].exit)
 			decoder_all_exit = 0;
 	}
