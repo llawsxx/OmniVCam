@@ -29,12 +29,15 @@
   <ItemGroup>
     <ClInclude Include="clock.h" />
     <ClInclude Include="dshow_grabber.h" />
+    <ClInclude Include="global.h" />
     <ClInclude Include="OmniAudioPin.h" />
     <ClInclude Include="OmniVcam.h" />
     <ClInclude Include="OmniVideoPin.h" />
     <ClInclude Include="ParseConfig.h" />
     <ClInclude Include="RenderVideo.h" />
+    <ClInclude Include="TestCard.h" />
     <ClInclude Include="Utils.h" />
+    <ClInclude Include="video_frame.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="clock.c" />
@@ -44,7 +47,9 @@
     <ClCompile Include="OmniVideoPin.cpp" />
     <ClCompile Include="ParseConfig.c" />
     <ClCompile Include="RenderVideo.c" />
+    <ClCompile Include="TestCard.cpp" />
     <ClCompile Include="Utils.c" />
+    <ClCompile Include="video_frame.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="OmniVCam.def" />

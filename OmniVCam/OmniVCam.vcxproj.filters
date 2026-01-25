@@ -39,6 +39,15 @@
     <ClInclude Include="clock.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="TestCard.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="video_frame.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="global.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="OmniVCam.cpp">
@@ -63,6 +72,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="clock.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="TestCard.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="video_frame.c">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

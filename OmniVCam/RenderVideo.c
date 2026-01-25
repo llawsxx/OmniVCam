@@ -1,11 +1,10 @@
 #include "RenderVideo.h"
 #include "ParseConfig.h"
+#include "TestCard.h"
 #include "Utils.h"
 #include "clock.h"
-AVRational UNIVERSAL_TB = { 1,1000000 };
-AVRational NS_TB = { 1,1000000000 };
-AVRational DSHOW_TB = { 1,10000000 };
-#define COND_TIMEOUT 100
+#include "video_frame.h"
+#include "global.h"
 
 int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int *exit) {
 	int64_t start_time = av_gettime_relative();
@@ -477,6 +476,7 @@ void inout_context_free(inout_context** ctx)
 	DeleteCriticalSection(&(*ctx)->input_change_mutex);
 
 	free_thread((*ctx)->reading_tid);
+	free_thread((*ctx)->test_card_tid);
 	free_thread((*ctx)->decode_video_tid);
 	free_thread((*ctx)->decode_audio_tid);
 	av_free((*ctx)->filter_text);
@@ -497,6 +497,11 @@ void inout_context_free(inout_context** ctx)
 void inout_context_reset_input(inout_context* ctx)
 {
 	if (!ctx) return;
+	free_thread(ctx->reading_tid);
+	free_thread(ctx->test_card_tid);
+	free_thread(ctx->decode_video_tid);
+	free_thread(ctx->decode_audio_tid);
+
 	avformat_close_input(&ctx->fmt_ctx);
 
 
@@ -536,9 +541,7 @@ void inout_context_reset_input(inout_context* ctx)
 	avsubtitle_free(&ctx->sub);
 
 
-	free_thread(ctx->reading_tid);
-	free_thread(ctx->decode_video_tid);
-	free_thread(ctx->decode_audio_tid);
+
 	ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 	ctx->hw_type = AV_HWDEVICE_TYPE_NONE;
 	ctx->last_frame_width = 0;
@@ -556,6 +559,7 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->last_packet_time = AV_NOPTS_VALUE;
 	av_freep(&ctx->input_name);
 	av_freep(&ctx->current_status_file_name);
+	ctx->test_card_running = 0;
 	ctx->force_exit = 0;
 	ctx->eof = 0;
 }
@@ -779,6 +783,14 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDictionary ** dict_opts, inout_context* ctx,
 	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int queue_left_count,int queue_right_count)
 {	
+
+	if (name && strcmp(name, "<TESTCARD>") == 0) {
+		av_freep(&ctx->input_name);
+		ctx->input_name = av_strdup(name);
+		return 0;
+	}
+
+
 	int ret = -1;
 	AVFormatContext* fmt_ctx = NULL;
 	if (!(fmt_ctx = avformat_alloc_context()))
@@ -1223,56 +1235,6 @@ failed:
 }
 
 
-static int get_video_buffer(AVFrame* frame)
-{
-	const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(frame->format);
-	int ret;
-	ptrdiff_t linesizes[4];
-	size_t total_size, sizes[4];
-
-	if (!desc)
-		return AVERROR(EINVAL);
-
-	if ((ret = av_image_check_size(frame->width, frame->height, 0, NULL)) < 0)
-		return ret;
-
-	if (!frame->linesize[0]) {
-		ret = av_image_fill_linesizes(frame->linesize, frame->format,
-			frame->width);
-		if (ret < 0)
-			return ret;
-	}
-
-	for (int i = 0; i < 4; i++)
-		linesizes[i] = frame->linesize[i];
-
-	if ((ret = av_image_fill_plane_sizes(sizes, frame->format,
-		frame->height, linesizes)) < 0)
-		return ret;
-
-	total_size = 0;
-	for (int i = 0; i < 4; i++) {
-		if (sizes[i] > SIZE_MAX - total_size)
-			return AVERROR(EINVAL);
-		total_size += sizes[i];
-	}
-
-	frame->buf[0] = av_buffer_alloc(total_size);
-	if (!frame->buf[0]) {
-		ret = AVERROR(ENOMEM);
-		goto fail;
-	}
-
-	if ((ret = av_image_fill_pointers(frame->data, frame->format, frame->height,
-		frame->buf[0]->data, frame->linesize)) < 0)
-		goto fail;
-
-	frame->extended_data = frame->data;
-	return 0;
-fail:
-	av_frame_unref(frame);
-	return ret;
-}
 
 static void flip_frame(AVFrame* frame)
 {
@@ -1427,6 +1389,24 @@ end:
 	return ret;
 }
 
+DWORD test_card_thread(LPVOID p) {
+	inout_context* ctx = (inout_context*)p;
+	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps);
+	if (!card) return -1;
+	ctx->input_frame_id = av_gettime_relative();
+	AVFrame* f;
+	while (!ctx->force_exit) {
+		if (f = test_card_draw(card)) {
+			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
+				break;
+			}
+		}
+		else break;
+	}
+	test_card_free(card);
+	ctx->test_card_running = 0;
+	return 0;
+}
 
 DWORD WINAPI decode_video_thread(LPVOID p) {
 	inout_context* ctx = (inout_context*)p;
@@ -1592,8 +1572,17 @@ end:
 int start_read(inout_context* ctx) {
 	int ret = -1;
 	HANDLE read_tid = NULL;
+	HANDLE test_card_tid = NULL;
 	HANDLE decode_video_tid = NULL;
 	HANDLE decode_audio_tid = NULL;
+
+	if (ctx->input_name && strcmp(ctx->input_name, "<TESTCARD>") == 0) {
+		ctx->test_card_running = 1;
+		ret = open_thread(&test_card_tid, test_card_thread, ctx);
+		if (ret < 0) goto failed;
+		ctx->test_card_tid = test_card_tid;
+		return 0;
+	}
 
 	if (ctx->fmt_ctx)
 	{
@@ -1621,6 +1610,7 @@ failed:
 	ctx->force_exit = 1;
 
 	free_thread(&read_tid);
+	free_thread(&test_card_tid);
 	free_thread(&decode_video_tid);
 	free_thread(&decode_audio_tid);
 
@@ -1633,15 +1623,11 @@ void stop_read(inout_context* ctx, int force)
 		ctx->force_exit = 1;
 	}
 	free_thread(&ctx->reading_tid);
+	free_thread(&ctx->test_card_tid);
 	free_thread(&ctx->decode_video_tid);
 	free_thread(&ctx->decode_audio_tid);
 }
 
-//void interrupt_output_if_needed(inout_context* ctx)
-//{
-//	if (av_gettime_relative() - ctx->output_last_clock_time >= ctx->timeout)
-//		ctx->output_exit = 1;
-//}
 
 void control_output_speed(inout_context* ctx)
 {
@@ -1671,13 +1657,7 @@ void control_output_speed(inout_context* ctx)
 
 int is_audio_fifo_full_fill(inout_context* ctx)
 {
-	if (av_audio_fifo_size(ctx->output_audio_fifo) >= ctx->output_audio_nb_samples)
-	{
-		return 1;
-	}
-	else {
-		return 0;
-	}
+	return av_audio_fifo_size(ctx->output_audio_fifo) >= ctx->output_audio_nb_samples;
 }
 
 int fill_audio_fifo(inout_context* ctx, AVFrame* frame)
@@ -1912,7 +1892,6 @@ HRESULT WINAPI output_thread(LPVOID p)
 	{
 		if (ctx->output_exit) break;
 		control_output_speed(ctx);//每编码完一轮音频+一帧视频就会进到这里看有没有快了，快了就sleep
-		//interrupt_output_if_needed(ctx);
 
 		while (ctx->output_audio_pts_time <= ctx->output_video_pts_time)
 		{
@@ -2080,6 +2059,7 @@ int is_output_exit(inout_context *ctx)
 
 int is_input_exit(inout_context* ctx)
 {
+	if (ctx->test_card_running) return 0;
 	int decoder_all_exit = 1;
 	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
 		if (ctx->decoders[i].avctx && !ctx->decoders[i].exit)
@@ -2379,7 +2359,7 @@ DWORD main_thread(LPVOID p) {
 				if (play_list_ctx) {
 					update_play_list_from_file(play_list_ctx, play_list_file);
 					printf("play_list updated!\n");
-					if (reopen_at_list_update) {
+					if (reopen_at_list_update || ctx->test_card_running) {
 						stop_read(ctx, 1);
 					}
 				}

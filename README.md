@@ -27,6 +27,7 @@
 - 将需要播放的文件一行一个放到input.txt，每个文件可设置独立的参数
   例子：
 - ```
+  <TESTCARD>   #测试卡
   D:\example.mp4	seek_time=14	#播放D:\example.mp4文件，跳转到14秒
   D:\tv.ts	video_filter='bwdif=1',audio_filter='loudnorm',video_index=0,audio_index=1	#播放D:\example.mp4文件，设置视频滤镜为bwdif=1，音频滤镜loudnorm，设置视频轨道0，音频轨道1
   video=OBS Virtual Camera	format=dshow,rtbufsize=1G,queue_left=5,queue_right=20	#设置播放OBS Virtual Camera，协议为dshow，缓存1G，缓冲帧数最低5最高20（帧数量达到20时会自动清除多余的帧，直到帧数量等于(20-5)/2+5=12帧，低于5帧时则会缓存，直到帧数量够12帧再继续播放）

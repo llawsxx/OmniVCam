@@ -11,6 +11,7 @@
 
 extern "C"{
     #include "RenderVideo.h"
+    #include "global.h"
 }
 
 // {8B1F6F00-9A2B-4C87-9A1F-3D5A0C8B3E1A}
