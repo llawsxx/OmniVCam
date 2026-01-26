@@ -24,10 +24,21 @@ struct Line {
 	}
 };
 
+struct Circle {
+    float x, y;           // 圆心位置
+    float vx, vy;         // 速度向量
+    int radius;           // 半径
+    COLORREF color;       // 颜色
+};
+
+// 全局变量
+const int NUM_CIRCLES = 24;  // 圆形数量
+const int MIN_RADIUS = 20;
+const int MAX_RADIUS = 50;
 
 class TestCard {
 public:
-	TestCard(int width, int height, AVPixelFormat outPixelFormat, AVRational fps) {
+	TestCard(int width, int height, AVPixelFormat outPixelFormat, AVRational fps,int style) {
         rowSize = 0;
         frameBufferAligned = NULL;
 		this->width = width;
@@ -37,6 +48,7 @@ public:
 		this->outPixelFormat = outPixelFormat;
 		this->fps = fps;
         this->hOldBitmap = 0;
+        this->style = style;
         HDC hScreenDC = GetDC(NULL);
         hMemDC = CreateCompatibleDC(hScreenDC);
 
@@ -73,9 +85,12 @@ public:
         lines[6] = { 4,  width / 6,  0 ,width / 8 * 5 ,barHeight + (height - barHeight) / 4 * 3 };
         lines[7] = { 3,  width / 6,  0 ,width / 8 * 7 ,barHeight + (height - barHeight) / 4 * 3 };
 
-        double blockMovMul = 60.0 / (fps.num / (double)fps.den);
+        
+        float blockMovMul = speedMul();
         blockVelX = (int)(blockVelX * blockMovMul);
         blockVelY = (int)(blockVelY * blockMovMul);
+
+        InitializeCircles();
      }
 
     ~TestCard() {
@@ -95,6 +110,191 @@ public:
             av_free(frameBufferAligned);
         }
     }
+
+    float speedMul() {
+        return 60.0 / (fps.num / (float)fps.den);
+    }
+    // 初始化圆形
+    void InitializeCircles() {
+        circles.clear();
+        srand(time(NULL));
+        // 创建预定义颜色数组
+        COLORREF colors[] = {
+            // 基本颜色
+            RGB(255, 0, 0),       // 红色
+            RGB(0, 255, 0),       // 绿色
+            RGB(0, 0, 255),       // 蓝色
+            RGB(255, 255, 0),     // 黄色
+            RGB(255, 0, 255),     // 紫色
+            RGB(0, 255, 255),     // 青色
+            RGB(255, 128, 0),     // 橙色
+            RGB(128, 0, 255),     // 靛蓝色
+
+            // 更多鲜艳颜色
+            RGB(255, 105, 180),   // 热粉色
+            RGB(50, 205, 50),     // 酸橙绿
+            RGB(0, 191, 255),     // 深天蓝
+            RGB(255, 20, 147),    // 深粉色
+            RGB(138, 43, 226),    // 蓝紫色
+            RGB(60, 179, 113),    // 中海绿
+            RGB(255, 140, 0),     // 深橙色
+            RGB(123, 104, 238),   // 中石板蓝
+
+            // 柔和颜色
+            RGB(240, 128, 128),   // 浅珊瑚色
+            RGB(152, 251, 152),   // 浅绿色
+            RGB(175, 238, 238),   // 浅蓝色
+            RGB(255, 182, 193),   // 浅粉色
+            RGB(221, 160, 221),   // 浅紫色
+            RGB(255, 228, 181),   // 浅黄色
+            RGB(176, 224, 230),   // 浅青色
+            RGB(245, 222, 179),   // 小麦色
+        };
+
+        for (int i = 0; i < NUM_CIRCLES; i++) {
+            Circle c;
+
+            // 随机半径
+            c.radius = MIN_RADIUS + rand() % (MAX_RADIUS - MIN_RADIUS + 1);
+
+            // 确保圆形在窗口内生成
+            c.x = c.radius + rand() % (width - 2 * c.radius);
+            c.y = c.radius + rand() % (height - barHeight - 2 * c.radius) + barHeight;
+
+            // 随机速度 (速度与半径成反比，避免大圆太快)
+            float speed = 5.0f + (rand() % 100) / 50.0f;
+            speed = speed * speedMul();
+            float angle = (rand() % 360) * 3.1415926535f / 180.0f;
+            c.vx = speed * cos(angle);
+            c.vy = speed * sin(angle);
+
+            // 分配颜色
+            c.color = colors[i % (sizeof(colors) / sizeof(colors[0]))];
+
+            circles.push_back(c);
+        }
+    }
+
+    // 更新圆形位置和碰撞检测
+    void UpdateCircles() {
+        // 更新每个圆形的位置
+        for (auto& circle : circles) {
+            circle.x += circle.vx;
+            circle.y += circle.vy;
+
+            // 边界碰撞检测
+            // 左边界
+            if (circle.x - circle.radius < 0) {
+                circle.x = circle.radius;
+                circle.vx = -circle.vx;
+            }
+            // 右边界
+            if (circle.x + circle.radius > width) {
+                circle.x = width - circle.radius;
+                circle.vx = -circle.vx;
+            }
+            // 上边界
+            if (circle.y - circle.radius < barHeight) {
+                circle.y = circle.radius + barHeight;
+                circle.vy = -circle.vy;
+            }
+            // 下边界
+            if (circle.y + circle.radius > height) {
+                circle.y = height - circle.radius;
+                circle.vy = -circle.vy;
+            }
+        }
+
+        // 圆形之间的碰撞检测
+        for (size_t i = 0; i < circles.size(); i++) {
+            for (size_t j = i + 1; j < circles.size(); j++) {
+                if (CheckCollision(circles[i], circles[j])) {
+                    ResolveCollision(circles[i], circles[j]);
+                }
+            }
+        }
+    }
+
+    // 绘制所有圆形
+    void DrawCircles(HDC hdc) {
+        // 绘制每个圆形
+        for (const auto& circle : circles) {
+            // 创建实心刷子
+            HBRUSH hBrush = CreateSolidBrush(circle.color);
+            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hBrush);
+
+            // 创建空心笔用于边框
+            HPEN hPen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+            HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+
+            // 绘制圆形
+            Ellipse(hdc,
+                static_cast<int>(circle.x - circle.radius),
+                static_cast<int>(circle.y - circle.radius),
+                static_cast<int>(circle.x + circle.radius),
+                static_cast<int>(circle.y + circle.radius));
+
+            // 恢复原有对象并删除创建的GDI对象
+            SelectObject(hdc, hOldBrush);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hBrush);
+            DeleteObject(hPen);
+        }
+
+    }
+
+    // 检查两个圆形是否碰撞
+    bool CheckCollision(const Circle& c1, const Circle& c2) {
+        float dx = c2.x - c1.x;
+        float dy = c2.y - c1.y;
+        float distance = sqrt(dx * dx + dy * dy);
+
+        return distance < (c1.radius + c2.radius);
+    }
+
+    // 处理两个圆形的碰撞反应
+    void ResolveCollision(Circle& c1, Circle& c2) {
+        // 计算碰撞法向量
+        float dx = c2.x - c1.x;
+        float dy = c2.y - c1.y;
+        float distance = sqrt(dx * dx + dy * dy);
+
+        // 避免除以零
+        if (distance == 0) return;
+
+        // 归一化碰撞法向量
+        float nx = dx / distance;
+        float ny = dy / distance;
+
+        // 计算相对速度
+        float dvx = c2.vx - c1.vx;
+        float dvy = c2.vy - c1.vy;
+
+        // 计算相对速度在法向量上的投影
+        float speed = dvx * nx + dvy * ny;
+
+        // 如果圆形正在分离，不处理碰撞
+        if (speed > 0) return;
+
+        // 计算碰撞冲量
+        float impulse = 2.0f * speed / (1.0f / c1.radius + 1.0f / c2.radius);
+
+        // 应用冲量
+        c1.vx += (impulse / c1.radius) * nx;
+        c1.vy += (impulse / c1.radius) * ny;
+        c2.vx -= (impulse / c2.radius) * nx;
+        c2.vy -= (impulse / c2.radius) * ny;
+
+        // 分离圆形，避免粘在一起
+        float overlap = (c1.radius + c2.radius) - distance;
+        float separate = overlap / 2.0f;
+
+        c1.x -= separate * nx;
+        c1.y -= separate * ny;
+        c2.x += separate * nx;
+        c2.y += separate * ny;
+    }
+
 
     // 改变色块颜色（碰撞时调用）
     void ChangeBlockColor() {
@@ -312,12 +512,20 @@ public:
         // 3. 绘制DVD风格移动色块
         DrawDVDBlock(hdc);
 
+        if (style == 0) {
+            UpdateCircles();
+            DrawCircles(hdc);
+        }
+        else if (style == 1) {
+            for (int i = 0; i < 8; i++) {
+                DrawRotatingLine(hdc, lines[i]);
+                lines[i].update();
+            }
+        }
+
         // 4. 绘制帧数和时间戳信息
         DrawInfoText(hdc);
-        for (int i = 0; i < 8; i++) {
-            DrawRotatingLine(hdc, lines[i]);
-            lines[i].update();
-        }
+
 
         memcpy(frameBufferAligned + rowSize * barHeight, frameBuffer + rowSize * barHeight, rowSize * (height - barHeight));
 
@@ -356,6 +564,7 @@ private:
 	int height;
 	int barHeight;
 	int blockSize;
+    int style;
 	AVPixelFormat outPixelFormat;
 	AVRational fps;
     bool drawSMPTE = true;
@@ -385,6 +594,9 @@ private:
 		RGB(0, 255, 255)    // 青色
 	};
 
+    std::vector<Circle> circles;
+
+
 	// SMPTE彩条颜色
 	COLORREF smpteColors[7] = {
 		RGB(191, 191, 191),  // 75% 灰
@@ -396,10 +608,12 @@ private:
 		RGB(0, 0, 191)       // 蓝色
 	};
 
+
+
 };
 
-void* test_card_alloc(int width, int height, AVPixelFormat outPixelFormat, AVRational fps) {
-    return new TestCard(width, height, outPixelFormat, fps);
+void* test_card_alloc(int width, int height, AVPixelFormat outPixelFormat, AVRational fps,int style) {
+    return new TestCard(width, height, outPixelFormat, fps, style);
 }
 void test_card_free(void* p) {
     TestCard* card = (TestCard*)p;
@@ -411,7 +625,7 @@ AVFrame* test_card_draw(void* p) {
 }
 
 int main20() {
-    void* p = test_card_alloc(1920, 1080, AV_PIX_FMT_YUV420P, { 50,1 });
+    void* p = test_card_alloc(1920, 1080, AV_PIX_FMT_YUV420P, { 50,1 },0);
     int count = 0;
     while (1) {
         printf("%d\n", count++);

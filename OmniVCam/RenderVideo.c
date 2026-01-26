@@ -785,7 +785,7 @@ int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDict
 	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int queue_left_count,int queue_right_count)
 {	
 
-	if (name && strcmp(name, "<TESTCARD>") == 0) {
+	if (name && strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
 		return 0;
@@ -1392,7 +1392,7 @@ end:
 
 DWORD test_card_thread(LPVOID p) {
 	inout_context* ctx = (inout_context*)p;
-	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps);
+	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
 	if (!card) return -1;
 	ctx->input_frame_id = av_gettime_relative();
 	AVFrame* f;
@@ -1577,12 +1577,20 @@ int start_read(inout_context* ctx) {
 	HANDLE decode_video_tid = NULL;
 	HANDLE decode_audio_tid = NULL;
 
-	if (ctx->input_name && strcmp(ctx->input_name, "<TESTCARD>") == 0) {
-		ctx->test_card_running = 1;
-		ret = open_thread(&test_card_tid, test_card_thread, ctx);
-		if (ret < 0) goto failed;
-		ctx->test_card_tid = test_card_tid;
-		return 0;
+	if (ctx->input_name) {
+		if (strcmp(ctx->input_name, "<TESTCARD>") == 0 || strcmp(ctx->input_name, "<TESTCARD2>") == 0) {
+			ctx->test_card_running = 1;
+			if(strcmp(ctx->input_name, "<TESTCARD2>") == 0){
+				ctx->test_card_style = 1;
+			}
+			else {
+				ctx->test_card_style = 0;
+			}
+			ret = open_thread(&test_card_tid, test_card_thread, ctx);
+			if (ret < 0) goto failed;
+			ctx->test_card_tid = test_card_tid;
+			return 0;
+		}
 	}
 
 	if (ctx->fmt_ctx)

@@ -137,6 +137,7 @@ typedef struct inout_context {
 	int64_t last_packet_time; //AV_TIME_BASE
 	int64_t timeout;
 	int test_card_running;
+	int test_card_style;
 	int force_exit;
 	int eof;
 
