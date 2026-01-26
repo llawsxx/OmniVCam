@@ -1887,7 +1887,17 @@ HRESULT WINAPI output_thread(LPVOID p)
 	int reset;
 	int audio_in_sync = 0;
 
-	ctx->output_first_start_clock_time = ctx->output_start_clock_time = os_gettime_ns();
+	int64_t current_time = os_gettime_ns();
+	int64_t count;
+	if (ctx->output_video_interval_ns) {
+		count = current_time / ctx->output_video_interval_ns;
+		current_time =  count * ctx->output_video_interval_ns;
+	}
+	else {
+		count = av_rescale_q(current_time, NS_TB, (AVRational) { ctx->output_fps.den, ctx->output_fps.num });
+		current_time = av_rescale_q(count, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, NS_TB);
+	}
+	ctx->output_first_start_clock_time = ctx->output_start_clock_time = current_time;
 
 	while (1)
 	{
