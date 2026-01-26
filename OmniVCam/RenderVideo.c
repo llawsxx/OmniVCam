@@ -372,7 +372,7 @@ void free_thread(HANDLE* thread)
 inout_context* inout_context_alloc(
 	int video_out_width, int video_out_height,int video_out_format,AVRational video_out_fps,
 	int audio_out_sample_rate,int audio_out_format,const AVChannelLayout *audio_out_layout, int audio_out_nb_samples,
-	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count,int use_fixed_frame_interval)
+	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count,int use_fixed_frame_interval,int output_ajust_start_if_delay_over)
 {
 	inout_context* ctx = (inout_context*)av_mallocz(sizeof(inout_context));
 	AVAudioFifo* audio_fifo = NULL;
@@ -415,6 +415,7 @@ inout_context* inout_context_alloc(
 	ctx->output_fps = video_out_fps;
 	ctx->output_time_per_video_frame = av_rescale_q_rnd(1, (AVRational) { video_out_fps.den, video_out_fps.num }, UNIVERSAL_TB, AV_ROUND_UP);
 	ctx->output_video_interval_ns = use_fixed_frame_interval ? util_mul_div64(1000000000ULL, video_out_fps.den, video_out_fps.num) : 0;
+	ctx->output_adjust_start_time_if_delay_count_over = output_ajust_start_if_delay_over < 0 ? 0 : output_ajust_start_if_delay_over;
 	ctx->output_audio_sample_rate = audio_out_sample_rate;
 	ctx->output_audio_format = audio_out_format;
 	ctx->output_audio_nb_samples = audio_out_nb_samples;
@@ -1641,15 +1642,15 @@ void control_output_speed(inout_context* ctx)
 		int64_t count;
 		if (ctx->output_video_interval_ns) {
 			count = (new_output_start_clock_time - (ctx->output_first_start_clock_time + ctx->output_start_shift_time)) / ctx->output_video_interval_ns;
-			if(count > 0)
+			if(count > ctx->output_adjust_start_time_if_delay_count_over)
 				ctx->output_start_clock_time = ctx->output_first_start_clock_time + count * ctx->output_video_interval_ns;
 		}
 		else {
 			count = av_rescale_q(new_output_start_clock_time - (ctx->output_first_start_clock_time + ctx->output_start_shift_time), NS_TB, (AVRational) { ctx->output_fps.den, ctx->output_fps.num });
-			if (count > 0)
+			if (count > ctx->output_adjust_start_time_if_delay_count_over)
 				ctx->output_start_clock_time = ctx->output_first_start_clock_time + av_rescale_q(count, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, NS_TB);
 		}
-		if(count > 0)
+		if(count > ctx->output_adjust_start_time_if_delay_count_over)
 			printf("reset output_start_clock_time %I64d\n",ctx->output_start_clock_time);
 	}
 }
@@ -2267,6 +2268,7 @@ DWORD main_thread(LPVOID p) {
 	char* index_file_name = NULL;
 	char* output_start_shift_file_name = NULL;
 	int use_fixed_frame_interval = 0;
+	int output_ajust_start_if_delay_over = 0;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
 	if (!table) return -1;
@@ -2312,6 +2314,7 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "packet_queue_size", FALSE)) packet_queue_size = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "timeout", FALSE)) timeout = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "use_fixed_frame_interval", FALSE)) use_fixed_frame_interval = atoi(buf);
+	if (buf = get_paremeter_table_content(table, "config", "ajust_start_time_if_delay_over", FALSE)) output_ajust_start_if_delay_over = atoi(buf);
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
 
@@ -2320,7 +2323,7 @@ DWORD main_thread(LPVOID p) {
 
 	AVChannelLayout ch_layout = { 0 };
 	av_channel_layout_default(&ch_layout, opts->audio_out_channels);
-	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, 1024, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval);
+	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, 1024, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over);
 	av_channel_layout_uninit(&ch_layout);
 	if (!ctx) {
 		goto end;
@@ -2742,7 +2745,7 @@ int main11() {
 	while (1) {
 		AVChannelLayout ch_layout = { 0 };
 		av_channel_layout_default(&ch_layout, 2);
-		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1);
+		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0);
 		av_channel_layout_uninit(&ch_layout);
 		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1);
 		inout_context_reset_input(ctx);

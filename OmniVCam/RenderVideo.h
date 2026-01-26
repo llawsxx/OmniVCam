@@ -153,6 +153,7 @@ typedef struct inout_context {
 	int64_t output_video_pts_time;
 	int64_t output_next_target_clock_time_ns;
 	int64_t output_video_interval_ns; //为了适配OBS的下一帧时间计算方法
+	int64_t output_adjust_start_time_if_delay_count_over; //输出慢了多少个视频帧后才调整output_start_clock_time
 	int64_t output_audio_pts_time;
 	int64_t output_frame_count;
 	int64_t output_sample_count;
