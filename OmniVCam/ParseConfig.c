@@ -29,7 +29,6 @@ int play_list_add(play_list_context *list_ctx,char *key,char *value,AVDictionary
 		node->previous = node;
 		node->next = node;
 		list_ctx->head = node;
-		list_ctx->current = node;
 		list_ctx->rear = node;
 	}
 	else {
@@ -354,21 +353,27 @@ play_list* play_list_search(play_list_context *list_ctx,char* value)//搜索value
 {
 	if (!value || !list_ctx || !list_ctx->head)
 	{
-		//printf("value is NULL!");
 		return NULL;
 	}
 	play_list* current_list = list_ctx->current;
-	play_list* temp_list = list_ctx->current;//从当前的下一个开始找
+	play_list* temp_list = list_ctx->current;
 
+	if (!current_list) {
+		current_list = list_ctx->head;
+		temp_list = list_ctx->head;
+	}
 
-	do {
+	while (1) {
 		temp_list = temp_list->next;
 		if (strstr(temp_list->value, value))
 		{
 			list_ctx->current = temp_list;
 			return temp_list;
 		}
-	} while (temp_list != current_list);
+
+		if (temp_list == current_list)
+			break;
+	}
 
 	return NULL;
 }
@@ -415,10 +420,23 @@ int update_play_list_from_file(play_list_context *list_ctx,char *filename)
 
 play_list* play_list_seek(play_list_context* list_ctx, int seek_index)
 {
-	if (!list_ctx) return NULL;
+	if (!list_ctx || !list_ctx->head)
+		return NULL;
 	
 	play_list* temp_node = list_ctx->current;
-	if (!temp_node) return NULL;
+	if (!temp_node) {
+		if (seek_index > 0) {
+			temp_node = list_ctx->head;
+			seek_index--;
+		}
+		else if (seek_index < 0) {
+			temp_node = list_ctx->rear;
+			seek_index++;
+		}
+		else {
+			temp_node = list_ctx->head;
+		}
+	}
 	int i = seek_index;
 	if (i < 0)
 	{
