@@ -1236,6 +1236,47 @@ failed:
 }
 
 
+BOOL avframe_is_data_continuous(AVFrame* frame)
+{
+	const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(frame->format);
+	int ret;
+	int linesizes[4] = { 0 };
+	ptrdiff_t linesizes2[4] = { 0 };
+	size_t sizes[4] = { 0 };
+	uint8_t* current_pointer;
+
+	if (!desc)
+		return FALSE;
+
+	ret = av_image_fill_linesizes(linesizes, frame->format,
+		frame->width);
+	if (ret < 0)
+		return FALSE;
+
+	for (int i = 0; i < 4; i++)
+		linesizes2[i] = linesizes[i];
+
+	if ((ret = av_image_fill_plane_sizes(sizes, frame->format,
+		frame->height, linesizes2)) < 0)
+		return FALSE;
+
+	for (int i = 0; i < 4; i++) {
+		if (linesizes[i] != frame->linesize[i])
+			return FALSE;
+	}
+	
+	current_pointer = frame->data[0];
+	for (int i = 0; i < 3; i++) {
+		if (!frame->data[i + 1]) break;
+		current_pointer += sizes[i];
+		if (current_pointer != frame->data[i + 1]) {
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 
 static void flip_frame(AVFrame* frame)
 {
@@ -1245,40 +1286,47 @@ static void flip_frame(AVFrame* frame)
 
 int fill_output_video(inout_context* ctx, AVFrame* frame)
 {
-	int ret = 0,filped = 0,use_point = 0;
+	int ret = 0, filp = 0,use_point = 0;
 	AVFrame *f = av_frame_alloc();
-	
-	//uint8_t* data[4];
-	//int linesize[4];
-	//if (av_image_alloc(data, linesize, ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, 1) < 0) {
-	//	ret = -1;
-	//	goto end;
-	//}
-	f->width = ctx->output_frame_width;
-	f->height = ctx->output_frame_height;
-	f->format = ctx->output_frame_format;
-	if (frame->width * frame->height > 1920 * 1080) {
-		use_point = 1;
-	}
-	if (get_video_buffer(f) < 0) {
+	if (!f) {
 		goto end;
 	}
 
-	if (f->format == AV_PIX_FMT_BGR24 || f->format == AV_PIX_FMT_0RGB32) {
-		flip_frame(f);
-		filped = 1;
+	f->width = ctx->output_frame_width;
+	f->height = ctx->output_frame_height;
+	f->format = ctx->output_frame_format;
+
+	if (f->width * f->height > 1920 * 1080) {
+		use_point = 1;
 	}
 
-	if (frame->width == ctx->output_frame_width && frame->height == ctx->output_frame_height &&
-		frame->format == ctx->output_frame_format)
-	{
-		av_frame_copy(f, frame);
-		av_frame_copy_props(f, frame);
+	if (f->format == AV_PIX_FMT_BGR24 || f->format == AV_PIX_FMT_0RGB32) {
+		filp = 1;
+	}
 
-		if (filped) {
-			flip_frame(f);
-			filped = 0;
+	if (frame->width == f->width && frame->height == f->height &&
+		frame->format == f->format)
+	{
+		if (!filp && avframe_is_data_continuous(frame)) {
+			if ((ret = av_frame_ref(f, frame)) < 0) {
+				goto end;
+			}
 		}
+		else {
+			if ((ret = get_video_buffer(f)) < 0) {
+				goto end;
+			}
+
+			if(filp)
+				flip_frame(f);
+
+			av_frame_copy(f, frame);
+
+			if (filp)
+				flip_frame(f);
+		}
+
+		av_frame_copy_props(f, frame);
 		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
@@ -1293,16 +1341,22 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		ret = -1;
 		goto end;
 	}
+	if ((ret = get_video_buffer(f)) < 0) {
+		goto end;
+	}
+
+	if (filp) {
+		flip_frame(f);
+	}
+
 	sws_scale(ctx->sws_ctx, frame->data, frame->linesize, 0, frame->height,
 		f->data, f->linesize);
 
-	av_frame_copy_props(f, frame);
-
-	if (filped) {
+	if (filp) {
 		flip_frame(f);
-		filped = 0;
 	}
 
+	av_frame_copy_props(f, frame);
 	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
