@@ -25,8 +25,7 @@ extern "C" {
 extern AVRational UNIVERSAL_TB;
 extern AVRational DSHOW_TB;
 #define ARRAY_ELEMS(a) (sizeof(a)/sizeof(a[0]))
-//#define OMNI_DEBUG 0
-#ifdef OMNI_DEBUG
+#ifdef DEBUG
 #define DEBUG_LOG(format, ...) printf("%s ",__func__); printf(format, ##__VA_ARGS__);
 #else
 #define DEBUG_LOG(format, ...) ;

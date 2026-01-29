@@ -1697,7 +1697,7 @@ void control_output_speed(inout_context* ctx)
 	int64_t start_clock_time_with_shift = ctx->output_start_clock_time + ctx->output_start_shift_time;
 	if (os_sleepto_ns(ctx->output_next_target_clock_time_ns + start_clock_time_with_shift))
 	{
-		printf("diff_after_sleep: %I64d ns\n", (ctx->output_next_target_clock_time_ns - ((int64_t)os_gettime_ns() - start_clock_time_with_shift)));
+		DEBUG_LOG("diff_after_sleep: %I64d ns\n", (ctx->output_next_target_clock_time_ns - ((int64_t)os_gettime_ns() - start_clock_time_with_shift)));
 	}
 	else {
 		int64_t new_output_start_clock_time = (int64_t)os_gettime_ns() - ctx->output_next_target_clock_time_ns;
