@@ -1,11 +1,10 @@
 #include "OmniVideoPin.h"
-#include <uuids.h>
-
+#include "OmniMediaSample.h"
 
 OmniVideoPin::OmniVideoPin(OmniVCam* pFilter)
     : m_pFilter(pFilter), m_refCount(1), m_connectedPin(NULL),
     m_allocator(NULL), m_streaming(false), m_startTime(0),
-    m_currentFpsNumerator(30), m_currentFpsDenominator(1),m_currentWidth(1920),m_currentHeight(1080),m_currentFormat(AV_PIX_FMT_BGR24), m_frameCount(0) {
+    m_currentFpsNumerator(60), m_currentFpsDenominator(1),m_currentWidth(1920),m_currentHeight(1080),m_currentFormat(AV_PIX_FMT_BGR24), m_frameCount(0) {
     InitMediaType();
     DEBUG_LOG_REF()
 }
@@ -49,7 +48,7 @@ void OmniVideoPin::InitMediaType() {
     VIDEOINFOHEADER* pvi = (VIDEOINFOHEADER*)CoTaskMemAlloc(sizeof(VIDEOINFOHEADER));
     if (pvi) {
         ZeroMemory(pvi, sizeof(VIDEOINFOHEADER));
-        pvi->AvgTimePerFrame = 333333; // 30 fps
+        pvi->AvgTimePerFrame = 166666; // 60 fps
         pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         pvi->bmiHeader.biWidth = 1920;
         pvi->bmiHeader.biHeight = 1080;
@@ -636,7 +635,7 @@ REFERENCE_TIME OmniVideoPin::GetFrameDuration() {
     return CalculateFrameDuration();
 }
 
-HRESULT OmniVideoPin::PushFrame(BYTE* data, long size, REFERENCE_TIME customStartTime) {
+HRESULT OmniVideoPin::PushFrame(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime) {
     HRESULT hr = S_OK;
     if (!data || size <= 0) return E_INVALIDARG;
     ResetEvent(m_pFilter->m_noProcess[0]);
@@ -652,40 +651,27 @@ HRESULT OmniVideoPin::PushFrame(BYTE* data, long size, REFERENCE_TIME customStar
         hr = S_FALSE;
         goto end;
     }
+    pSample = new OmniMediaSample(data, size, frame);
+    if (pSample) {
+        // 使用精确的帧率计算时间戳
+        REFERENCE_TIME frameDuration = CalculateFrameDuration();
+        REFERENCE_TIME startTime;
 
-    hr = m_allocator->GetBuffer(&pSample, NULL, NULL, 0);
-
-    if (SUCCEEDED(hr)) {
-
-        BYTE* pBuffer = NULL;
-        hr = pSample->GetPointer(&pBuffer);
-        if (SUCCEEDED(hr)) {
-            // 复制数据
-            long sampleSize = pSample->GetSize();
-            long copySize = min(size, sampleSize);
-            memcpy(pBuffer, data, copySize);
-            pSample->SetActualDataLength(copySize);
-
-            // 使用精确的帧率计算时间戳
-            REFERENCE_TIME frameDuration = CalculateFrameDuration();
-            REFERENCE_TIME startTime;
-
-            if (customStartTime != -1) {
-                startTime = customStartTime;
-            }
-            else {
-                startTime = CalculateFrameTime(m_frameCount);
-            }
-            REFERENCE_TIME endTime = startTime + frameDuration;
-
-            pSample->SetTime(&startTime, &endTime);
-            pSample->SetSyncPoint(TRUE);
-            // 更新帧计数器
-            m_frameCount++;
-            //{char buf[512]; sprintf(buf,"Receive 1 %I64d\n", av_gettime_relative()); FILE *fp1 = fopen("debbug.txt","a+");fwrite(buf,1,strlen(buf),fp1); fclose(fp1); }
-            hr = pInputPin->Receive(pSample);
-            //{ char buf[512]; sprintf(buf, "Receive 2 %I64d\n",av_gettime_relative()); FILE* fp1 = fopen("debbug.txt", "a+"); fwrite(buf, 1, strlen(buf), fp1); fclose(fp1); }
+        if (customStartTime != -1) {
+            startTime = customStartTime;
         }
+        else {
+            startTime = CalculateFrameTime(m_frameCount);
+        }
+        REFERENCE_TIME endTime = startTime + frameDuration;
+
+        pSample->SetTime(&startTime, &endTime);
+        pSample->SetSyncPoint(TRUE);
+        // 更新帧计数器
+        m_frameCount++;
+        //{char buf[512]; sprintf(buf,"Receive 1 %I64d\n", av_gettime_relative()); FILE *fp1 = fopen("debbug.txt","a+");fwrite(buf,1,strlen(buf),fp1); fclose(fp1); }
+        hr = pInputPin->Receive(pSample);
+        //{ char buf[512]; sprintf(buf, "Receive 2 %I64d\n",av_gettime_relative()); FILE* fp1 = fopen("debbug.txt", "a+"); fwrite(buf, 1, strlen(buf), fp1); fclose(fp1); }
         pSample->Release();
     }
 end:

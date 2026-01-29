@@ -56,7 +56,7 @@ public:
     STDMETHODIMP DoAllocation();
 
     HRESULT SetCustomFormat(const OmniVideoFormat& format);
-    HRESULT PushFrame(BYTE* data, long size, REFERENCE_TIME customStartTime);
+    HRESULT PushFrame(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime);
     HRESULT Stop();
     HRESULT Pause();
     HRESULT Continue();

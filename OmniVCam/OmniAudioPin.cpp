@@ -1,6 +1,5 @@
 #include "OmniAudioPin.h"
-#include <uuids.h>
-
+#include "OmniMediaSample.h"
 
 OmniAudioPin::OmniAudioPin(OmniVCam* pFilter)
     : m_pFilter(pFilter), m_refCount(1), m_connectedPin(NULL),
@@ -441,7 +440,7 @@ HRESULT OmniAudioPin::SetCustomFormat(const OmniAudioFormat& format) {
     return S_OK;
 }
 
-HRESULT OmniAudioPin::PushSample(BYTE* data, long size, REFERENCE_TIME customStartTime) {
+HRESULT OmniAudioPin::PushSample(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime) {
     HRESULT hr = S_OK;
     if (!data || size <= 0) return E_INVALIDARG;
     ResetEvent(m_pFilter->m_noProcess[1]);
@@ -457,32 +456,25 @@ HRESULT OmniAudioPin::PushSample(BYTE* data, long size, REFERENCE_TIME customSta
         hr = S_FALSE;
         goto end;
     }
-
-    if (SUCCEEDED(m_allocator->GetBuffer(&pSample, NULL, NULL, 0))) {
-        BYTE* pBuffer;
-        if (SUCCEEDED(pSample->GetPointer(&pBuffer))) {
-            // Calculate duration based on audio format
-            WAVEFORMATEX* pwfx = (WAVEFORMATEX*)m_mediaType.pbFormat;
-            if (pwfx && pwfx->nAvgBytesPerSec > 0) {
-                long bytesToCopy = min(size, pSample->GetSize());
-                memcpy(pBuffer, data, bytesToCopy);
-                pSample->SetActualDataLength(bytesToCopy);
-
-                // Calculate timestamps
-                REFERENCE_TIME duration = (REFERENCE_TIME)bytesToCopy * 10000000 / pwfx->nAvgBytesPerSec;
-                REFERENCE_TIME start;
-                if (customStartTime != -1) {
-                    start = customStartTime;
-                }
-                else {
-                    start = m_startTime;
-                }
-                REFERENCE_TIME end = start + duration;
-                pSample->SetTime(&start, &end);
-                pSample->SetSyncPoint(TRUE);
-                m_startTime = end;
-                hr = pInputPin->Receive(pSample);
+    pSample = new OmniMediaSample(data, size, frame);
+    if (pSample) {
+        WAVEFORMATEX* pwfx = (WAVEFORMATEX*)m_mediaType.pbFormat;
+        if (pwfx && pwfx->nAvgBytesPerSec > 0) {
+            long bytesToCopy = min(size, pSample->GetSize());
+            // Calculate timestamps
+            REFERENCE_TIME duration = (REFERENCE_TIME)bytesToCopy * 10000000 / pwfx->nAvgBytesPerSec;
+            REFERENCE_TIME start;
+            if (customStartTime != -1) {
+                start = customStartTime;
             }
+            else {
+                start = m_startTime;
+            }
+            REFERENCE_TIME end = start + duration;
+            pSample->SetTime(&start, &end);
+            pSample->SetSyncPoint(TRUE);
+            m_startTime = end;
+            hr = pInputPin->Receive(pSample);
         }
         pSample->Release();
     }

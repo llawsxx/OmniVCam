@@ -7,7 +7,7 @@ long g_cObjects = 0;
 long g_cLocks = 0;
 
 extern "C" {
-    static void PushVideoFrameHelper(void* obj, AVFrame* frame);
+    static void PushVideoFrameHelper(void *obj, AVFrame* frame);
     static void PushAudioFrameHelper(void *obj, AVFrame* frame);
 }
 
@@ -15,7 +15,7 @@ static void PushVideoFrameHelper(void* obj, AVFrame* frame) {
     OmniVCam* vcam = static_cast<OmniVCam*>(obj);
     int size = av_image_get_buffer_size((enum AVPixelFormat)frame->format, frame->width, frame->height, 1);
     REFERENCE_TIME customStartTime =  av_rescale_q(frame->pts, UNIVERSAL_TB, DSHOW_TB);
-    vcam->PushVideoFrame(frame->data[0], size, customStartTime);
+    vcam->PushVideoFrame(frame, frame->data[0], size, customStartTime);
 }
 
 
@@ -23,7 +23,7 @@ static void PushAudioFrameHelper(void* obj, AVFrame* frame) {
     OmniVCam* vcam = static_cast<OmniVCam*>(obj);
     int size = av_samples_get_buffer_size(NULL, frame->ch_layout.nb_channels,frame->nb_samples,(enum AVSampleFormat) frame->format, 1);
     REFERENCE_TIME customStartTime = av_rescale_q(frame->pts, UNIVERSAL_TB, DSHOW_TB);
-    vcam->PushAudioSample(frame->data[0], size, customStartTime);
+    vcam->PushAudioSample(frame, frame->data[0], size, customStartTime);
 }
 
 
@@ -689,12 +689,12 @@ HRESULT OmniVCam::SetAudioFormat(const OmniAudioFormat& format) {
     return m_audioPin->SetCustomFormat(format);
 }
 
-HRESULT OmniVCam::PushVideoFrame(BYTE* data, long size, REFERENCE_TIME customStartTime) {
-    return m_videoPin->PushFrame(data, size, customStartTime);
+HRESULT OmniVCam::PushVideoFrame(AVFrame *frame, BYTE* data, long size, REFERENCE_TIME customStartTime) {
+    return m_videoPin->PushFrame(frame, data, size, customStartTime);
 }
 
-HRESULT OmniVCam::PushAudioSample(BYTE* data, long size, REFERENCE_TIME customStartTime) {
-    return m_audioPin->PushSample(data, size, customStartTime);
+HRESULT OmniVCam::PushAudioSample(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime) {
+    return m_audioPin->PushSample(frame,data, size, customStartTime);
 }
 
 

@@ -1748,6 +1748,8 @@ int audio_fifo_read_frame(inout_context* ctx, AVFrame* frame)
 	int64_t fifo_total_time;
 	int64_t fifo_size = av_audio_fifo_size(ctx->output_audio_fifo);
 
+	ret = av_frame_make_writable(frame);
+	if (ret < 0) return -1;
 	ret = av_audio_fifo_read(ctx->output_audio_fifo, frame->data, frame->nb_samples);
 	if (ret < 0) return -1;
 
@@ -2436,6 +2438,7 @@ DWORD main_thread(LPVOID p) {
 					printf("play_list updated!\n");
 					if (reopen_at_list_update || ctx->test_card_running) {
 						stop_read(ctx, 1);
+						inout_context_reset_input(ctx);
 					}
 				}
 			}

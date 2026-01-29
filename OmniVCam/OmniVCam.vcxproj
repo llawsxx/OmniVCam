@@ -31,6 +31,7 @@
     <ClInclude Include="dshow_grabber.h" />
     <ClInclude Include="global.h" />
     <ClInclude Include="OmniAudioPin.h" />
+    <ClInclude Include="OmniMediaSample.h" />
     <ClInclude Include="OmniVcam.h" />
     <ClInclude Include="OmniVideoPin.h" />
     <ClInclude Include="ParseConfig.h" />
@@ -43,6 +44,7 @@
     <ClCompile Include="clock.c" />
     <ClCompile Include="dshow_grabber.cpp" />
     <ClCompile Include="OmniAudioPin.cpp" />
+    <ClCompile Include="OmniMediaSample.cpp" />
     <ClCompile Include="OmniVCam.cpp" />
     <ClCompile Include="OmniVideoPin.cpp" />
     <ClCompile Include="ParseConfig.c" />

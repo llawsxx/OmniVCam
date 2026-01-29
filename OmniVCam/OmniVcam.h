@@ -210,9 +210,9 @@ public:
 
     HRESULT SetAudioFormat(const OmniAudioFormat& format);
 
-    HRESULT PushVideoFrame(BYTE* data, long size, REFERENCE_TIME customStartTime);
+    HRESULT PushVideoFrame(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime);
 
-    HRESULT PushAudioSample(BYTE* data, long size, REFERENCE_TIME customStartTime);
+    HRESULT PushAudioSample(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime);
 
     CRITICAL_SECTION m_cs;
     IFilterGraph* m_graph;

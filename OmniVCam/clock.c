@@ -39,16 +39,8 @@ BOOL os_sleepto_ns(uint64_t time_target)
 	const BOOL stall = count.QuadPart < count_target;
 	if (stall) {
 		const DWORD milliseconds = (DWORD)(((count_target - count.QuadPart) * 1000.0) / freq);
-		if (milliseconds > 1)
-			Sleep(milliseconds - 1);
-
-		for (;;) {
-			QueryPerformanceCounter(&count);
-			if (count.QuadPart >= count_target)
-				break;
-
-			YieldProcessor();
-		}
+		if (milliseconds > 0)
+			Sleep(milliseconds);
 	}
 
 	return stall;

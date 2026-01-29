@@ -55,7 +55,7 @@ public:
         DWORD* pTypeSupport) override;
 
     HRESULT SetCustomFormat(const OmniAudioFormat& format);
-    HRESULT PushSample(BYTE* data, long size, REFERENCE_TIME customStartTime);
+    HRESULT PushSample(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime);
     HRESULT Stop();
     HRESULT Pause();
     HRESULT Continue();
