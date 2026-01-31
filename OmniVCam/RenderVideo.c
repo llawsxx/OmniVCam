@@ -6,6 +6,19 @@
 #include "video_frame.h"
 #include "global.h"
 
+void frame_queue_wait_empty(frame_queue* q,int64_t timeout) {
+	int64_t start_time = av_gettime_relative();
+	EnterCriticalSection(&q->mutex);
+	while (q->count > 0)
+	{
+		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
+		if (av_gettime_relative() - start_time >= timeout) {
+			break;
+		}
+	}
+	LeaveCriticalSection(&q->mutex);
+}
+
 int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int *exit) {
 	int64_t start_time = av_gettime_relative();
 	int ret = 0;
@@ -421,6 +434,9 @@ inout_context* inout_context_alloc(
 	ctx->output_audio_nb_samples = audio_out_nb_samples;
 	ctx->output_time_per_audio_frame = av_rescale_q_rnd(audio_out_nb_samples, (AVRational) { 1, audio_out_sample_rate }, UNIVERSAL_TB, AV_ROUND_UP);
 	ctx->output_audio_fifo = audio_fifo;
+	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+	ctx->output_last_audio_nb_samples = 0;
+	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
@@ -495,7 +511,7 @@ void inout_context_free(inout_context** ctx)
 }
 
 
-void inout_context_reset_input(inout_context* ctx)
+void inout_context_reset_input(inout_context* ctx,int wait_queue_empty)
 {
 	if (!ctx) return;
 	free_thread(ctx->reading_tid);
@@ -518,6 +534,12 @@ void inout_context_reset_input(inout_context* ctx)
 		packet_queue_clean(&ctx->queues[i]);
 	}
 
+	if (wait_queue_empty) {
+		for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
+			frame_queue_wait_empty(ctx->frame_queues[i], ctx->timeout);
+		}
+	}
+
 	EnterCriticalSection(&ctx->input_change_mutex);
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
 		frame_queue_clean(ctx->frame_queues[i]);
@@ -525,6 +547,10 @@ void inout_context_reset_input(inout_context* ctx)
 	}
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+	ctx->output_last_audio_nb_samples = 0;
+	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+	av_audio_fifo_reset(ctx->output_audio_fifo);
 	LeaveCriticalSection(&ctx->input_change_mutex);
 
 	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++)
@@ -785,7 +811,7 @@ int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDict
 	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int queue_left_count,int queue_right_count)
 {	
 
-	if (name && strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0) {
+	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
 		return 0;
@@ -1792,7 +1818,6 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	if (is_video && ctx->output_current_video_frame_id < ctx->output_current_audio_frame_id) return 0;
 	if (!is_video && ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
 	int ret = 0;
-	EnterCriticalSection(&ctx->input_change_mutex);
 	int64_t output_pts_time = (is_video ? ctx->output_video_pts_time : ctx->output_audio_pts_time);
 	if (ctx->output_time_offset == AV_NOPTS_VALUE)
 	{
@@ -1815,11 +1840,10 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 		}
 	}
 end:
-	LeaveCriticalSection(&ctx->input_change_mutex);
 	return ret;
 }
 
-int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快了，0：慢了(或者必须解码)
+int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快了，0：慢了(或者必须取新帧)
 {
 	if (timestamp == AV_NOPTS_VALUE || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
 
@@ -1830,12 +1854,21 @@ int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快
 	int64_t interval = (is_video ? ctx->output_time_per_video_frame : ctx->output_time_per_audio_frame);
 
 	int64_t diff = timestamp + ctx->output_time_offset - output_pts_time;
-	if (diff >= -0.75 * interval && diff < 0.75 * interval) //假如刚好有diff是-0.7501 * interval，那么会return 0，假如输入帧率和输出帧率相等，读取的下一帧diff就会是0.2499 * interval左右，允许有0.5001 * interval的抖动
+	if (diff >= -0.75 * interval && diff < 0.75 * interval) {
+		if(!is_video)
+			ctx->output_last_audio_in_sync_time = output_pts_time;
 		return 1;
-	else if (diff > 0)
+	}
+	else if(!is_video && ctx->output_last_audio_in_sync_time != AV_NOPTS_VALUE && output_pts_time - ctx->output_last_audio_in_sync_time <= 200 * 1000){ //允许音频时间戳不稳定
+		return 1;
+	}
+	else if (diff > 0) {
 		return 2;
+	}
 	else
+	{
 		return 0;
+	}
 }
 
 
@@ -1896,27 +1929,21 @@ HRESULT WINAPI output_thread(LPVOID p)
 	AVFrame* final_video_frame = av_frame_alloc();
 	AVFrame* final_audio_frame = av_frame_alloc();
 	AVFrame* fifo_out_audio_frame = av_frame_alloc();
-	AVFrame* empty_video_frame = av_frame_alloc();
 	AVFrame* empty_audio_frame = av_frame_alloc();
 
-	if (!video_frame || !audio_frame || !final_video_frame || !empty_video_frame || !empty_audio_frame || !final_audio_frame || !fifo_out_audio_frame) {
+	if (!video_frame || !audio_frame || !final_video_frame || !empty_audio_frame || !final_audio_frame || !fifo_out_audio_frame) {
 		ret = -1;
 		goto end;
 	}
 
-	empty_video_frame->width = ctx->output_frame_width;
-	empty_video_frame->height = ctx->output_frame_height;
-	empty_video_frame->format = ctx->output_frame_format;
+	final_video_frame->width = ctx->output_frame_width;
+	final_video_frame->height = ctx->output_frame_height;
+	final_video_frame->format = ctx->output_frame_format;
 
 	//TODO 填充彩条
-	if (get_video_buffer(empty_video_frame) < 0)
+	if (get_video_buffer(final_video_frame) < 0)
 	{
 		printf("get_video_buffer failed!\n");
-		ret = -1;
-		goto end;
-	}
-	if (av_frame_ref(final_video_frame, empty_video_frame) < 0) {
-		printf("av_frame_ref failed!\n");
 		ret = -1;
 		goto end;
 	}
@@ -1947,9 +1974,9 @@ HRESULT WINAPI output_thread(LPVOID p)
 	int64_t last_video_sync_diff = AV_NOPTS_VALUE;
 	int64_t last_audio_sync_diff = AV_NOPTS_VALUE;
 
-	int64_t last_in_sync_audio_pts = AV_NOPTS_VALUE;
 	int reset;
 	int audio_in_sync = 0;
+	int in_sync_result = 0;
 
 	int64_t current_time = os_gettime_ns();
 	int64_t count;
@@ -1967,24 +1994,25 @@ HRESULT WINAPI output_thread(LPVOID p)
 	{
 		if (ctx->output_exit) break;
 		control_output_speed(ctx);//每编码完一轮音频+一帧视频就会进到这里看有没有快了，快了就sleep
+		EnterCriticalSection(&ctx->input_change_mutex);
 
 		while (ctx->output_audio_pts_time <= ctx->output_video_pts_time)
 		{
 		audio_loop:
 			audio_in_sync = 0;
-			while (is_in_sync(ctx, fifo_out_audio_frame->pts, 0) == 0) {
+			while (1) {
+				in_sync_result = is_in_sync(ctx, fifo_out_audio_frame->pts, 0);
+				if (in_sync_result != 0) break;
 				while (!is_audio_fifo_full_fill(ctx))
 				{
-					EnterCriticalSection(&ctx->input_change_mutex);
 					ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, &reset);
-					LeaveCriticalSection(&ctx->input_change_mutex);
 
 					if (reset) {
 						ctx->output_time_offset = AV_NOPTS_VALUE;
 					}
 
 					if (ctx->output_exit) {
-						goto end;
+						goto unlock;
 					}
 					if (ret >= 0)
 					{
@@ -2005,9 +2033,8 @@ HRESULT WINAPI output_thread(LPVOID p)
 				}
 			}
 
-			if (is_in_sync(ctx, fifo_out_audio_frame->pts, 0) == 1 && (last_in_sync_audio_pts == AV_NOPTS_VALUE || last_in_sync_audio_pts != fifo_out_audio_frame->pts)) {
+			if (in_sync_result == 1) {
 				audio_in_sync = 1;
-				last_in_sync_audio_pts = fifo_out_audio_frame->pts;
 			}
 			else {
 				if (update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 1))
@@ -2015,29 +2042,34 @@ HRESULT WINAPI output_thread(LPVOID p)
 			}
 
 		audio_output:
-			av_frame_unref(final_audio_frame);
 			if (audio_in_sync) {
-				av_frame_ref(final_audio_frame, fifo_out_audio_frame);
+				fifo_out_audio_frame->pts = AV_NOPTS_VALUE;
+				if (av_frame_ref(final_audio_frame, fifo_out_audio_frame) < 0) {
+					continue;
+				}
 			}
 			else {
-				av_frame_ref(final_audio_frame, empty_audio_frame);
+				if (av_frame_ref(final_audio_frame, empty_audio_frame) < 0) {
+					continue;
+				}
 			}
 			output_audio(ctx, final_audio_frame);
+			av_frame_unref(final_audio_frame);
 		}
 
 	video_loop:
-		while (is_in_sync(ctx, video_frame->pts,1) == 0)//视频慢了或者必须dequeue(比如音频帧已经是下一个文件，或者视频帧是AV_NOPTS_VALUE)
+		while (1)
 		{
-			EnterCriticalSection(&ctx->input_change_mutex);
+			in_sync_result = is_in_sync(ctx, video_frame->pts, 1);
+			if (in_sync_result != 0) break;
 			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id, &reset);
-			LeaveCriticalSection(&ctx->input_change_mutex);
 
 			if (reset) {
 				ctx->output_time_offset = AV_NOPTS_VALUE;
 			}
 
 			if (ctx->output_exit) {
-				goto end;
+				goto unlock;
 			}
 			if (ret >= 0)
 			{
@@ -2054,12 +2086,10 @@ HRESULT WINAPI output_thread(LPVOID p)
 			//printf("video deq\n");
 		}
 
-		if (is_in_sync(ctx, video_frame->pts, 1) == 1)
+		if (in_sync_result == 1)
 		{
-			//printf("v: %I64d\n", video_frame->pts);
 			av_frame_unref(final_video_frame);
-			av_frame_ref(final_video_frame, video_frame);
-			//printf("ref delay: %I64d\n",av_gettime_relative() - ctx->output_last_clock_time);
+			av_frame_move_ref(final_video_frame, video_frame);
 		}
 		else {
 			if (update_offset_if_needed(ctx, video_frame->pts, 1))
@@ -2068,13 +2098,15 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 	video_output:
 		output_video(ctx, final_video_frame);
+
+	unlock:
+		LeaveCriticalSection(&ctx->input_change_mutex);
 	}
 
 end:
 	av_frame_free(&video_frame);
 	av_frame_free(&audio_frame);
 	av_frame_free(&final_video_frame);
-	av_frame_free(&empty_video_frame);
 	av_frame_free(&empty_audio_frame);
 	av_frame_free(&fifo_out_audio_frame);
 	av_frame_free(&final_audio_frame);
@@ -2438,7 +2470,7 @@ DWORD main_thread(LPVOID p) {
 					printf("play_list updated!\n");
 					if (reopen_at_list_update || ctx->test_card_running) {
 						stop_read(ctx, 1);
-						inout_context_reset_input(ctx);
+						inout_context_reset_input(ctx,0);
 					}
 				}
 			}
@@ -2488,6 +2520,41 @@ DWORD main_thread(LPVOID p) {
 				}
 			}
 		}
+
+		if ((ret = is_file_changed(index_file_name, last_indexs_mtime)) > 0)
+		{
+			last_indexs_mtime = ret;
+			if (set_stream_index_from_file(ctx, index_file_name) >= 0) {
+				printf("set indexs!\n");
+			}
+		}
+
+		if ((ret = is_file_changed(filter_file, last_filters_mtime)) > 0)
+		{
+			last_filters_mtime = ret;
+			char* buf = get_filter_text(filter_file);
+			set_input_filter(ctx, buf);
+			printf("filter:\"%s\"\n", buf);
+			av_free(buf);
+		}
+
+		if ((ret = is_file_changed(audio_filter_file, last_audio_filters_mtime)) > 0)
+		{
+			last_audio_filters_mtime = ret;
+			char* buf = get_filter_text(audio_filter_file);
+			set_input_audio_filter(ctx, buf);
+			printf("audio filter:\"%s\"\n", buf);
+			av_free(buf);
+		}
+
+		if ((ret = is_file_changed(output_start_shift_file_name, last_shift_mtime)) > 0)
+		{
+			last_shift_mtime = ret;
+			int64_t shift = get_txt_num(output_start_shift_file_name);
+			ctx->output_start_shift_time = shift * 1000LL;
+			printf("output start time shift: %I64d\n", shift);
+		}
+
 		if (is_input_exit(ctx)) {
 			av_dict_free(&play_dict);
 			play_dict_in_list = NULL;
@@ -2515,7 +2582,7 @@ DWORD main_thread(LPVOID p) {
 		input:
 			if (play_filename != NULL) {
 				stop_read(ctx, 0);
-				inout_context_reset_input(ctx);
+				inout_context_reset_input(ctx,1);
 				AVDictionary* dict_p = play_dict_in_list ? play_dict_in_list : play_dict;
 				AVDictionary* temp_dict = NULL;
 				char *format = NULL;
@@ -2639,39 +2706,7 @@ DWORD main_thread(LPVOID p) {
 					av_free(queue_right);
 			}
 		}
-		if ((ret = is_file_changed(index_file_name, last_indexs_mtime)) > 0)
-		{
-			last_indexs_mtime = ret;
-			if (set_stream_index_from_file(ctx, index_file_name) >= 0) {
-				printf("set indexs!\n");
-			}
-		}
 
-		if ((ret = is_file_changed(filter_file, last_filters_mtime)) > 0)
-		{
-			last_filters_mtime = ret;
-			char* buf = get_filter_text(filter_file);
-			set_input_filter(ctx, buf);
-			printf("filter:\"%s\"\n", buf);
-			av_free(buf);
-		}
-
-		if ((ret = is_file_changed(audio_filter_file, last_audio_filters_mtime)) > 0)
-		{
-			last_audio_filters_mtime = ret;
-			char* buf = get_filter_text(audio_filter_file);
-			set_input_audio_filter(ctx, buf);
-			printf("audio filter:\"%s\"\n", buf);
-			av_free(buf);
-		}
-
-		if ((ret = is_file_changed(output_start_shift_file_name, last_shift_mtime)) > 0)
-		{
-			last_shift_mtime = ret;
-			int64_t shift = get_txt_num(output_start_shift_file_name);
-			ctx->output_start_shift_time = shift * 1000LL;
-			printf("output start time shift: %I64d\n", shift);
-		}
 
 		av_usleep(500000);
 	}
@@ -2823,7 +2858,7 @@ int main11() {
 		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0);
 		av_channel_layout_uninit(&ch_layout);
 		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1);
-		inout_context_reset_input(ctx);
+		inout_context_reset_input(ctx,0);
 		inout_context_free(&ctx);
 	}
 }
