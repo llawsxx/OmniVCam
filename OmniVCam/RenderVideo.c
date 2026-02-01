@@ -6,10 +6,16 @@
 #include "video_frame.h"
 #include "global.h"
 
-void frame_queue_wait_empty(frame_queue* q,int64_t timeout) {
+void frame_queue_wait_empty(frame_queue* q,int64_t timeout,int *exit) {
 	int64_t start_time = av_gettime_relative();
 	EnterCriticalSection(&q->mutex);
-	while (q->count > 0)
+
+	q->reached_center = 0;
+	q->center_count = -1;
+	q->left_count = -1;
+	q->right_count = -1;
+
+	while (q->count > 0 && !(*exit))
 	{
 		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
 		if (av_gettime_relative() - start_time >= timeout) {
@@ -17,6 +23,12 @@ void frame_queue_wait_empty(frame_queue* q,int64_t timeout) {
 		}
 	}
 	LeaveCriticalSection(&q->mutex);
+}
+
+void inout_ctx_frame_queue_wait_empty(inout_context *ctx, int* exit) {
+	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
+		frame_queue_wait_empty(ctx->frame_queues[i],ctx->timeout,exit);
+	}
 }
 
 int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int *exit) {
@@ -203,10 +215,7 @@ void frame_queue_free(frame_queue **q)
 
 void frame_queue_set(frame_queue *q, int left_count, int right_count) {
 	EnterCriticalSection(&q->mutex);
-	//一定要清空了queue才能set
-	if (q->front) {
-		goto end;
-	}
+
 	q->reached_center = 0;
 	if (left_count == -1 || right_count == -1) {
 		q->center_count = -1;
@@ -511,7 +520,7 @@ void inout_context_free(inout_context** ctx)
 }
 
 
-void inout_context_reset_input(inout_context* ctx,int wait_queue_empty)
+void inout_context_reset_input(inout_context* ctx)
 {
 	if (!ctx) return;
 	free_thread(ctx->reading_tid);
@@ -532,12 +541,6 @@ void inout_context_reset_input(inout_context* ctx,int wait_queue_empty)
 
 	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++) {
 		packet_queue_clean(&ctx->queues[i]);
-	}
-
-	if (wait_queue_empty) {
-		for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
-			frame_queue_wait_empty(ctx->frame_queues[i], ctx->timeout);
-		}
 	}
 
 	EnterCriticalSection(&ctx->input_change_mutex);
@@ -2470,7 +2473,7 @@ DWORD main_thread(LPVOID p) {
 					printf("play_list updated!\n");
 					if (reopen_at_list_update || ctx->test_card_running) {
 						stop_read(ctx, 1);
-						inout_context_reset_input(ctx,0);
+						inout_context_reset_input(ctx);
 					}
 				}
 			}
@@ -2582,7 +2585,8 @@ DWORD main_thread(LPVOID p) {
 		input:
 			if (play_filename != NULL) {
 				stop_read(ctx, 0);
-				inout_context_reset_input(ctx,1);
+				inout_ctx_frame_queue_wait_empty(ctx, &opts->send_exit);
+				inout_context_reset_input(ctx);
 				AVDictionary* dict_p = play_dict_in_list ? play_dict_in_list : play_dict;
 				AVDictionary* temp_dict = NULL;
 				char *format = NULL;
@@ -2858,7 +2862,7 @@ int main11() {
 		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0);
 		av_channel_layout_uninit(&ch_layout);
 		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1);
-		inout_context_reset_input(ctx,0);
+		inout_context_reset_input(ctx);
 		inout_context_free(&ctx);
 	}
 }
