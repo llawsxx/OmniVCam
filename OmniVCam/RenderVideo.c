@@ -1747,9 +1747,9 @@ void control_output_speed(inout_context* ctx)
 }
 
 
-int is_audio_fifo_full_fill(inout_context* ctx)
+int is_audio_fifo_full_fill(inout_context* ctx,int shift_samples)
 {
-	return av_audio_fifo_size(ctx->output_audio_fifo) >= ctx->output_audio_nb_samples;
+	return av_audio_fifo_size(ctx->output_audio_fifo) + shift_samples >= ctx->output_audio_nb_samples;
 }
 
 int fill_audio_fifo(inout_context* ctx, AVFrame* frame)
@@ -1768,29 +1768,64 @@ end:
 	return ret;
 }
 
-
-
-int audio_fifo_read_frame(inout_context* ctx, AVFrame* frame)
-{
-	int ret;
-	int64_t frame_end_pts;
+void get_audio_fifo_pts(inout_context* ctx, int64_t *frame_pts, int64_t *frame_end_pts, int shift_samples) {
+	int64_t _frame_end_pts;
 	int64_t fifo_total_time;
+	int64_t shift_time;
 	int64_t fifo_size = av_audio_fifo_size(ctx->output_audio_fifo);
-
-	ret = av_frame_make_writable(frame);
-	if (ret < 0) return -1;
-	ret = av_audio_fifo_read(ctx->output_audio_fifo, frame->data, frame->nb_samples);
-	if (ret < 0) return -1;
-
-	if (ctx->output_last_audio_frame_pts != AV_NOPTS_VALUE) {
-		frame_end_pts = ctx->output_last_audio_frame_pts + av_rescale_q(ctx->output_last_audio_nb_samples, (AVRational) { 1, ctx->output_audio_sample_rate }, UNIVERSAL_TB);
-		fifo_total_time = av_rescale_q_rnd(fifo_size, (AVRational) { 1, ctx->output_audio_sample_rate } , UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-
-		frame->pts = frame_end_pts - fifo_total_time;
+	if (fifo_size > 0 && ctx->output_last_audio_frame_pts != AV_NOPTS_VALUE) {
+		_frame_end_pts = ctx->output_last_audio_frame_pts + av_rescale_q(ctx->output_last_audio_nb_samples, (AVRational) { 1, ctx->output_audio_sample_rate }, UNIVERSAL_TB);
+		fifo_total_time = av_rescale_q(fifo_size, (AVRational) { 1, ctx->output_audio_sample_rate }, UNIVERSAL_TB);
+		shift_time = av_rescale_q(shift_samples, (AVRational) { 1, ctx->output_audio_sample_rate }, UNIVERSAL_TB);
+		*frame_pts = _frame_end_pts - fifo_total_time - shift_time;
+		*frame_end_pts = _frame_end_pts;
 	}
 	else {
-		frame->pts = AV_NOPTS_VALUE;
+		*frame_pts = AV_NOPTS_VALUE;
+		*frame_end_pts = AV_NOPTS_VALUE;
 	}
+}
+
+static void shift_audio_pointer(enum AVSampleFormat format,int nb_channels, uint8_t** data, int data_elem_count, int nb_samples)
+{
+	const int planar = av_sample_fmt_is_planar(format);
+	const int planes = planar ? nb_channels : 1;
+	const int    bps = av_get_bytes_per_sample(format);
+	const int offset = nb_samples * bps * (planar ? 1 : nb_channels);
+
+	for (int i = 0; i < planes; i++) {
+		if (i < data_elem_count)
+			data[i] += offset;
+	}
+}
+
+int audio_fifo_read_frame(inout_context* ctx, AVFrame* frame,int shift_samples)
+{
+	int ret;
+	int64_t fifo_pts, fifo_end_pts;
+	get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts, shift_samples);
+	ret = av_frame_make_writable(frame);
+	if (ret < 0) return ret;
+	if (shift_samples > 0) {
+		uint8_t* data[AV_NUM_DATA_POINTERS];
+		for (int i = 0; i < FF_ARRAY_ELEMS(frame->data); i++) {
+			data[i] = frame->data[i];
+		}
+		av_samples_set_silence(data, 0, shift_samples, frame->ch_layout.nb_channels, frame->format);
+		shift_audio_pointer(frame->format,frame->ch_layout.nb_channels, data, AV_NUM_DATA_POINTERS, shift_samples);
+		ret = av_audio_fifo_read(ctx->output_audio_fifo, data, frame->nb_samples - shift_samples);
+		if (ret < 0) return ret;
+	}
+	else if (shift_samples < 0) {
+		ret = av_audio_fifo_drain(ctx->output_audio_fifo, -shift_samples);
+		if (ret < 0) return ret;
+		ret = av_audio_fifo_read(ctx->output_audio_fifo, frame->data, frame->nb_samples);
+	}
+	else {
+		ret = av_audio_fifo_read(ctx->output_audio_fifo, frame->data, frame->nb_samples);
+	}
+
+	frame->pts = fifo_pts;
 
 	return ret;
 }
@@ -1846,23 +1881,17 @@ end:
 	return ret;
 }
 
-int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快了，0：慢了(或者必须取新帧)
+int is_in_sync(inout_context* ctx, int64_t timestamp)//1:刚好，2:快了，0：慢了(或者必须取新帧)
 {
 	if (timestamp == AV_NOPTS_VALUE || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
 
-	if (is_video && ctx->output_current_video_frame_id < ctx->output_current_audio_frame_id) return 0;
-	if (!is_video && ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
+	if (ctx->output_current_video_frame_id < ctx->output_current_audio_frame_id) return 0;
 
-	int64_t output_pts_time = (is_video ? ctx->output_video_pts_time : ctx->output_audio_pts_time);
-	int64_t interval = (is_video ? ctx->output_time_per_video_frame : ctx->output_time_per_audio_frame);
+	int64_t output_pts_time = ctx->output_video_pts_time;
+	int64_t interval = ctx->output_time_per_video_frame;
 
 	int64_t diff = timestamp + ctx->output_time_offset - output_pts_time;
 	if (diff >= -0.75 * interval && diff < 0.75 * interval) {
-		if(!is_video)
-			ctx->output_last_audio_in_sync_time = output_pts_time;
-		return 1;
-	}
-	else if(!is_video && ctx->output_last_audio_in_sync_time != AV_NOPTS_VALUE && output_pts_time - ctx->output_last_audio_in_sync_time <= 200 * 1000){ //允许音频时间戳不稳定
 		return 1;
 	}
 	else if (diff > 0) {
@@ -1875,6 +1904,47 @@ int is_in_sync(inout_context* ctx, int64_t timestamp,int is_video)//1:刚好，2:快
 }
 
 
+
+#define AUDIO_SYNC_TOLERATE 5000
+int is_audio_in_sync(inout_context* ctx,int *shift_samples)//1:刚好，2:快了，0：慢了(或者必须取新帧)
+{
+	int64_t fifo_pts;
+	int64_t fifo_end_pts;
+
+	*shift_samples = 0;
+
+	if (ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
+
+	get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts,0);
+	if (fifo_pts == AV_NOPTS_VALUE) return 0;
+
+	int64_t output_pts_time = ctx->output_audio_pts_time;
+	int64_t output_next_pts_time = ctx->output_audio_next_pts_time;
+
+	int64_t diff = fifo_pts + ctx->output_time_offset - output_pts_time;
+	int64_t diff_end = fifo_end_pts + ctx->output_time_offset - output_pts_time;
+	if (diff >= -AUDIO_SYNC_TOLERATE && diff < AUDIO_SYNC_TOLERATE) {
+		ctx->output_last_audio_in_sync_time = output_pts_time;
+		return 1;
+	}
+	else if (ctx->output_last_audio_in_sync_time != AV_NOPTS_VALUE && output_pts_time - ctx->output_last_audio_in_sync_time <= 200 * 1000) { //允许音频时间戳不稳定
+		return 1;
+	}
+	else if (diff < output_next_pts_time - output_pts_time && diff_end > 0) {
+		*shift_samples = (int)av_rescale_q(diff, UNIVERSAL_TB, (AVRational) { 1, ctx->output_audio_sample_rate });
+		return 1;
+	}
+	else if (diff > 0) {
+		return 2;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+
+
 int64_t get_sync_diff(inout_context* ctx, int64_t timestamp)
 {
 	if (timestamp == AV_NOPTS_VALUE || ctx->output_time_offset == AV_NOPTS_VALUE)
@@ -1885,16 +1955,28 @@ int64_t get_sync_diff(inout_context* ctx, int64_t timestamp)
 }
 
 
+int64_t compute_audio_pts_time(inout_context* ctx,int64_t sample_count) {
+	return av_rescale_q(sample_count,
+		(AVRational) {
+		1, ctx->output_audio_sample_rate
+	}, UNIVERSAL_TB);
+}
+
+void compute_audio_pts_time_three(inout_context* ctx) {
+	ctx->output_audio_prev_pts_time = compute_audio_pts_time(ctx, ctx->output_sample_count - ctx->output_audio_nb_samples);
+	ctx->output_audio_pts_time = compute_audio_pts_time(ctx, ctx->output_sample_count);
+	ctx->output_audio_next_pts_time = compute_audio_pts_time(ctx, ctx->output_sample_count + ctx->output_audio_nb_samples);
+}
+
 int output_audio(inout_context* ctx,AVFrame *frame)
 {
 	frame->pts = ctx->output_audio_pts_time;
 	if (ctx->audio_callback) {
 		ctx->audio_callback(ctx->callback_private, frame);
 	}
-	ctx->output_audio_pts_time = av_rescale_q(ctx->output_sample_count,
-		(AVRational) {1, ctx->output_audio_sample_rate}, UNIVERSAL_TB);
-	ctx->output_sample_count += frame->nb_samples;
 	//printf("output audio: %lld", ctx->output_audio_pts_time);
+	ctx->output_sample_count += ctx->output_audio_nb_samples;
+	compute_audio_pts_time_three(ctx);
 	return 0;
 }
 
@@ -1905,6 +1987,8 @@ int output_video(inout_context* ctx, AVFrame* frame)
 	if (ctx->video_callback) {
 		ctx->video_callback(ctx->callback_private, frame);
 	}
+	//printf("output video: %lld", ctx->output_video_pts_time);
+	ctx->output_frame_count += 1;
 	ctx->output_video_pts_time = av_rescale_q(ctx->output_frame_count,
 		(AVRational) { ctx->output_fps.den, ctx->output_fps.num }, UNIVERSAL_TB);
 	if (ctx->output_video_interval_ns) {
@@ -1916,12 +2000,12 @@ int output_video(inout_context* ctx, AVFrame* frame)
 			ctx->output_fps.den, ctx->output_fps.num
 		}, NS_TB);
 	}
-	ctx->output_frame_count += 1;
-	//printf("output video: %lld", ctx->output_video_pts_time);
 	return 0;
 }
 
-
+void reset_audio_fifo(inout_context* ctx) {
+	av_audio_fifo_reset(ctx->output_audio_fifo);
+}
 
 HRESULT WINAPI output_thread(LPVOID p)
 {
@@ -1983,6 +2067,10 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 	int64_t current_time = os_gettime_ns();
 	int64_t count;
+	int64_t fifo_pts;
+	int64_t fifo_end_pts;
+	int shift_samples = 0;
+
 	if (ctx->output_video_interval_ns) {
 		count = current_time / ctx->output_video_interval_ns;
 		current_time =  count * ctx->output_video_interval_ns;
@@ -1992,6 +2080,8 @@ HRESULT WINAPI output_thread(LPVOID p)
 		current_time = av_rescale_q(count, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, NS_TB);
 	}
 	ctx->output_first_start_clock_time = ctx->output_start_clock_time = current_time;
+
+	compute_audio_pts_time_three(ctx);
 
 	while (1)
 	{
@@ -2003,39 +2093,45 @@ HRESULT WINAPI output_thread(LPVOID p)
 		{
 		audio_loop:
 			audio_in_sync = 0;
+			shift_samples = 0;
 			while (1) {
-				in_sync_result = is_in_sync(ctx, fifo_out_audio_frame->pts, 0);
-				if (in_sync_result != 0) break;
-				while (!is_audio_fifo_full_fill(ctx))
-				{
-					ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, &reset);
-
-					if (reset) {
-						ctx->output_time_offset = AV_NOPTS_VALUE;
-					}
-
-					if (ctx->output_exit) {
-						goto unlock;
-					}
-					if (ret >= 0)
-					{
-						last_audio_sync_diff = get_sync_diff(ctx, audio_frame->pts);
-						fill_audio_fifo(ctx, audio_frame);
-					}
-					else {
-						if (last_audio_sync_diff != AV_NOPTS_VALUE && last_audio_sync_diff < 0 && ctx->output_current_audio_frame_id >= ctx->output_current_video_frame_id) {
-							ctx->output_time_offset = AV_NOPTS_VALUE;
-							last_audio_sync_diff = AV_NOPTS_VALUE;
-						}
-						goto audio_output;
-					}
+				in_sync_result = is_audio_in_sync(ctx, &shift_samples);
+				if (in_sync_result == 0) {
+					reset_audio_fifo(ctx);
 				}
-				if (audio_fifo_read_frame(ctx, fifo_out_audio_frame) > 0) {
-					update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 0);
-					continue;
+				else if (in_sync_result == 2) {
+					break;
+				}
+				else if(is_audio_fifo_full_fill(ctx, shift_samples)){
+					audio_fifo_read_frame(ctx, fifo_out_audio_frame, shift_samples);
+					goto sync_end;
+				}
+					
+				ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, &reset);
+
+				if (reset) {
+					ctx->output_time_offset = AV_NOPTS_VALUE;
+				}
+
+				if (ctx->output_exit) {
+					goto unlock;
+				}
+				if (ret >= 0)
+				{
+					last_audio_sync_diff = get_sync_diff(ctx, audio_frame->pts);
+					fill_audio_fifo(ctx, audio_frame);
+					get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts, shift_samples);
+					update_offset_if_needed(ctx, fifo_pts, 0);
+				}
+				else {
+					if (last_audio_sync_diff != AV_NOPTS_VALUE && last_audio_sync_diff < 0 && ctx->output_current_audio_frame_id >= ctx->output_current_video_frame_id) {
+						ctx->output_time_offset = AV_NOPTS_VALUE;
+						last_audio_sync_diff = AV_NOPTS_VALUE;
+					}
+					goto audio_output;
 				}
 			}
-
+		sync_end:
 			if (in_sync_result == 1) {
 				audio_in_sync = 1;
 			}
@@ -2063,7 +2159,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 	video_loop:
 		while (1)
 		{
-			in_sync_result = is_in_sync(ctx, video_frame->pts, 1);
+			in_sync_result = is_in_sync(ctx, video_frame->pts);
 			if (in_sync_result != 0) break;
 			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id, &reset);
 
