@@ -577,7 +577,7 @@ STDMETHODIMP OmniVCam::Run(REFERENCE_TIME tStart) {
         m_renderOpts->audio_out_channels = m_audioPin->m_audioChannels;
         m_renderOpts->audio_out_sample_rate = m_audioPin->m_audioSampleRate;
         m_renderOpts->audio_out_format = m_audioPin->m_audioFormat;
-        m_renderOpts->audio_out_nb_samples = 1024;
+        m_renderOpts->audio_out_nb_samples = m_audioPin->m_audioNumSamples;
         m_renderOpts->video_callback = PushVideoFrameHelper;
         m_renderOpts->audio_callback = PushAudioFrameHelper;
         m_renderOpts->callback_private = this;
@@ -1064,10 +1064,12 @@ STDAPI DllUnregisterServer() {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
+        timeBeginPeriod(1);
         g_hInstance = hModule;
         DisableThreadLibraryCalls(hModule);
     }
     else if (dwReason == DLL_PROCESS_DETACH) {
+        timeEndPeriod(1);
     }
     return TRUE;
 }
@@ -1111,6 +1113,7 @@ const
 CLSID CLSID_SampleGrabber = { 0xC1F400A0, 0x3F08, 0x11d3, { 0x9F, 0x0B, 0x00, 0x60, 0x08, 0x03, 0x9E, 0x37 } };
 
 int main() {
+    timeBeginPeriod(1);
     avdevice_register_all();
 
     HRESULT hr;
@@ -1246,11 +1249,12 @@ int main() {
         //control->Run();
         //av_usleep(20 * 1000000);
         control->Stop();
-        break;
+        //break;
         printf("next...\n");
 
     }
     CoUninitialize();
+    timeEndPeriod(1);
     return 0;
 }
 

@@ -9,7 +9,7 @@
 #endif //  __cplusplus
 
 #define BR_DEBUG 0
-#define GRABBER_DEBUG 1
+#define GRABBER_DEBUG 0
 #define ENCODE_DEBUG 1
 #define DSHOW_DEBUG 1
 #define PAPHOW_DEBUG 1

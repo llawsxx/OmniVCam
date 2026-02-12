@@ -13,6 +13,12 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="源文件\OBSVirtualCamReader">
+      <UniqueIdentifier>{4262568b-9c4d-4083-8419-9338b91d2933}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="头文件\OBSVirtualCamReader">
+      <UniqueIdentifier>{3bc3adec-7874-4bee-a61f-d908ace3d34b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="OmniVcam.h">
@@ -51,6 +57,15 @@
     <ClInclude Include="OmniMediaSample.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="OBSVirtualCamReader\shared-memory-queue.h">
+      <Filter>头文件\OBSVirtualCamReader</Filter>
+    </ClInclude>
+    <ClInclude Include="OBSVirtualCamReader.h">
+      <Filter>头文件\OBSVirtualCamReader</Filter>
+    </ClInclude>
+    <ClInclude Include="Threads.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="OmniVCam.cpp">
@@ -84,6 +99,15 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="OmniMediaSample.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="OBSVirtualCamReader\shared-memory-queue.c">
+      <Filter>源文件\OBSVirtualCamReader</Filter>
+    </ClCompile>
+    <ClCompile Include="OBSVirtualCamReader.c">
+      <Filter>源文件\OBSVirtualCamReader</Filter>
+    </ClCompile>
+    <ClCompile Include="Threads.c">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

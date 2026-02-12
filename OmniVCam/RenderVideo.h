@@ -22,6 +22,7 @@ extern "C" {
 #include <Windows.h>
 #include <string.h>
 #include <time.h>
+#include "Threads.h"
 extern AVRational UNIVERSAL_TB;
 extern AVRational DSHOW_TB;
 #define ARRAY_ELEMS(a) (sizeof(a)/sizeof(a[0]))
@@ -98,7 +99,7 @@ typedef struct inout_context {
 	SwrContext* swr_ctx;
 	AVSubtitle sub;
 	HANDLE reading_tid;
-	HANDLE test_card_tid;
+	HANDLE special_source_tid;
 	HANDLE decode_video_tid;
 	HANDLE decode_audio_tid;
 
@@ -135,7 +136,7 @@ typedef struct inout_context {
 	int64_t input_start_time;
 	int64_t last_packet_time; //AV_TIME_BASE
 	int64_t timeout;
-	int test_card_running;
+	int special_source_running;
 	int test_card_style;
 	int force_exit;
 	int eof;

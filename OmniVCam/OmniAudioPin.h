@@ -1,7 +1,7 @@
 #pragma once
 #include "OmniVCam.h"
 
-class OmniAudioPin : public IPin, public IMemInputPin, public IAMStreamConfig, public IKsPropertySet, public DShowBase {
+class OmniAudioPin : public IPin, public IMemInputPin, public IAMStreamConfig, public IKsPropertySet, public IAMBufferNegotiation,public DShowBase {
 public:
     OmniAudioPin(OmniVCam* pFilter);
     ~OmniAudioPin();
@@ -53,6 +53,8 @@ public:
 
     STDMETHODIMP QuerySupported(REFGUID guidPropSet, DWORD dwPropID,
         DWORD* pTypeSupport) override;
+    STDMETHODIMP SuggestAllocatorProperties(const ALLOCATOR_PROPERTIES* pprop) override;
+    STDMETHODIMP GetAllocatorProperties(ALLOCATOR_PROPERTIES* pprop) override;
 
     HRESULT SetCustomFormat(const OmniAudioFormat& format);
     HRESULT PushSample(AVFrame* frame, BYTE* data, long size, REFERENCE_TIME customStartTime);
@@ -65,6 +67,7 @@ public:
 public:
     int m_audioChannels;
     int m_audioSampleRate;
+    int m_audioNumSamples;
     AVSampleFormat m_audioFormat;
 private:
     OmniVCam* m_pFilter;
@@ -75,5 +78,6 @@ private:
     AM_MEDIA_TYPE m_mediaType;
     volatile bool m_streaming;
     REFERENCE_TIME m_startTime;
+    ALLOCATOR_PROPERTIES m_suggestedProps;
     void InitMediaType();
 };

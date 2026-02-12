@@ -6,6 +6,8 @@ OmniAudioPin::OmniAudioPin(OmniVCam* pFilter)
     m_allocator(NULL), m_streaming(false), m_startTime(0),m_audioChannels(2),m_audioSampleRate(48000),m_audioFormat(AV_SAMPLE_FMT_S16) {
     DEBUG_LOG_REF()
     InitMediaType();
+    m_audioNumSamples = 1024;
+    ZeroMemory(&m_suggestedProps, sizeof(ALLOCATOR_PROPERTIES));
 }
 
 OmniAudioPin::~OmniAudioPin(){
@@ -60,7 +62,6 @@ void OmniAudioPin::InitMediaType() {
     }
 }
 
-// IUnknown implementation
 STDMETHODIMP OmniAudioPin::QueryInterface(REFIID riid, void** ppv) {
     if (riid == IID_IUnknown) {
         *ppv = static_cast<IUnknown*>(static_cast<IPin*>(this));
@@ -77,13 +78,16 @@ STDMETHODIMP OmniAudioPin::QueryInterface(REFIID riid, void** ppv) {
     else if (riid == IID_IKsPropertySet) {
         *ppv = (IKsPropertySet*)this;
     }
+    else if (riid == IID_IAMBufferNegotiation) {
+        *ppv = static_cast<IAMBufferNegotiation*>(this);
+    }
     else {
         *ppv = NULL;
         return E_NOINTERFACE;
     }
     AddRef();
     DEBUG_LOG_REF()
-    return S_OK;
+        return S_OK;
 }
 
 STDMETHODIMP_(ULONG) OmniAudioPin::AddRef() {
@@ -252,6 +256,10 @@ STDMETHODIMP OmniAudioPin::GetAllocator(IMemAllocator** ppAllocator) {
 
 STDMETHODIMP OmniAudioPin::NotifyAllocator(IMemAllocator* pAllocator, BOOL bReadOnly) {
     CLock lck(m_pFilter->m_cs);
+    if (m_allocator) {
+        m_allocator->Release();
+        m_allocator = NULL;
+    }
     m_allocator = pAllocator;
     if (m_allocator) m_allocator->AddRef();
     return S_OK;
@@ -354,18 +362,42 @@ STDMETHODIMP OmniAudioPin::GetFormat(AM_MEDIA_TYPE** ppmt) {
     return S_OK;
 }
 
-static HRESULT doAllocSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* prop, AM_MEDIA_TYPE* mt)
-{
 
+static HRESULT doAllocSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* prop, AM_MEDIA_TYPE* mt, ALLOCATOR_PROPERTIES* suggestedProps = NULL)
+{
     WAVEFORMATEX* pwfx = (WAVEFORMATEX*)mt->pbFormat;
-    if (!pwfx)return E_UNEXPECTED;
-    prop->cBuffers = 1;
-    prop->cbAlign = 1;
-    prop->cbBuffer = pwfx->nBlockAlign * 1024;
-    ALLOCATOR_PROPERTIES Actual; memset(&Actual, 0, sizeof(Actual));
-    HRESULT hr = pAlloc->SetProperties(prop, &Actual);
+    if (!pwfx) return E_UNEXPECTED;
+
+    ALLOCATOR_PROPERTIES actualProp;
+    ZeroMemory(&actualProp, sizeof(actualProp));
+
+    // 如果有建议的属性，使用建议的属性
+    if (suggestedProps && suggestedProps->cbBuffer > 0) {
+        actualProp = *suggestedProps;
+    }
+    else {
+        // 否则使用默认值：1个缓冲区，1024个sample
+        actualProp.cBuffers = 1;
+        actualProp.cbBuffer = pwfx->nBlockAlign * 1024;  // 1024个sample
+        actualProp.cbAlign = 1;
+        actualProp.cbPrefix = 0;
+    }
+
+    // 如果调用者提供了prop参数，将其与建议的属性结合
+    if (prop) {
+        if (prop->cBuffers > 0) actualProp.cBuffers = prop->cBuffers;
+        if (prop->cbBuffer > 0) actualProp.cbBuffer = max(actualProp.cbBuffer, prop->cbBuffer);
+        if (prop->cbAlign > 0) actualProp.cbAlign = prop->cbAlign;
+        if (prop->cbPrefix > 0) actualProp.cbPrefix = prop->cbPrefix;
+    }
+
+    ALLOCATOR_PROPERTIES Actual;
+    memset(&Actual, 0, sizeof(Actual));
+    HRESULT hr = pAlloc->SetProperties(&actualProp, &Actual);
     if (FAILED(hr)) return hr;
-    if (Actual.cbBuffer < prop->cbBuffer) return E_FAIL;
+
+    // 确保实际分配的缓冲区大小不小于请求的大小
+    if (Actual.cbBuffer < actualProp.cbBuffer) return E_FAIL;
 
     return S_OK;
 }
@@ -388,7 +420,9 @@ STDMETHODIMP OmniAudioPin::DoAllocation() {
     }
     hr = memPin->GetAllocator(&m_allocator);
     if (SUCCEEDED(hr)) {
-        hr = doAllocSize(m_allocator, &prop, &m_mediaType);
+        // 传递建议的属性
+        hr = doAllocSize(m_allocator, &prop, &m_mediaType,
+            (m_suggestedProps.cbBuffer > 0) ? &m_suggestedProps : NULL);
         if (SUCCEEDED(hr)) {
             hr = memPin->NotifyAllocator(m_allocator, FALSE);
             if (SUCCEEDED(hr)) goto end;
@@ -400,9 +434,11 @@ STDMETHODIMP OmniAudioPin::DoAllocation() {
     }
 
     hr = CoCreateInstance(CLSID_MemoryAllocator, 0, CLSCTX_INPROC_SERVER, IID_IMemAllocator, (void**)&m_allocator);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) goto end;
 
-    hr = doAllocSize(m_allocator, &prop, &m_mediaType);
+    // 传递建议的属性
+    hr = doAllocSize(m_allocator, &prop, &m_mediaType,
+        (m_suggestedProps.cbBuffer > 0) ? &m_suggestedProps : NULL);
     if (SUCCEEDED(hr)) {
         hr = memPin->NotifyAllocator(m_allocator, FALSE);
         if (SUCCEEDED(hr)) goto end;
@@ -646,3 +682,53 @@ STDMETHODIMP OmniAudioPin::QuerySupported(REFGUID guidPropSet, DWORD dwPropID,
     return S_OK;
 }
 
+STDMETHODIMP OmniAudioPin::SuggestAllocatorProperties(const ALLOCATOR_PROPERTIES* pprop) {
+    DEBUG_LOG_REF()
+    if (!pprop) return E_POINTER;
+
+    CLock lck(m_pFilter->m_cs);
+
+    if (m_connectedPin) {
+        return VFW_E_ALREADY_CONNECTED;
+    }
+
+    if (pprop->cbBuffer < m_mediaType.lSampleSize) {
+        return E_FAIL;
+    }
+
+    if (pprop->cbBuffer > 0) {
+        m_suggestedProps = *pprop;
+        m_suggestedProps.cBuffers = 1;
+    }
+
+    m_audioNumSamples = m_suggestedProps.cbBuffer / m_mediaType.lSampleSize;
+    return S_OK;
+}
+
+STDMETHODIMP OmniAudioPin::GetAllocatorProperties(ALLOCATOR_PROPERTIES* pprop) {
+    DEBUG_LOG_REF()
+    if (!pprop) return E_POINTER;
+
+    CLock lck(m_pFilter->m_cs);
+
+    if (!m_connectedPin || !m_allocator) {
+        ZeroMemory(pprop, sizeof(ALLOCATOR_PROPERTIES));
+
+        if (m_suggestedProps.cbBuffer > 0) {
+            *pprop = m_suggestedProps;
+        }
+        else {
+            WAVEFORMATEX* pwfx = (WAVEFORMATEX*)m_mediaType.pbFormat;
+            if (pwfx) {
+                pprop->cBuffers = 1;
+                pprop->cbBuffer = pwfx->nBlockAlign * 1024;
+                pprop->cbAlign = 1;
+                pprop->cbPrefix = 0;
+            }
+        }
+        return S_OK;
+    }
+
+    // 如果已连接，从分配器获取实际属性
+    return m_allocator->GetProperties(pprop);
+}

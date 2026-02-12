@@ -1,6 +1,7 @@
 #include "RenderVideo.h"
 #include "ParseConfig.h"
 #include "TestCard.h"
+#include "OBSVirtualCamReader.h"
 #include "Utils.h"
 #include "clock.h"
 #include "video_frame.h"
@@ -373,24 +374,6 @@ end:
 }
 
 
-int open_thread(HANDLE* thread, LPTHREAD_START_ROUTINE start, LPVOID arg)
-{
-	if (!thread) return -1;
-
-	*thread = CreateThread(NULL, 0, start, arg, 0, NULL);
-
-	if (*thread != NULL) return 0;
-	return -1;
-}
-
-void free_thread(HANDLE* thread)
-{
-	if (!thread || !(*thread)) return;
-	WaitForSingleObject(*thread, INFINITE);
-	CloseHandle(*thread);
-	*thread = NULL;
-}
-
 inout_context* inout_context_alloc(
 	int video_out_width, int video_out_height,int video_out_format,AVRational video_out_fps,
 	int audio_out_sample_rate,int audio_out_format,const AVChannelLayout *audio_out_layout, int audio_out_nb_samples,
@@ -502,7 +485,7 @@ void inout_context_free(inout_context** ctx)
 	DeleteCriticalSection(&(*ctx)->input_change_mutex);
 
 	free_thread((*ctx)->reading_tid);
-	free_thread((*ctx)->test_card_tid);
+	free_thread((*ctx)->special_source_tid);
 	free_thread((*ctx)->decode_video_tid);
 	free_thread((*ctx)->decode_audio_tid);
 	av_free((*ctx)->filter_text);
@@ -524,7 +507,7 @@ void inout_context_reset_input(inout_context* ctx)
 {
 	if (!ctx) return;
 	free_thread(ctx->reading_tid);
-	free_thread(ctx->test_card_tid);
+	free_thread(ctx->special_source_tid);
 	free_thread(ctx->decode_video_tid);
 	free_thread(ctx->decode_audio_tid);
 
@@ -589,7 +572,7 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->last_packet_time = AV_NOPTS_VALUE;
 	av_freep(&ctx->input_name);
 	av_freep(&ctx->current_status_file_name);
-	ctx->test_card_running = 0;
+	ctx->special_source_running = 0;
 	ctx->force_exit = 0;
 	ctx->eof = 0;
 }
@@ -781,17 +764,17 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 
 		switch (type_index)
 		{
-			case 0:
-				got_v = 1;
-				break;
-			case 1:
-				got_a = 1;
-				break;
-			case 2:
-				got_s = 1;
-				break;
-			default:
-				break;
+		case 0:
+			got_v = 1;
+			break;
+		case 1:
+			got_a = 1;
+			break;
+		case 2:
+			got_s = 1;
+			break;
+		default:
+			break;
 		}
 	}
 
@@ -810,13 +793,16 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 	return 0;
 }
 
-int open_input(char *fmt_name, char *name,char *current_status_file_name, AVDictionary ** dict_opts, inout_context* ctx,
-	int video_index, int audio_index, int subtitle_index, char* hw_decode,int probesize,int analyzeduration,int queue_left_count,int queue_right_count)
-{	
+int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDictionary** dict_opts, inout_context* ctx,
+	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count)
+{
 
-	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0)) {
+	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<OBSVCAM>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
+		if (strcmp(name, "<OBSVCAM>") == 0){
+			frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count);
+		}
 		return 0;
 	}
 
@@ -1488,7 +1474,59 @@ DWORD test_card_thread(LPVOID p) {
 		else break;
 	}
 	test_card_free(card);
-	ctx->test_card_running = 0;
+	ctx->special_source_running = 0;
+	return 0;
+}
+
+DWORD obs_virtual_cam_thread(LPVOID p) {
+	inout_context* ctx = (inout_context*)p;
+	OBSVirtualCamReader* reader = obs_virtual_cam_reader_create();
+	if (!reader) return -1;
+	ctx->input_frame_id = av_gettime_relative();
+	AVFrame* f = NULL;
+	int ret;
+	uint64_t interval = 166666; //由于计算精度问题，60帧情况下interval比OBS渲染视频使用的要小，理论上读取间隔会比写入间隔短，所以理想情况下read_idx只会相同和相差1，永远不会丢帧
+	uint64_t next_get_frame_time = os_gettime_ns();
+	uint32_t read_idx = UINT32_MAX;
+	uint32_t last_read_idx = UINT32_MAX;
+
+	ctx->last_video_decode_time = av_gettime_relative();
+	while (!ctx->force_exit) {
+		obs_virtual_cam_reader_get_obs_frame(reader, &f, &interval, &read_idx);
+		if (f) {
+			ctx->last_video_decode_time = av_gettime_relative();
+			f->pts = av_rescale_q(f->pts, NS_TB, UNIVERSAL_TB);
+			ret = fill_output_video(ctx, f);
+			av_frame_free(&f);
+			if (ret < 0) goto end;
+		}
+		else if (obs_virtual_cam_reader_get_is_closed(reader)) {
+			break;
+		}
+
+		if (av_gettime_relative() - ctx->last_video_decode_time >= ctx->timeout) {
+			ctx->force_exit = 1;
+			break;
+		}
+
+		if (last_read_idx == UINT32_MAX || read_idx - last_read_idx != 1) {
+			//丢帧、复制帧了或者是第一帧，睡1ms马上继续读
+			Sleep(1);
+			//printf("read index: %u %u\n", read_idx, last_read_idx);
+			next_get_frame_time = os_gettime_ns();
+			last_read_idx = read_idx;
+			continue;
+		}
+		else {
+			next_get_frame_time += interval * 100ULL;
+			last_read_idx = read_idx;
+		}
+		os_sleepto_ns(next_get_frame_time);
+	}
+end:
+	av_frame_free(&f);
+	obs_virtual_cam_reader_destroy(reader);
+	ctx->special_source_running = 0;
 	return 0;
 }
 
@@ -1656,22 +1694,29 @@ end:
 int start_read(inout_context* ctx) {
 	int ret = -1;
 	HANDLE read_tid = NULL;
-	HANDLE test_card_tid = NULL;
+	HANDLE special_source_tid = NULL;
 	HANDLE decode_video_tid = NULL;
 	HANDLE decode_audio_tid = NULL;
 
 	if (ctx->input_name) {
 		if (strcmp(ctx->input_name, "<TESTCARD>") == 0 || strcmp(ctx->input_name, "<TESTCARD2>") == 0) {
-			ctx->test_card_running = 1;
+			ctx->special_source_running = 1;
 			if(strcmp(ctx->input_name, "<TESTCARD2>") == 0){
 				ctx->test_card_style = 1;
 			}
 			else {
 				ctx->test_card_style = 0;
 			}
-			ret = open_thread(&test_card_tid, test_card_thread, ctx);
+			ret = open_thread(&special_source_tid, test_card_thread, ctx);
 			if (ret < 0) goto failed;
-			ctx->test_card_tid = test_card_tid;
+			ctx->special_source_tid = special_source_tid;
+			return 0;
+		}
+		else if (strcmp(ctx->input_name, "<OBSVCAM>") == 0) {
+			ctx->special_source_running = 1;
+			ret = open_thread(&special_source_tid, obs_virtual_cam_thread, ctx);
+			if (ret < 0) goto failed;
+			ctx->special_source_tid = special_source_tid;
 			return 0;
 		}
 	}
@@ -1702,10 +1747,9 @@ failed:
 	ctx->force_exit = 1;
 
 	free_thread(&read_tid);
-	free_thread(&test_card_tid);
+	free_thread(&special_source_tid);
 	free_thread(&decode_video_tid);
 	free_thread(&decode_audio_tid);
-
 	return -1;
 }
 
@@ -1715,7 +1759,7 @@ void stop_read(inout_context* ctx, int force)
 		ctx->force_exit = 1;
 	}
 	free_thread(&ctx->reading_tid);
-	free_thread(&ctx->test_card_tid);
+	free_thread(&ctx->special_source_tid);
 	free_thread(&ctx->decode_video_tid);
 	free_thread(&ctx->decode_audio_tid);
 }
@@ -2265,7 +2309,7 @@ int is_output_exit(inout_context *ctx)
 
 int is_input_exit(inout_context* ctx)
 {
-	if (ctx->test_card_running) return 0;
+	if (ctx->special_source_running) return 0;
 	int decoder_all_exit = 1;
 	for (int i = 0; i < 2; i++) {
 		if (ctx->decoders[i].avctx && !ctx->decoders[i].exit)
@@ -2528,7 +2572,7 @@ DWORD main_thread(LPVOID p) {
 
 	AVChannelLayout ch_layout = { 0 };
 	av_channel_layout_default(&ch_layout, opts->audio_out_channels);
-	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, 1024, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over);
+	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, opts->audio_out_nb_samples, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over);
 	av_channel_layout_uninit(&ch_layout);
 	if (!ctx) {
 		goto end;
@@ -2567,7 +2611,7 @@ DWORD main_thread(LPVOID p) {
 				if (play_list_ctx) {
 					update_play_list_from_file(play_list_ctx, play_list_file);
 					printf("play_list updated!\n");
-					if (reopen_at_list_update || ctx->test_card_running) {
+					if (reopen_at_list_update || ctx->special_source_running) {
 						stop_read(ctx, 1);
 						inout_context_reset_input(ctx);
 					}
