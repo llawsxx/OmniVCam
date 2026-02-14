@@ -2,6 +2,7 @@
 
 ## 可播放任意内容的虚拟摄像头
 
+如果想要在直播软件里使用，并且设置的帧率与直播软件相同，那一定要调shift.txt文件（不然有几率会一直丢帧），下面有详细说明
 #### 安装
 - 压缩包解压到适当位置，如D:\OmniVCam，需将所有dll解压出来
 
@@ -27,6 +28,7 @@
 - 将需要播放的文件一行一个放到input.txt，每个文件可设置独立的参数
   例子：
 - ```
+  <OBSVCAM>	queue_left=1,queue_right=5	#直读OBS虚拟摄像头，比使用OBS Virtual Camera设备丢帧情况会好很多
   <TESTCARD>   #测试卡
   <TESTCARD2>  #测试卡2
   D:\example.mp4	seek_time=14	#播放D:\example.mp4文件，跳转到14秒
