@@ -168,6 +168,7 @@ typedef struct inout_context {
 	int output_audio_nb_samples;
 	int64_t output_current_video_frame_id;   //这个用于识别帧是否来源于同一个视频，这个数值是递增的
 	int64_t output_current_audio_frame_id;
+	int64_t av_max_offset_time;
 	AVAudioFifo* output_audio_fifo;//用output audio的来初始化
 	HANDLE output_thread;
 	int output_exit;//强制退出标志

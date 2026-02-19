@@ -214,7 +214,7 @@ void frame_queue_free(frame_queue **q)
 	*q = NULL;
 }
 
-void frame_queue_set(frame_queue *q, int left_count, int right_count) {
+void frame_queue_set(frame_queue *q, int left_count, int right_count, int center_count) {
 	EnterCriticalSection(&q->mutex);
 
 	q->reached_center = 0;
@@ -229,7 +229,10 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count) {
 
 	if (right_count - left_count < 2) right_count = left_count + 2;
 
-	q->center_count = (right_count + left_count) / 2;
+	if (center_count > left_count && center_count < right_count)
+		q->center_count = center_count;
+	else
+		q->center_count = (right_count + left_count) / 2;
 	q->left_count = left_count;
 	q->right_count = right_count;
 end:
@@ -377,7 +380,8 @@ end:
 inout_context* inout_context_alloc(
 	int video_out_width, int video_out_height,int video_out_format,AVRational video_out_fps,
 	int audio_out_sample_rate,int audio_out_format,const AVChannelLayout *audio_out_layout, int audio_out_nb_samples,
-	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count,int use_fixed_frame_interval,int output_ajust_start_if_delay_over)
+	int64_t timeout, int packet_queue_max_size, int packet_queue_max_count,int video_frame_queue_count, int audio_frame_queue_count,int use_fixed_frame_interval,
+	int output_ajust_start_if_delay_over,int av_max_offset_time)
 {
 	inout_context* ctx = (inout_context*)av_mallocz(sizeof(inout_context));
 	AVAudioFifo* audio_fifo = NULL;
@@ -431,6 +435,7 @@ inout_context* inout_context_alloc(
 	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	ctx->av_max_offset_time = FFMAX(1000000, av_max_offset_time);
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
 	ctx->last_packet_time = AV_NOPTS_VALUE;
@@ -529,7 +534,7 @@ void inout_context_reset_input(inout_context* ctx)
 	EnterCriticalSection(&ctx->input_change_mutex);
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
 		frame_queue_clean(ctx->frame_queues[i]);
-		frame_queue_set(ctx->frame_queues[i], -1, -1);
+		frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
 	}
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
@@ -794,14 +799,14 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 }
 
 int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDictionary** dict_opts, inout_context* ctx,
-	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count)
+	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count, int queue_center_count)
 {
 
 	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<OBSVCAM>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
 		if (strcmp(name, "<OBSVCAM>") == 0){
-			frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count);
+			frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count, queue_center_count);
 		}
 		return 0;
 	}
@@ -857,9 +862,9 @@ int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDic
 	ctx->input_frame_id = av_gettime_relative();
 
 	if(ctx->decoders[0].index >= 0)
-		frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count);
+		frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count, queue_center_count);
 	else {
-		frame_queue_set(ctx->frame_queues[1], queue_left_count, queue_right_count);
+		frame_queue_set(ctx->frame_queues[1], queue_left_count, queue_right_count, queue_center_count);
 	}
 
 	return ret;
@@ -1910,10 +1915,10 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	else{
 		int64_t offset_diff = timestamp + ctx->output_time_offset - output_pts_time;
 		//printf("%I64d\n", offset_diff);
-		if (offset_diff > 5 * 1000000 || offset_diff < -5 * 1000000) // 相差超过5秒就调整，1秒仅可调一次
+		if (offset_diff > ctx->av_max_offset_time || offset_diff < -ctx->av_max_offset_time) 
 		{
 			int64_t current_time = av_gettime_relative();
-			if (ctx->output_time_offset_last_adjust_time == AV_NOPTS_VALUE || current_time - ctx->output_time_offset_last_adjust_time > 1 * 1000000) {
+			if (ctx->output_time_offset_last_adjust_time == AV_NOPTS_VALUE || current_time - ctx->output_time_offset_last_adjust_time > 1 * 1000000) { // 1秒仅可调一次
 				ctx->output_time_offset_last_adjust_time = current_time;
 				ctx->output_time_offset = output_pts_time - timestamp;
 				ret = 1;
@@ -2518,6 +2523,7 @@ DWORD main_thread(LPVOID p) {
 	char* output_start_shift_file_name = NULL;
 	int use_fixed_frame_interval = 0;
 	int output_ajust_start_if_delay_over = 0;
+	int av_max_offset_time = 3 * 1000000;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
 	if (!table) return -1;
@@ -2564,6 +2570,7 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "timeout", FALSE)) timeout = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "use_fixed_frame_interval", FALSE)) use_fixed_frame_interval = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "ajust_start_time_if_delay_over", FALSE)) output_ajust_start_if_delay_over = atoi(buf);
+	if (buf = get_paremeter_table_content(table, "config", "av_max_offset_time", FALSE)) av_max_offset_time = atoi(buf);
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
 
@@ -2572,7 +2579,7 @@ DWORD main_thread(LPVOID p) {
 
 	AVChannelLayout ch_layout = { 0 };
 	av_channel_layout_default(&ch_layout, opts->audio_out_channels);
-	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, opts->audio_out_nb_samples, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over);
+	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, opts->audio_out_nb_samples, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over, av_max_offset_time);
 	av_channel_layout_uninit(&ch_layout);
 	if (!ctx) {
 		goto end;
@@ -2740,12 +2747,14 @@ DWORD main_thread(LPVOID p) {
 				char* probesize = NULL;
 				char* queue_left = NULL;
 				char* queue_right = NULL;
+				char* queue_center = NULL;
 				int video_index_int = -1;
 				int audio_index_int = -1;
 				int analyze_duration_int = 0;
 				int probesize_int = 0;
 				int queue_left_int = -1;
 				int queue_right_int = -1;
+				int queue_center_int = -1;
 				if (dict_p) {
 					if (av_dict_copy(&temp_dict, dict_p, 0) >= 0) {
 						format = av_dict_pop_value(&temp_dict, "format");
@@ -2758,6 +2767,7 @@ DWORD main_thread(LPVOID p) {
 						analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
 						queue_left = av_dict_pop_value(&temp_dict, "queue_left");
 						queue_right = av_dict_pop_value(&temp_dict, "queue_right");
+						queue_center = av_dict_pop_value(&temp_dict, "queue_center");
 					}
 				}
 
@@ -2784,9 +2794,13 @@ DWORD main_thread(LPVOID p) {
 				if (queue_right) {
 					queue_right_int = atoi(queue_right);
 				}
+
+				if (queue_center) {
+					queue_center_int = atoi(queue_center);
+				}
 				
 
-				if (open_input(format, play_filename, current_play_file_name, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int) >= 0) {
+				if (open_input(format, play_filename, current_play_file_name, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int) >= 0) {
 					if (!video_filter) {
 						buf = get_filter_text(filter_file);
 						set_input_filter(ctx, buf);
@@ -2848,6 +2862,8 @@ DWORD main_thread(LPVOID p) {
 					av_free(queue_left);
 				if (queue_right)
 					av_free(queue_right);
+				if (queue_center)
+					av_free(queue_center);
 			}
 		}
 
@@ -2999,9 +3015,9 @@ int main11() {
 	while (1) {
 		AVChannelLayout ch_layout = { 0 };
 		av_channel_layout_default(&ch_layout, 2);
-		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0);
+		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0,3000000);
 		av_channel_layout_uninit(&ch_layout);
-		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1);
+		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1);
 		inout_context_reset_input(ctx);
 		inout_context_free(&ctx);
 	}
