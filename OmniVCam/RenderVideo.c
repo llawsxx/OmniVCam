@@ -1906,8 +1906,11 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	if (!is_video && ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
 	int ret = 0;
 	int64_t output_pts_time = (is_video ? ctx->output_video_pts_time : ctx->output_audio_pts_time);
+	int64_t current_time;
 	if (ctx->output_time_offset == AV_NOPTS_VALUE)
 	{
+		current_time = av_gettime_relative();
+		ctx->output_time_offset_last_adjust_time = current_time;
 		ctx->output_time_offset = output_pts_time - timestamp;
 		ret = 1;
 		goto end;
@@ -1917,7 +1920,7 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 		//printf("%I64d\n", offset_diff);
 		if (offset_diff > ctx->av_max_offset_time || offset_diff < -ctx->av_max_offset_time) 
 		{
-			int64_t current_time = av_gettime_relative();
+			current_time = av_gettime_relative();
 			if (ctx->output_time_offset_last_adjust_time == AV_NOPTS_VALUE || current_time - ctx->output_time_offset_last_adjust_time > 1 * 1000000) { // 1秒仅可调一次
 				ctx->output_time_offset_last_adjust_time = current_time;
 				ctx->output_time_offset = output_pts_time - timestamp;
@@ -2185,7 +2188,8 @@ HRESULT WINAPI output_thread(LPVOID p)
 				audio_in_sync = 1;
 			}
 			else {
-				if (update_offset_if_needed(ctx, fifo_out_audio_frame->pts, 1))
+				get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts, 0);
+				if (update_offset_if_needed(ctx, fifo_pts, 0))
 					goto audio_loop;
 			}
 
