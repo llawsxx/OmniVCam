@@ -798,8 +798,38 @@ int find_decoders(AVFormatContext* fmt_ctx, inout_context* ctx, int video_index,
 	return 0;
 }
 
+int input_find_decoder(const char* name,
+	enum AVMediaType type, const AVCodec** pcodec)
+{
+	const AVCodecDescriptor* desc;
+	const char* codec_string = "decoder";
+	const AVCodec* codec;
+
+	codec = avcodec_find_decoder_by_name(name);
+
+	if (!codec && (desc = avcodec_descriptor_get_by_name(name))) {
+		codec = avcodec_find_decoder(desc->id);
+		if (codec)
+			av_log(NULL, AV_LOG_VERBOSE, "Matched %s '%s' for codec '%s'.\n",
+				codec_string, codec->name, desc->name);
+	}
+
+	if (!codec) {
+		av_log(NULL, AV_LOG_FATAL, "Unknown %s '%s'\n", codec_string, name);
+		return AVERROR_DECODER_NOT_FOUND;
+	}
+	if (codec->type != type) {
+		av_log(NULL, AV_LOG_FATAL, "Invalid %s type '%s'\n", codec_string, name);
+		return AVERROR(EINVAL);
+	}
+
+	*pcodec = codec;
+	return 0;
+}
+
+
 int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDictionary** dict_opts, inout_context* ctx,
-	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count, int queue_center_count)
+	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count, int queue_center_count, char *vcodec_str,char* acodec_str,char * scodec_str, char* dcodec_str)
 {
 
 	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<OBSVCAM>") == 0)) {
@@ -819,6 +849,31 @@ int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDic
 		DEBUG_LOG("avformat_alloc_context failed!\n");
 		goto end;
 	}
+
+	const AVCodec* vcodec = NULL;
+	const AVCodec* acodec = NULL;
+	const AVCodec* scodec = NULL;
+	const AVCodec* dcodec = NULL;
+
+	if (vcodec_str)
+		input_find_decoder(vcodec_str, AVMEDIA_TYPE_VIDEO, &vcodec);
+	if (acodec_str)
+		input_find_decoder(acodec_str, AVMEDIA_TYPE_AUDIO, &acodec);
+	if (scodec_str)
+		input_find_decoder(scodec_str, AVMEDIA_TYPE_SUBTITLE, &scodec);
+	if (dcodec_str)
+		input_find_decoder(dcodec_str, AVMEDIA_TYPE_DATA, &dcodec);
+
+	fmt_ctx->video_codec = vcodec;
+	fmt_ctx->audio_codec = acodec;
+	fmt_ctx->subtitle_codec = scodec;
+	fmt_ctx->data_codec = dcodec;
+
+	fmt_ctx->video_codec_id = vcodec ? vcodec->id : AV_CODEC_ID_NONE;
+	fmt_ctx->audio_codec_id = acodec ? acodec->id : AV_CODEC_ID_NONE;
+	fmt_ctx->subtitle_codec_id = scodec ? scodec->id : AV_CODEC_ID_NONE;
+	fmt_ctx->data_codec_id = dcodec ? dcodec->id : AV_CODEC_ID_NONE;
+
 	ctx->last_clock_time = av_gettime_relative();
 	//fmt_ctx->flags |= AVFMT_FLAG_NONBLOCK;
 	fmt_ctx->interrupt_callback.callback = input_call_back;
@@ -2740,7 +2795,7 @@ DWORD main_thread(LPVOID p) {
 				inout_context_reset_input(ctx);
 				AVDictionary* dict_p = play_dict_in_list ? play_dict_in_list : play_dict;
 				AVDictionary* temp_dict = NULL;
-				char *format = NULL;
+				char* format = NULL;
 				char* video_filter = NULL;
 
 				char* audio_filter = NULL;
@@ -2752,6 +2807,12 @@ DWORD main_thread(LPVOID p) {
 				char* queue_left = NULL;
 				char* queue_right = NULL;
 				char* queue_center = NULL;
+
+				char* vcodec_str = NULL;
+				char* acodec_str = NULL;
+				char* scodec_str = NULL;
+				char* dcodec_str = NULL;
+
 				int video_index_int = -1;
 				int audio_index_int = -1;
 				int analyze_duration_int = 0;
@@ -2772,6 +2833,12 @@ DWORD main_thread(LPVOID p) {
 						queue_left = av_dict_pop_value(&temp_dict, "queue_left");
 						queue_right = av_dict_pop_value(&temp_dict, "queue_right");
 						queue_center = av_dict_pop_value(&temp_dict, "queue_center");
+
+						vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
+						acodec_str = av_dict_pop_value(&temp_dict, "acodec");
+						scodec_str = av_dict_pop_value(&temp_dict, "scodec");
+						dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
+
 					}
 				}
 
@@ -2802,9 +2869,10 @@ DWORD main_thread(LPVOID p) {
 				if (queue_center) {
 					queue_center_int = atoi(queue_center);
 				}
-				
 
-				if (open_input(format, play_filename, current_play_file_name, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int) >= 0) {
+
+				if (open_input(format, play_filename, current_play_file_name, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int,
+					vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
 					if (!video_filter) {
 						buf = get_filter_text(filter_file);
 						set_input_filter(ctx, buf);
@@ -2824,7 +2892,7 @@ DWORD main_thread(LPVOID p) {
 					}
 					if (seek_time && ctx->fmt_ctx) {
 						int seek_time_int = atoi(seek_time);
-						
+
 						int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + ctx->fmt_ctx->start_time;
 						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
 							printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
@@ -2836,7 +2904,7 @@ DWORD main_thread(LPVOID p) {
 					set_stream_index_from_file(ctx, index_file_name);
 
 					start_read(ctx);
-					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str,sizeof(time_str)), play_filename);
+					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 					write_text_to_file(log_file_name, str2, "a");
 					printf(str2);
 				}
@@ -2846,7 +2914,7 @@ DWORD main_thread(LPVOID p) {
 
 				av_dict_free(&temp_dict);
 
-				if(format)
+				if (format)
 					av_free(format);
 				if (video_filter)
 					av_free(video_filter);
@@ -2868,6 +2936,15 @@ DWORD main_thread(LPVOID p) {
 					av_free(queue_right);
 				if (queue_center)
 					av_free(queue_center);
+
+				if (vcodec_str)
+					av_free(vcodec_str);
+				if (acodec_str)
+					av_free(acodec_str);
+				if (scodec_str)
+					av_free(scodec_str);
+				if (dcodec_str)
+					av_free(dcodec_str);
 			}
 		}
 
@@ -3021,7 +3098,7 @@ int main11() {
 		av_channel_layout_default(&ch_layout, 2);
 		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0,3000000);
 		av_channel_layout_uninit(&ch_layout);
-		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1);
+		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1,NULL, NULL, NULL, NULL);
 		inout_context_reset_input(ctx);
 		inout_context_free(&ctx);
 	}
