@@ -18,6 +18,7 @@ extern "C" {
 #include <libavutil/time.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/cpu.h>
 #include <libavdevice/avdevice.h>
 #include <Windows.h>
 #include <string.h>
@@ -32,7 +33,7 @@ extern AVRational DSHOW_TB;
 #define DEBUG_LOG(format, ...) ;
 #endif // DEBUG
 
-
+#define MAX_AUTO_THREADS 16
 
 typedef struct avframe_node {
 	AVFrame* frame;

@@ -1361,7 +1361,7 @@ static void flip_frame(AVFrame* frame)
 
 int fill_output_video(inout_context* ctx, AVFrame* frame)
 {
-	int ret = 0, filp = 0,use_point = 0;
+	int ret = 0, filp = 0;
 	AVFrame *f = av_frame_alloc();
 	if (!f) {
 		goto end;
@@ -1370,10 +1370,6 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 	f->width = ctx->output_frame_width;
 	f->height = ctx->output_frame_height;
 	f->format = ctx->output_frame_format;
-
-	if (f->width * f->height > 1920 * 1080) {
-		use_point = 1;
-	}
 
 	if (f->format == AV_PIX_FMT_BGR24 || f->format == AV_PIX_FMT_0RGB32) {
 		filp = 1;
@@ -1408,10 +1404,16 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		}
 		goto end;
 	}
-	
-	ctx->sws_ctx = sws_getCachedContext(ctx->sws_ctx, frame->width, frame->height, frame->format,
-		ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format,
-		use_point ? SWS_POINT : SWS_FAST_BILINEAR, NULL, NULL, NULL);
+	if (!ctx->sws_ctx) {
+		ctx->sws_ctx = sws_alloc_context();
+		if (ctx->sws_ctx) {
+			int nb_cpus = av_cpu_count();
+			if (nb_cpus > 1)
+				ctx->sws_ctx->threads = FFMIN(nb_cpus + 1, MAX_AUTO_THREADS);
+			else
+				ctx->sws_ctx->threads = 1;
+		}
+	}
 	if (!ctx->sws_ctx) {
 		ret = -1;
 		goto end;
@@ -1424,8 +1426,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		flip_frame(f);
 	}
 
-	sws_scale(ctx->sws_ctx, frame->data, frame->linesize, 0, frame->height,
-		f->data, f->linesize);
+	sws_scale_frame(ctx->sws_ctx, f, frame);
 
 	if (filp) {
 		flip_frame(f);
