@@ -1425,14 +1425,13 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 	if (filp) {
 		flip_frame(f);
 	}
-
+	av_frame_copy_props(f, frame); // 先复制属性，防止自动转换色域等，如需转色域，用视频滤镜
 	sws_scale_frame(ctx->sws_ctx, f, frame);
 
 	if (filp) {
 		flip_frame(f);
 	}
 
-	av_frame_copy_props(f, frame);
 	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
