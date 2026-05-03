@@ -206,7 +206,7 @@ STDMETHODIMP OmniVideoPin::QueryAccept(const AM_MEDIA_TYPE* pmt) {
     // Basic format checking
     if (pmt->majortype != MEDIATYPE_Video) return S_FALSE;
     if (pmt->formattype != FORMAT_VideoInfo) return S_FALSE;
-    if (pmt->subtype != MEDIASUBTYPE_RGB24 && pmt->subtype != MEDIASUBTYPE_RGB32 && pmt->subtype != MEDIASUBTYPE_YUY2 &&
+    if (pmt->subtype != MEDIASUBTYPE_RGB24 && pmt->subtype != MEDIASUBTYPE_RGB32 && pmt->subtype != MEDIASUBTYPE_ARGB32 && pmt->subtype != MEDIASUBTYPE_YUY2 &&
         pmt->subtype != MEDIASUBTYPE_IYUV && pmt->subtype != MEDIASUBTYPE_NV12) return S_FALSE;
     VIDEOINFOHEADER* pvi = (VIDEOINFOHEADER*)pmt->pbFormat;
     return S_OK;
@@ -404,7 +404,9 @@ STDMETHODIMP OmniVideoPin::SetFormatInternal(const AM_MEDIA_TYPE* pmt,BOOL setFr
             if (pmt->subtype == MEDIASUBTYPE_RGB32) {
                 m_currentFormat = AV_PIX_FMT_0RGB32;
             }
-
+            else if (pmt->subtype == MEDIASUBTYPE_ARGB32) {
+                m_currentFormat = AV_PIX_FMT_RGB32;
+            }
             else if (pmt->subtype == MEDIASUBTYPE_YUY2) {
                 m_currentFormat = AV_PIX_FMT_YUYV422;
             }
@@ -542,11 +544,15 @@ HRESULT OmniVideoPin::SetCustomFormat(const OmniVideoFormat& format) {
 
     if (format.subtype == MEDIASUBTYPE_RGB24) {
         bitsPerPixel = 24;
-        m_currentFormat = AV_PIX_FMT_RGB24;
+        m_currentFormat = AV_PIX_FMT_BGR24;
     }
     if (format.subtype == MEDIASUBTYPE_RGB32) {
         bitsPerPixel = 32;
         m_currentFormat = AV_PIX_FMT_0RGB32;
+    }
+    else if (format.subtype == MEDIASUBTYPE_ARGB32) {
+        bitsPerPixel = 32;
+        m_currentFormat = AV_PIX_FMT_RGB32;
     }
     else if (format.subtype == MEDIASUBTYPE_YUY2) {
         bitsPerPixel = 16;

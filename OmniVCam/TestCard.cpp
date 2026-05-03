@@ -533,7 +533,7 @@ public:
         const uint8_t* srcSlice[4] = { frameBufferAligned };
         int srcStride[4] = { rowSize };
 
-        if (outPixelFormat == AV_PIX_FMT_BGR24 || outPixelFormat == AV_PIX_FMT_0RGB32) {
+        if (outPixelFormat == AV_PIX_FMT_BGR24 || outPixelFormat == AV_PIX_FMT_0RGB32 || outPixelFormat == AV_PIX_FMT_RGB32) {
             srcSlice[0] += rowSize * (height - 1);
             srcStride[0] *= -1;
         }

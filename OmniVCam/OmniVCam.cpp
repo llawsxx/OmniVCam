@@ -56,7 +56,7 @@ AM_MEDIA_TYPE* CreateVideoMediaTypeWithFrameRate(int width, int height, REFERENC
 
     // 计算样本大小
     int bitsPerPixel = 24; // 默认RGB24
-    if (subtype == MEDIASUBTYPE_RGB32) {
+    if (subtype == MEDIASUBTYPE_RGB32 || subtype == MEDIASUBTYPE_ARGB32) {
         bitsPerPixel = 32;
     }
     else if (subtype == MEDIASUBTYPE_YUY2) {
@@ -88,7 +88,7 @@ AM_MEDIA_TYPE* CreateVideoMediaTypeWithFrameRate(int width, int height, REFERENC
     pvi->bmiHeader.biSizeImage = sampleSize;
 
     // 设置压缩格式
-    if (subtype == MEDIASUBTYPE_RGB24 || subtype == MEDIASUBTYPE_RGB32) {
+    if (subtype == MEDIASUBTYPE_RGB24 || subtype == MEDIASUBTYPE_RGB32 || subtype == MEDIASUBTYPE_ARGB32) {
         pvi->bmiHeader.biCompression = BI_RGB;
     }
     else if (subtype == MEDIASUBTYPE_YUY2) {
@@ -719,6 +719,7 @@ void FormatManager::InitializeVideoFormats() {
         { MEDIASUBTYPE_YUY2, L"YUY2" },
         { MEDIASUBTYPE_NV12, L"NV12" },
         { MEDIASUBTYPE_IYUV, L"IYUV" },
+        { MEDIASUBTYPE_ARGB32, L"ARGB32" },
         { MEDIASUBTYPE_RGB32, L"RGB32" },
         { MEDIASUBTYPE_RGB24, L"RGB24" }
     };
@@ -952,9 +953,9 @@ HRESULT RegisterVideoCaptureDevice(REFGUID rguid, LPCWSTR filterName) {
     // 视频Pin - 支持多种视频格式
     rp2[0].dwFlags = REG_PINFLAG_B_OUTPUT;
     rp2[0].cInstances = 1;
-    rp2[0].nMediaTypes = 5; // 支持5种视频格式
+    rp2[0].nMediaTypes = 6; // 支持6种视频格式
 
-    REGPINTYPES videoMediaTypes[5];
+    REGPINTYPES videoMediaTypes[6];
     videoMediaTypes[0].clsMajorType = &MEDIATYPE_Video;
     videoMediaTypes[0].clsMinorType = &MEDIASUBTYPE_RGB24;
 
@@ -962,13 +963,16 @@ HRESULT RegisterVideoCaptureDevice(REFGUID rguid, LPCWSTR filterName) {
     videoMediaTypes[1].clsMinorType = &MEDIASUBTYPE_RGB32;
 
     videoMediaTypes[2].clsMajorType = &MEDIATYPE_Video;
-    videoMediaTypes[2].clsMinorType = &MEDIASUBTYPE_IYUV;
+    videoMediaTypes[2].clsMinorType = &MEDIASUBTYPE_ARGB32;
 
     videoMediaTypes[3].clsMajorType = &MEDIATYPE_Video;
-    videoMediaTypes[3].clsMinorType = &MEDIASUBTYPE_NV12;
+    videoMediaTypes[3].clsMinorType = &MEDIASUBTYPE_IYUV;
 
     videoMediaTypes[4].clsMajorType = &MEDIATYPE_Video;
-    videoMediaTypes[4].clsMinorType = &MEDIASUBTYPE_YUY2;
+    videoMediaTypes[4].clsMinorType = &MEDIASUBTYPE_NV12;
+
+    videoMediaTypes[5].clsMajorType = &MEDIATYPE_Video;
+    videoMediaTypes[5].clsMinorType = &MEDIASUBTYPE_YUY2;
 
     rp2[0].lpMediaType = videoMediaTypes;
 

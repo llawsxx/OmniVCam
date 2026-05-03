@@ -1371,7 +1371,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 	f->height = ctx->output_frame_height;
 	f->format = ctx->output_frame_format;
 
-	if (f->format == AV_PIX_FMT_BGR24 || f->format == AV_PIX_FMT_0RGB32) {
+	if (f->format == AV_PIX_FMT_BGR24 || f->format == AV_PIX_FMT_0RGB32 || f->format == AV_PIX_FMT_RGB32) {
 		filp = 1;
 	}
 
