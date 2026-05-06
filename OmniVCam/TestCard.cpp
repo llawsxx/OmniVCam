@@ -395,7 +395,7 @@ public:
     }
 
     // 绘制信息文本（帧数）
-    void DrawInfoText(HDC hdc) {
+    void DrawInfoText(HDC hdc,char *infoText) {
         // 创建字体
         HFONT hFont = CreateFont(
             28, 0, 0, 0, FW_NORMAL,
@@ -412,8 +412,21 @@ public:
         SetBkMode(hdc, TRANSPARENT);
 
         // 绘制帧数
-        std::wstring frameText = std::to_wstring(frameCount);
-        TextOut(hdc, 10, barHeight, frameText.c_str(), (int)frameText.length());
+        std::string frameText = std::to_string(frameCount);
+        TextOutA(hdc, 10, barHeight, frameText.c_str(), (int)frameText.length());
+
+        if (infoText) {
+            std::string infoText2 = std::string(infoText);
+            std::istringstream iss(infoText2);
+            std::string line;
+            int lineNum = 0;
+            int lineHeight = 30;
+
+            while (std::getline(iss, line, '\n')) {
+                TextOutA(hdc, 10, barHeight + 30 + lineNum * lineHeight, line.c_str(), (int)line.length());
+                lineNum++;
+            }
+        }
 
         // 恢复旧字体
         SelectObject(hdc, hOldFont);
@@ -495,7 +508,7 @@ public:
         DeleteObject(hBrush);
     }
 
-    AVFrame* Draw() {
+    AVFrame* Draw(char* infoText) {
         if (!frameBuffer || !frameBufferAligned || !swsCtx) return NULL;
         HDC hdc = hMemDC;
 
@@ -524,7 +537,7 @@ public:
         }
 
         // 4. 绘制帧数和时间戳信息
-        DrawInfoText(hdc);
+        DrawInfoText(hdc, infoText);
 
 
         memcpy(frameBufferAligned + rowSize * barHeight, frameBuffer + rowSize * barHeight, rowSize * (height - barHeight));
@@ -583,7 +596,7 @@ private:
     HBITMAP hOldBitmap;
     uint8_t* frameBuffer;
     uint8_t* frameBufferAligned;
-
+    
 	// DVD风格的颜色集合
 	std::vector<COLORREF> dvdColors = {
 		RGB(255, 0, 0),     // 红色
@@ -619,9 +632,9 @@ void test_card_free(void* p) {
     TestCard* card = (TestCard*)p;
     delete card;
 }
-AVFrame* test_card_draw(void* p) {
+AVFrame* test_card_draw(void* p,char* infoText) {
     TestCard* card = (TestCard*)p;
-    return card->Draw();
+    return card->Draw(infoText);
 }
 
 int main20() {
@@ -629,7 +642,7 @@ int main20() {
     int count = 0;
     while (1) {
         printf("%d\n", count++);
-        AVFrame *f = test_card_draw(p);
+        AVFrame *f = test_card_draw(p,NULL);
         av_frame_free(&f);
     }
     test_card_free(p);

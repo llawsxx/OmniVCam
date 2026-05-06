@@ -1524,9 +1524,32 @@ DWORD test_card_thread(LPVOID p) {
 	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
 	if (!card) return -1;
 	ctx->input_frame_id = av_gettime_relative();
+	char infoText[512] = { 0 };
 	AVFrame* f;
 	while (!ctx->force_exit) {
-		if (f = test_card_draw(card)) {
+		EnterCriticalSection(&ctx->filter_text_mutex);
+		snprintf(infoText, sizeof(infoText),
+			"output start time shift (ns): %I64d\n"
+			"frame output average block time (ns): %lf\n"
+			"video queue count/max_count: %d/%d\n"
+			"audio queue count/max_count: %d/%d\n"
+			"fps: %d/%d\n"
+			"fixed interval (ns): %I64d\n"
+			"output start clock time (ns): %I64d\n"
+			"video filter: %s\n"
+			"audio filter: %s",
+			ctx->output_start_shift_time,
+			ctx->output_video_avg_block_time,
+			ctx->frame_queues[0]->count,
+			ctx->frame_queues[0]->max_count,
+			ctx->frame_queues[1]->count,
+			ctx->frame_queues[1]->max_count,
+			ctx->output_fps.num,
+			ctx->output_fps.den,  ctx->output_video_interval_ns, ctx->output_start_clock_time,
+			ctx->filter_text,
+			ctx->audio_filter_text);
+		LeaveCriticalSection(&ctx->filter_text_mutex);
+		if (f = test_card_draw(card, infoText)) {
 			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
 				break;
 			}
@@ -2092,7 +2115,10 @@ int output_video(inout_context* ctx, AVFrame* frame)
 	frame->pts = ctx->output_video_pts_time;
 	frame->pict_type = AV_PICTURE_TYPE_NONE;
 	if (ctx->video_callback) {
+		uint64_t start_time = os_gettime_ns();
 		ctx->video_callback(ctx->callback_private, frame);
+		uint64_t end_time = os_gettime_ns();
+		ctx->output_video_avg_block_time = ctx->output_video_avg_block_time * 0.99 + (end_time - start_time) * 0.01;
 	}
 	//printf("output video: %lld", ctx->output_video_pts_time);
 	ctx->output_frame_count += 1;

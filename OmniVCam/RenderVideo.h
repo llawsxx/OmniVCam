@@ -176,6 +176,7 @@ typedef struct inout_context {
 	int64_t output_first_start_clock_time;
 	int64_t output_start_clock_time;
 	int64_t output_start_shift_time;
+	double output_video_avg_block_time;
 	//int64_t output_last_clock_time;
 	AVRational output_fps;
 
