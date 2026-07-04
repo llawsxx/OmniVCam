@@ -71,8 +71,8 @@ namespace OmniVCamController
             SuspendLayout();
 
             Text = "OmniVCam Controller";
-            MinimumSize = new Size(980, 720);
-            Size = new Size(1180, 780);
+            MinimumSize = new Size(820, 600);
+            Size = new Size(980, 680);
             Font = new Font("Segoe UI", 9F);
 
             hostBox.Text = "127.0.0.1";
@@ -93,11 +93,13 @@ namespace OmniVCamController
             shiftBox.Minimum = 0;
             shiftBox.Maximum = 41700;
             shiftBox.Increment = 1500;
+            shiftBox.Width = 90;
             seekBox.Maximum = 86400;
+            seekBox.Width = 90;
             positionLabel.Text = "00:00:00 / --:--:--";
             positionLabel.AutoSize = true;
             positionLabel.Anchor = AnchorStyles.Left;
-            positionLabel.Padding = new Padding(0, 6, 0, 0);
+            positionLabel.Padding = new Padding(0, 4, 0, 0);
             progressBar.Minimum = 0;
             progressBar.Maximum = 10000;
             progressBar.TickFrequency = 1000;
@@ -107,7 +109,7 @@ namespace OmniVCamController
             byteSeekBox.Text = "Byte seek";
             byteSeekBox.AutoSize = true;
             byteSeekBox.Anchor = AnchorStyles.Left;
-            byteSeekBox.Padding = new Padding(0, 6, 0, 0);
+            byteSeekBox.Padding = new Padding(0, 4, 0, 0);
             logBox.Multiline = true;
             logBox.ReadOnly = true;
             logBox.ScrollBars = ScrollBars.Vertical;
@@ -119,7 +121,7 @@ namespace OmniVCamController
             playlistView.HideSelection = false;
             playoutStatusLabel.Text = "Status: stopped";
             playoutStatusLabel.AutoSize = true;
-            playoutStatusLabel.Padding = new Padding(8, 6, 0, 0);
+            playoutStatusLabel.Padding = new Padding(6, 5, 0, 0);
             playoutModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
             autoAdvanceBox.Text = "Auto";
             autoAdvanceBox.Checked = true;
@@ -138,7 +140,7 @@ namespace OmniVCamController
 
             rootSplitContainer.Dock = DockStyle.Fill;
             rootSplitContainer.Orientation = Orientation.Horizontal;
-            rootSplitContainer.SplitterDistance = 245;
+            rootSplitContainer.SplitterDistance = 178;
             rootSplitContainer.Name = "rootSplitContainer";
             Controls.Add(rootSplitContainer);
 

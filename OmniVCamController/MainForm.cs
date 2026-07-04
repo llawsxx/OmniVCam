@@ -35,6 +35,11 @@ namespace OmniVCamController
         private DateTime pendingSeekUntil = DateTime.MinValue;
         private bool updatingProgress;
         private bool draggingProgress;
+        private bool suppressSeekValueEvent;
+        private bool controlsReady;
+
+        private String lastVideoFilter = "";
+        private String lastAudioFilter = "";
 
         public MainForm()
         {
@@ -43,9 +48,10 @@ namespace OmniVCamController
             BuildPlaylistPanel(rootSplitContainer.Panel2);
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
-            playoutModeBox.Items.AddRange(new object[] { "Sequential", "Random", "Timed" });
+            playoutModeBox.Items.AddRange(new object[] { "Sequential", "Random" });
             playoutModeBox.SelectedIndex = 0;
             scheduledStartPicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
+            controlsReady = true;
 
             statusTimer.Tick += async (_, __) => await RefreshStatusAsync();
             statusTimer.Start();
@@ -55,21 +61,21 @@ namespace OmniVCamController
 
         private void BuildManualPanel(Control parent)
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             parent.Controls.Add(root);
 
             var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, AutoSize = true };
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             root.Controls.Add(grid, 0, 0);
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
             AddRow(grid, "Input", CreateInputPicker(), "Options", optionsBox);
-            AddRow(grid, "HW decode", hwDecodeBox, "Shift us", shiftBox);
+            AddRow(grid, "HW decode", hwDecodeBox, "Shift us", CreateShiftControl());
             AddRow(grid, "Video filter", videoFilterBox, "Audio filter", audioFilterBox);
             AddRow(grid, "Video index", videoIndexBox, "Audio index", audioIndexBox);
             AddRow(grid, "Position", positionLabel, "Seek seconds", seekBox);
@@ -77,16 +83,46 @@ namespace OmniVCamController
             progressBar.MouseDown += ProgressBar_MouseDown;
             progressBar.MouseMove += ProgressBar_MouseMove;
             progressBar.MouseUp += async (_, e) => await ProgressBar_MouseUpAsync(e);
-            shiftBox.ValueChanged += async (_, __) => await SendCommandAsync($"SET_SHIFT {(long)shiftBox.Value}");
+            shiftBox.ValueChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendCommandAsync($"SET_SHIFT {(long)shiftBox.Value}");
+            };
+            videoFilterBox.Leave += async (_, __) =>
+            {
+                if (videoFilterBox.Text != lastVideoFilter)
+                {
+                    lastVideoFilter = videoFilterBox.Text;
+                    if (controlsReady) await SendCommandAsync("SET_FILTER " + videoFilterBox.Text.Trim());
+                }
+            };
+            audioFilterBox.Leave += async (_, __) =>
+            {
+                if (audioFilterBox.Text != lastAudioFilter)
+                {
+                    lastAudioFilter = audioFilterBox.Text;
+                    if (controlsReady) await SendCommandAsync("SET_AUDIO_FILTER " + audioFilterBox.Text.Trim());
+                }
+            };
+            videoIndexBox.ValueChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
+            };
+            audioIndexBox.ValueChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
+            };
+            hwDecodeBox.TextChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}");
+            };
+            seekBox.ValueChanged += async (_, __) =>
+            {
+                if (controlsReady && !suppressSeekValueEvent) await SeekBySecondsAsync((long)seekBox.Value);
+            };
 
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 10, 0, 10) };
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
             buttons.Controls.Add(MakeButton("Ping", async (_, __) => await SendCommandAsync("PING")));
             buttons.Controls.Add(MakeButton("Play", async (_, __) => await PlayManualAsync()));
-            buttons.Controls.Add(MakeButton("Set video filter", async (_, __) => await SendCommandAsync("SET_FILTER " + videoFilterBox.Text.Trim())));
-            buttons.Controls.Add(MakeButton("Set audio filter", async (_, __) => await SendCommandAsync("SET_AUDIO_FILTER " + audioFilterBox.Text.Trim())));
-            buttons.Controls.Add(MakeButton("Set indexes", async (_, __) => await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}")));
-            buttons.Controls.Add(MakeButton("Seek", async (_, __) => await SeekBySecondsAsync((long)seekBox.Value)));
-            buttons.Controls.Add(MakeButton("Set HW decode", async (_, __) => await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}")));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
@@ -98,12 +134,12 @@ namespace OmniVCamController
 
         private void BuildPlaylistPanel(Control parent)
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12, 0, 12, 12) };
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8, 0, 8, 8) };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             parent.Controls.Add(root);
 
-            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 8) };
+            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
             toolbar.Controls.Add(MakeButton("Add files", async (_, __) => await AddFilesAsync()));
             toolbar.Controls.Add(MakeButton("Add folder", async (_, __) => await AddFolderAsync()));
             toolbar.Controls.Add(MakeButton("Add bumper", async (_, __) => await AddBumperAsync()));
@@ -114,11 +150,8 @@ namespace OmniVCamController
             toolbar.Controls.Add(MakeButton("Load", async (_, __) => await LoadPlaylistAsync()));
             toolbar.Controls.Add(MakeButton("Save", (_, __) => SavePlaylist()));
             toolbar.Controls.Add(MakeButton("Refresh durations", async (_, __) => await RefreshDurationsAsync()));
-            toolbar.Controls.Add(new Label { Text = "Mode", AutoSize = true, Padding = new Padding(12, 6, 0, 0) });
+            toolbar.Controls.Add(new Label { Text = "Mode", AutoSize = true, Padding = new Padding(8, 5, 0, 0) });
             toolbar.Controls.Add(playoutModeBox);
-            toolbar.Controls.Add(autoAdvanceBox);
-            toolbar.Controls.Add(new Label { Text = "Default seconds", AutoSize = true, Padding = new Padding(8, 6, 0, 0) });
-            toolbar.Controls.Add(defaultDurationBox);
             toolbar.Controls.Add(playoutStatusLabel);
             toolbar.Controls.Add(scheduledStartBox);
             toolbar.Controls.Add(scheduledStartPicker);
@@ -143,17 +176,60 @@ namespace OmniVCamController
         {
             int row = grid.RowCount++;
             grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            grid.Controls.Add(new Label { Text = label1, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(0, 6, 0, 0) }, 0, row);
+            grid.Controls.Add(new Label { Text = label1, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(0, 4, 0, 0) }, 0, row);
             grid.Controls.Add(control1, 1, row);
-            grid.Controls.Add(new Label { Text = label2, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(8, 6, 0, 0) }, 2, row);
+            grid.Controls.Add(new Label { Text = label2, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 4, 0, 0) }, 2, row);
             grid.Controls.Add(control2, 3, row);
         }
 
         private static Button MakeButton(string text, EventHandler handler)
         {
-            var button = new Button { Text = text, AutoSize = true, Margin = new Padding(0, 0, 8, 0) };
+            var button = new Button { Text = text, AutoSize = true, Margin = new Padding(0, 0, 6, 0), Padding = new Padding(3, 1, 3, 1) };
             button.Click += handler;
             return button;
+        }
+
+        private Control CreateShiftControl()
+        {
+            var panel = new TableLayoutPanel
+            {
+                ColumnCount = 3,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AutoSize = true
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
+
+            shiftBox.Dock = DockStyle.Fill;
+            var minusButton = MakeStepButton("-", () => AdjustShift(-shiftBox.Increment));
+            var plusButton = MakeStepButton("+", () => AdjustShift(shiftBox.Increment));
+
+            panel.Controls.Add(shiftBox, 0, 0);
+            panel.Controls.Add(minusButton, 1, 0);
+            panel.Controls.Add(plusButton, 2, 0);
+
+            return panel;
+        }
+
+        private static Button MakeStepButton(string text, Action action)
+        {
+            var button = new Button
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(4, 0, 0, 0),
+                Width = 34,
+                Height = 26
+            };
+            button.Click += (_, __) => action();
+            return button;
+        }
+
+        private void AdjustShift(decimal delta)
+        {
+            shiftBox.Value = Math.Max(shiftBox.Minimum, Math.Min(shiftBox.Maximum, shiftBox.Value + delta));
         }
 
         private Control CreateInputPicker()
@@ -392,7 +468,15 @@ namespace OmniVCamController
             if (playlist.Count == 0) return;
             if (playoutModeBox.Text == "Random")
             {
-                currentIndex = random.Next(playlist.Count);
+                int nextValue = random.Next(playlist.Count);
+                if(playlist.Count > 1)
+                {
+                    while(nextValue == currentIndex)
+                    {
+                        nextValue = random.Next(playlist.Count);
+                    }
+                }
+                currentIndex = nextValue;
             }
             else
             {
@@ -707,7 +791,9 @@ namespace OmniVCamController
                 return;
             }
             long seconds = currentDurationSeconds * progress / progressBar.Maximum;
+            suppressSeekValueEvent = true;
             seekBox.Value = Math.Max(seekBox.Minimum, Math.Min(seekBox.Maximum, seconds));
+            suppressSeekValueEvent = false;
             await SeekBySecondsAsync(seconds);
         }
 
