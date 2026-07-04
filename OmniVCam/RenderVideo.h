@@ -88,7 +88,6 @@ typedef struct filter_context {
 
 typedef struct inout_context {
 	char* input_name;
-	char* current_status_file_name;
 	CRITICAL_SECTION input_change_mutex;
 	AVFormatContext* fmt_ctx;
 	codec_context decoders[3];
@@ -136,6 +135,7 @@ typedef struct inout_context {
 
 	int64_t input_start_time;
 	int64_t last_packet_time; //AV_TIME_BASE
+	int64_t output_status_time; //UNIVERSAL_TB, source pts of the video frame currently sent to output
 	int64_t timeout;
 	int special_source_running;
 	int test_card_style;
@@ -200,6 +200,7 @@ typedef struct inout_options {
 	void *callback_private;
 	int send_exit;
 	const char* config_path;
+	int tcp_port;
 }inout_options;
 
 int open_thread(HANDLE* thread, LPTHREAD_START_ROUTINE start, LPVOID arg);

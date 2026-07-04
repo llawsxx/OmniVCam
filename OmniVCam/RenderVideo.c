@@ -1,3 +1,9 @@
+#define _CRT_SECURE_NO_WARNINGS
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <WinSock2.h>
+#include <Objbase.h>
 #include "RenderVideo.h"
 #include "ParseConfig.h"
 #include "TestCard.h"
@@ -32,7 +38,24 @@ void inout_ctx_frame_queue_wait_empty(inout_context *ctx, int* exit) {
 	}
 }
 
-int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int *exit) {
+static int frame_queue_is_empty(frame_queue* q)
+{
+	int empty;
+	EnterCriticalSection(&q->mutex);
+	empty = q->count <= 0;
+	LeaveCriticalSection(&q->mutex);
+	return empty;
+}
+
+static int inout_ctx_frame_queues_empty(inout_context* ctx)
+{
+	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
+		if (!frame_queue_is_empty(ctx->frame_queues[i])) return 0;
+	}
+	return 1;
+}
+
+int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit) {
 	int64_t start_time = av_gettime_relative();
 	int ret = 0;
 	EnterCriticalSection(&q->mutex);
@@ -59,6 +82,10 @@ int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_
 		av_free(node);
 		ret = -1;
 		goto end;
+	}
+
+	if (frame->pts != AV_NOPTS_VALUE && input_fmt_start_time != AV_NOPTS_VALUE) {
+		frame->pts -= input_fmt_start_time;
 	}
 
 	if (q->last_pts_value != AV_NOPTS_VALUE) {
@@ -219,9 +246,17 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 
 	q->reached_center = 0;
 	if (left_count == -1 || right_count == -1) {
-		q->center_count = -1;
-		q->left_count = -1;
-		q->right_count = -1;
+		if (center_count != -1)
+		{
+			q->left_count = 0;
+			q->right_count = INT32_MAX;
+			q->center_count = center_count;
+		}
+		else {
+			q->center_count = -1;
+			q->left_count = -1;
+			q->right_count = -1;
+		}
 		goto end;
 	}
 
@@ -439,6 +474,7 @@ inout_context* inout_context_alloc(
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
 	ctx->last_packet_time = AV_NOPTS_VALUE;
+	ctx->input_start_time = AV_NOPTS_VALUE;
 	return ctx;
 
 failed:
@@ -489,14 +525,13 @@ void inout_context_free(inout_context** ctx)
 	DeleteCriticalSection(&(*ctx)->filter_text_mutex);
 	DeleteCriticalSection(&(*ctx)->input_change_mutex);
 
-	free_thread((*ctx)->reading_tid);
-	free_thread((*ctx)->special_source_tid);
-	free_thread((*ctx)->decode_video_tid);
-	free_thread((*ctx)->decode_audio_tid);
+	free_thread(&(*ctx)->reading_tid);
+	free_thread(&(*ctx)->special_source_tid);
+	free_thread(&(*ctx)->decode_video_tid);
+	free_thread(&(*ctx)->decode_audio_tid);
 	av_free((*ctx)->filter_text);
 	av_free((*ctx)->audio_filter_text);
 	av_freep(&(*ctx)->input_name);
-	av_freep(&(*ctx)->current_status_file_name);
 	frame_queue_free(&(*ctx)->frame_queues[0]);
 	frame_queue_free(&(*ctx)->frame_queues[1]);
 	av_channel_layout_uninit(&(*ctx)->output_audio_layout);
@@ -511,10 +546,10 @@ void inout_context_free(inout_context** ctx)
 void inout_context_reset_input(inout_context* ctx)
 {
 	if (!ctx) return;
-	free_thread(ctx->reading_tid);
-	free_thread(ctx->special_source_tid);
-	free_thread(ctx->decode_video_tid);
-	free_thread(ctx->decode_audio_tid);
+	free_thread(&ctx->reading_tid);
+	free_thread(&ctx->special_source_tid);
+	free_thread(&ctx->decode_video_tid);
+	free_thread(&ctx->decode_audio_tid);
 
 	avformat_close_input(&ctx->fmt_ctx);
 
@@ -576,10 +611,10 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->last_sar = (AVRational){0,0};
 	ctx->last_packet_time = AV_NOPTS_VALUE;
 	av_freep(&ctx->input_name);
-	av_freep(&ctx->current_status_file_name);
 	ctx->special_source_running = 0;
 	ctx->force_exit = 0;
 	ctx->eof = 0;
+	ctx->input_start_time = AV_NOPTS_VALUE;
 }
 
 int input_call_back(void* p)
@@ -828,7 +863,7 @@ int input_find_decoder(const char* name,
 }
 
 
-int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDictionary** dict_opts, inout_context* ctx,
+int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_context* ctx,
 	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count, int queue_center_count, char *vcodec_str,char* acodec_str,char * scodec_str, char* dcodec_str)
 {
 
@@ -905,15 +940,13 @@ int open_input(char* fmt_name, char* name, char* current_status_file_name, AVDic
 	}
 
 	ctx->fmt_ctx = fmt_ctx;
+	ctx->input_start_time = av_rescale_q_rnd(ctx->fmt_ctx->start_time, (AVRational) { 1, AV_TIME_BASE }, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 	if (name)
 	{
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
 	}
-	if (current_status_file_name) {
-		av_freep(&ctx->current_status_file_name);
-		ctx->current_status_file_name = av_strdup(current_status_file_name);
-	}
+
 	ctx->input_frame_id = av_gettime_relative();
 
 	if(ctx->decoders[0].index >= 0)
@@ -940,21 +973,8 @@ DWORD WINAPI reading_input(LPVOID p)
 {
 	inout_context* ctx = (inout_context*)p;
 	AVPacket* pkt = av_packet_alloc();
-	ctx->input_start_time = av_gettime_relative();
-	int64_t last_output_txt_time = 0;
-	FILE* txt_fp = NULL;
-	char buf[384];
-	char time_str[20];
-	time_t now = time(NULL);
+
 	int ret;
-	if (ctx->current_status_file_name) {
-		txt_fp = fopen(ctx->current_status_file_name, "a+");
-		if (txt_fp) {
-			strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&now));
-			sprintf_s(buf, sizeof(buf), "[%s] %s\n", time_str, ctx->input_name);
-			fwrite(buf, 1, strlen(buf), txt_fp);
-		}
-	}
 
 	while (1)
 	{
@@ -977,15 +997,6 @@ DWORD WINAPI reading_input(LPVOID p)
 
 		set_last_packet_time(pkt, ctx);
 
-		if (txt_fp) {
-			if (ctx->last_clock_time - last_output_txt_time >= 1 * 1000000) {
-				last_output_txt_time = ctx->last_clock_time;
-				now = time(NULL);
-				strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&now));
-				sprintf_s(buf, sizeof(buf), "[%s] %f\n", time_str, ctx->last_packet_time / 1000000.0);
-				fwrite(buf, 1, strlen(buf), txt_fp);
-			}
-		}
 
 		if (pkt->stream_index == ctx->decoders[0].index)
 		{
@@ -1007,8 +1018,7 @@ DWORD WINAPI reading_input(LPVOID p)
 		
 	}
 	av_packet_free(&pkt);
-	if(txt_fp)
-		fclose(txt_fp);
+
 	ctx->eof = 1;
 	return 0;
 }
@@ -1398,7 +1408,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		}
 
 		av_frame_copy_props(f, frame);
-		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
 		}
@@ -1432,7 +1442,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		flip_frame(f);
 	}
 
-	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
+	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -1510,7 +1520,7 @@ int fill_output_audio(inout_context* ctx, AVFrame* frame)
 	av_frame_copy_props(f, frame);
 	f->sample_rate = ctx->output_audio_sample_rate;
 
-	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
+	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -1550,7 +1560,7 @@ DWORD test_card_thread(LPVOID p) {
 			ctx->audio_filter_text);
 		LeaveCriticalSection(&ctx->filter_text_mutex);
 		if (f = test_card_draw(card, infoText)) {
-			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, &ctx->force_exit) < 0) {
+			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 				break;
 			}
 		}
@@ -1777,6 +1787,12 @@ end:
 int start_read(inout_context* ctx) {
 	int ret = -1;
 	HANDLE read_tid = NULL;
+	ctx->force_exit = 0;
+	ctx->eof = 0;
+	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
+		ctx->decoders[i].exit = 0;
+		ctx->decoders[i].sent_eof = 0;
+	}
 	HANDLE special_source_tid = NULL;
 	HANDLE decode_video_tid = NULL;
 	HANDLE decode_audio_tid = NULL;
@@ -1845,6 +1861,41 @@ void stop_read(inout_context* ctx, int force)
 	free_thread(&ctx->special_source_tid);
 	free_thread(&ctx->decode_video_tid);
 	free_thread(&ctx->decode_audio_tid);
+}
+void reset_after_seek(inout_context* ctx)
+{
+	if (!ctx) return;
+	ctx->force_exit = 0;
+	ctx->eof = 0;
+	ctx->last_packet_time = AV_NOPTS_VALUE;
+	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
+		ctx->decoders[i].exit = 0;
+		ctx->decoders[i].sent_eof = 0;
+		if (ctx->decoders[i].avctx) {
+			avcodec_flush_buffers(ctx->decoders[i].avctx);
+		}
+	}
+	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++) {
+		packet_queue_clean(&ctx->queues[i]);
+	}
+	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
+		frame_queue_clean(ctx->frame_queues[i]);
+	}
+	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++) {
+		avfilter_graph_free(&ctx->filter_contexts[i].filter_graph);
+		avfilter_inout_free(&ctx->filter_contexts[i].input);
+		avfilter_inout_free(&ctx->filter_contexts[i].output);
+		ctx->filter_contexts[i].buffer_src = NULL;
+		ctx->filter_contexts[i].buffer_sink = NULL;
+	}
+	ctx->needs_reinit_filter = 1;
+	ctx->needs_reinit_audio_filter = 1;
+	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+	ctx->output_last_audio_nb_samples = 0;
+	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+	av_audio_fifo_reset(ctx->output_audio_fifo);
 }
 
 
@@ -2251,6 +2302,9 @@ HRESULT WINAPI output_thread(LPVOID p)
 				}
 				if (ret >= 0)
 				{
+					if (audio_frame->pts != AV_NOPTS_VALUE && (ctx->output_status_time == AV_NOPTS_VALUE || audio_frame->pts >= ctx->output_status_time)) {
+						ctx->output_status_time = audio_frame->pts;
+					}
 					last_audio_sync_diff = get_sync_diff(ctx, audio_frame->pts);
 					fill_audio_fifo(ctx, audio_frame);
 					get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts, shift_samples);
@@ -2306,6 +2360,9 @@ HRESULT WINAPI output_thread(LPVOID p)
 			}
 			if (ret >= 0)
 			{
+				if (video_frame->pts != AV_NOPTS_VALUE) {
+					ctx->output_status_time = video_frame->pts;
+				}
 				update_offset_if_needed(ctx, video_frame->pts, 1);
 				last_video_sync_diff = get_sync_diff(ctx, video_frame->pts);
 			}
@@ -2592,62 +2649,398 @@ char* av_dict_pop_value(AVDictionary** dict, char* key) {
 	}
 	return dup;
 }
+typedef enum tcp_control_command_type {
+	TCP_CONTROL_NONE = 0,
+	TCP_CONTROL_PLAY,
+	TCP_CONTROL_SET_FILTER,
+	TCP_CONTROL_SET_AUDIO_FILTER,
+	TCP_CONTROL_SET_INDEX,
+	TCP_CONTROL_SET_SHIFT,
+	TCP_CONTROL_SEEK,
+	TCP_CONTROL_SEEK_BYTE_PERCENT,
+	TCP_CONTROL_SET_HW_DECODE,
+	TCP_CONTROL_STOP,
+	TCP_CONTROL_REOPEN
+} tcp_control_command_type;
+
+typedef struct tcp_control_command {
+	tcp_control_command_type type;
+	char* text;
+	int video_index;
+	int audio_index;
+	int64_t number;
+} tcp_control_command;
+
+static int64_t probe_input_duration_seconds(char* text)
+{
+	char* input = NULL;
+	char* tab_pos = NULL;
+	char* format = NULL;
+	char* probesize = NULL;
+	char* analyze_duration = NULL;
+	AVDictionary* dict = NULL;
+	AVDictionary* temp_dict = NULL;
+	AVFormatContext* fmt_ctx = NULL;
+	const AVInputFormat* in_fmt = NULL;
+	int64_t duration = 0;
+
+	if (!text || text[0] == '\0') return -1;
+	input = av_strdup(text);
+	if (!input) return -1;
+
+	tab_pos = strchr(input, '\t');
+	if (tab_pos) {
+		*tab_pos = '\0';
+		av_dict_parse_string(&dict, tab_pos + 1, "=", ",", 0);
+	}
+
+	if (strcmp(input, "<TESTCARD>") == 0 || strcmp(input, "<TESTCARD2>") == 0 || strcmp(input, "<OBSVCAM>") == 0) {
+		duration = 0;
+		goto end;
+	}
+
+	if (dict && av_dict_copy(&temp_dict, dict, 0) >= 0) {
+		format = av_dict_pop_value(&temp_dict, "format");
+		probesize = av_dict_pop_value(&temp_dict, "probesize");
+		analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
+	}
+
+	fmt_ctx = avformat_alloc_context();
+	if (!fmt_ctx) {
+		duration = -1;
+		goto end;
+	}
+	if (probesize && atoi(probesize) > 0) fmt_ctx->probesize = atoi(probesize);
+	if (analyze_duration && atoi(analyze_duration) > 0) fmt_ctx->max_analyze_duration = atoi(analyze_duration);
+	if (format) in_fmt = av_find_input_format(format);
+
+	if (avformat_open_input(&fmt_ctx, input, in_fmt, &temp_dict) < 0) {
+		duration = -1;
+		goto end;
+	}
+	if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
+		duration = -1;
+		goto end;
+	}
+	if (fmt_ctx->duration != AV_NOPTS_VALUE && fmt_ctx->duration > 0) {
+		duration = (fmt_ctx->duration + AV_TIME_BASE / 2) / AV_TIME_BASE;
+	}
+
+end:
+	avformat_close_input(&fmt_ctx);
+	av_dict_free(&dict);
+	av_dict_free(&temp_dict);
+	if (format) av_free(format);
+	if (probesize) av_free(probesize);
+	if (analyze_duration) av_free(analyze_duration);
+	av_free(input);
+	return duration;
+}
+
+#define TCP_CONTROL_QUEUE_SIZE 32
+
+typedef struct tcp_control_server {
+	CRITICAL_SECTION mutex;
+	HANDLE thread;
+	SOCKET listen_socket;
+	SOCKET client_socket;
+	int port;
+	int exit;
+	int started;
+	int64_t status_time;
+	int64_t status_duration;
+	int64_t status_size;
+	char status_input[1024];
+	char status_state[32];
+	tcp_control_command queue[TCP_CONTROL_QUEUE_SIZE];
+	int queue_head;
+	int queue_count;
+} tcp_control_server;
+
+static void tcp_control_command_free(tcp_control_command* cmd)
+{
+	if (!cmd) return;
+	av_freep(&cmd->text);
+	memset(cmd, 0, sizeof(*cmd));
+}
+
+static void tcp_control_push(tcp_control_server* server, tcp_control_command* cmd)
+{
+	EnterCriticalSection(&server->mutex);
+	if (server->queue_count >= TCP_CONTROL_QUEUE_SIZE) {
+		tcp_control_command_free(&server->queue[server->queue_head]);
+		server->queue_head = (server->queue_head + 1) % TCP_CONTROL_QUEUE_SIZE;
+		server->queue_count--;
+	}
+	int tail = (server->queue_head + server->queue_count) % TCP_CONTROL_QUEUE_SIZE;
+	server->queue[tail] = *cmd;
+	server->queue_count++;
+	memset(cmd, 0, sizeof(*cmd));
+	LeaveCriticalSection(&server->mutex);
+}
+
+static int tcp_control_pop(tcp_control_server* server, tcp_control_command* cmd)
+{
+	int got = 0;
+	EnterCriticalSection(&server->mutex);
+	if (server->queue_count > 0) {
+		*cmd = server->queue[server->queue_head];
+		memset(&server->queue[server->queue_head], 0, sizeof(server->queue[server->queue_head]));
+		server->queue_head = (server->queue_head + 1) % TCP_CONTROL_QUEUE_SIZE;
+		server->queue_count--;
+		got = 1;
+	}
+	LeaveCriticalSection(&server->mutex);
+	return got;
+}
+
+static char* tcp_trim_left(char* s)
+{
+	while (s && (*s == ' ' || *s == '\t')) s++;
+	return s;
+}
+
+static void tcp_trim_right(char* s)
+{
+	int len;
+	if (!s) return;
+	len = (int)strlen(s);
+	while (len > 0 && (s[len - 1] == '\r' || s[len - 1] == '\n' || s[len - 1] == ' ' || s[len - 1] == '\t')) {
+		s[--len] = '\0';
+	}
+}
+
+static int starts_with_command(const char* line, const char* command)
+{
+	size_t len = strlen(command);
+	return _strnicmp(line, command, len) == 0 && (line[len] == '\0' || line[len] == ' ' || line[len] == '\t');
+}
+
+static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_control_command* cmd, char* reply, int reply_size)
+{
+	char* arg;
+	memset(cmd, 0, sizeof(*cmd));
+	strcpy_s(reply, reply_size, "OK\n");
+	tcp_trim_right(line);
+	line = tcp_trim_left(line);
+
+	if (line[0] == '\0' || starts_with_command(line, "PING")) {
+		strcpy_s(reply, reply_size, "OK PONG\n");
+		return;
+	}
+	if (starts_with_command(line, "PLAY")) {
+		arg = tcp_trim_left(line + 4);
+		if (!arg || arg[0] == '\0') {
+			strcpy_s(reply, reply_size, "ERR PLAY requires an input\n");
+			return;
+		}
+		cmd->type = TCP_CONTROL_PLAY;
+		cmd->text = av_strdup(arg);
+		return;
+	}
+	if (starts_with_command(line, "SET_FILTER")) {
+		cmd->type = TCP_CONTROL_SET_FILTER;
+		cmd->text = av_strdup(tcp_trim_left(line + 10));
+		return;
+	}
+	if (starts_with_command(line, "SET_AUDIO_FILTER")) {
+		cmd->type = TCP_CONTROL_SET_AUDIO_FILTER;
+		cmd->text = av_strdup(tcp_trim_left(line + 16));
+		return;
+	}
+	if (starts_with_command(line, "SET_SHIFT")) {
+		cmd->type = TCP_CONTROL_SET_SHIFT;
+		cmd->number = _atoi64(tcp_trim_left(line + 9));
+		return;
+	}
+	if (starts_with_command(line, "STATUS")) {
+		EnterCriticalSection(&server->mutex);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, server->status_input);
+		LeaveCriticalSection(&server->mutex);
+		return;
+	}
+	if (starts_with_command(line, "DURATION")) {
+		int64_t duration = probe_input_duration_seconds(tcp_trim_left(line + 8));
+		if (duration < 0) sprintf_s(reply, reply_size, "ERR duration unavailable\n");
+		else sprintf_s(reply, reply_size, "OK duration=%I64d\n", duration);
+		return;
+	}
+	if (starts_with_command(line, "SEEK_BYTE_PERCENT")) {
+		cmd->type = TCP_CONTROL_SEEK_BYTE_PERCENT;
+		cmd->number = _atoi64(tcp_trim_left(line + 17));
+		return;
+	}
+	if (starts_with_command(line, "SEEK")) {
+		cmd->type = TCP_CONTROL_SEEK;
+		cmd->number = _atoi64(tcp_trim_left(line + 4));
+		return;
+	}
+	if (starts_with_command(line, "SET_HW_DECODE")) {
+		arg = tcp_trim_left(line + 13);
+		cmd->type = TCP_CONTROL_SET_HW_DECODE;
+		if (!arg || _stricmp(arg, "none") == 0 || _stricmp(arg, "off") == 0) arg = "";
+		cmd->text = av_strdup(arg);
+		return;
+	}
+	if (starts_with_command(line, "SET_INDEX")) {
+		cmd->type = TCP_CONTROL_SET_INDEX;
+		cmd->video_index = -1;
+		cmd->audio_index = -1;
+		arg = strstr(line, "video=");
+		if (arg) cmd->video_index = atoi(arg + 6);
+		arg = strstr(line, "audio=");
+		if (arg) cmd->audio_index = atoi(arg + 6);
+		return;
+	}
+	if (starts_with_command(line, "STOP")) {
+		cmd->type = TCP_CONTROL_STOP;
+		return;
+	}
+	if (starts_with_command(line, "REOPEN")) {
+		cmd->type = TCP_CONTROL_REOPEN;
+		return;
+	}
+
+	strcpy_s(reply, reply_size, "ERR unknown command\n");
+}
+
+static DWORD tcp_control_thread(LPVOID p)
+{
+	tcp_control_server* server = (tcp_control_server*)p;
+	SOCKET listen_socket = INVALID_SOCKET;
+	struct sockaddr_in addr;
+	int yes = 1;
+
+	listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listen_socket == INVALID_SOCKET) return 1;
+	server->listen_socket = listen_socket;
+	setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_port = htons((u_short)server->port);
+	if (bind(listen_socket, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) goto end;
+	if (listen(listen_socket, 4) == SOCKET_ERROR) goto end;
+	printf("OmniVCam TCP control listening on 0.0.0.0:%d\n", server->port);
+
+	while (!server->exit) {
+		fd_set readfds;
+		struct timeval tv;
+		SOCKET client;
+		FD_ZERO(&readfds);
+		FD_SET(listen_socket, &readfds);
+		tv.tv_sec = 0;
+		tv.tv_usec = 200000;
+		if (select(0, &readfds, NULL, NULL, &tv) <= 0) continue;
+		client = accept(listen_socket, NULL, NULL);
+		if (client == INVALID_SOCKET) continue;
+		server->client_socket = client;
+
+		while (!server->exit) {
+			char buffer[4096];
+			char reply[256];
+			tcp_control_command cmd;
+			fd_set clientfds;
+			struct timeval client_tv;
+			int n;
+			FD_ZERO(&clientfds);
+			FD_SET(client, &clientfds);
+			client_tv.tv_sec = 0;
+			client_tv.tv_usec = 200000;
+			if (select(0, &clientfds, NULL, NULL, &client_tv) <= 0) continue;
+			n = recv(client, buffer, sizeof(buffer) - 1, 0);
+			if (n <= 0) break;
+			buffer[n] = '\0';
+			tcp_control_parse_line(server, buffer, &cmd, reply, sizeof(reply));
+			if (cmd.type != TCP_CONTROL_NONE) tcp_control_push(server, &cmd);
+			send(client, reply, (int)strlen(reply), 0);
+		}
+		closesocket(client);
+		server->client_socket = INVALID_SOCKET;
+	}
+end:
+	if (listen_socket != INVALID_SOCKET) closesocket(listen_socket);
+	server->listen_socket = INVALID_SOCKET;
+	return 0;
+}
+
+static int tcp_control_start(tcp_control_server* server, int port)
+{
+	WSADATA wsa;
+	memset(server, 0, sizeof(*server));
+	server->listen_socket = INVALID_SOCKET;
+	server->port = port > 0 ? port : 16999;
+	InitializeCriticalSection(&server->mutex);
+	server->started = 1;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+	return open_thread(&server->thread, tcp_control_thread, server);
+}
+
+static void tcp_control_stop(tcp_control_server* server)
+{
+	if (!server || !server->started) return;
+	server->exit = 1;
+	if (server->client_socket != INVALID_SOCKET) shutdown(server->client_socket, SD_BOTH);
+	if (server->listen_socket != INVALID_SOCKET) shutdown(server->listen_socket, SD_BOTH);
+	if (server->thread) {
+		DWORD wait_result = WaitForSingleObject(server->thread, 2000);
+		if (wait_result == WAIT_TIMEOUT) {
+			printf("OmniVCam TCP control thread stop timed out\n");
+			if (server->client_socket != INVALID_SOCKET) {
+				closesocket(server->client_socket);
+				server->client_socket = INVALID_SOCKET;
+			}
+			if (server->listen_socket != INVALID_SOCKET) {
+				closesocket(server->listen_socket);
+				server->listen_socket = INVALID_SOCKET;
+			}
+			WaitForSingleObject(server->thread, 200);
+		}
+		CloseHandle(server->thread);
+		server->thread = NULL;
+	}
+	for (int i = 0; i < TCP_CONTROL_QUEUE_SIZE; i++) tcp_control_command_free(&server->queue[i]);
+	DeleteCriticalSection(&server->mutex);
+	WSACleanup();
+}
 
 DWORD main_thread(LPVOID p) {
 	HRESULT hr = CoInitialize(NULL);
 
 	paremeter_table_context* table = paremeter_table_alloc(48);
-	play_list_context* play_list_ctx = NULL;
 	inout_options* opts = (inout_options*)p;
-
-	char* play_list_file = NULL;
-	char* filter_file = NULL;
-	char* audio_filter_file = NULL;
-	char* control_file_name = NULL;
-	char* index_file_name = NULL;
-	char* output_start_shift_file_name = NULL;
 	int use_fixed_frame_interval = 0;
 	int output_ajust_start_if_delay_over = 0;
 	int av_max_offset_time = 3 * 1000000;
+	int video_frame_buffer = 10, audio_frame_buffer = 50, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
-	if (!table) return -1;
-	char* buf = NULL, * buf2 = NULL, str[1024] = { 0 }, time_str[20] = { 0 }, str2[1024] = { 0 }, hw_decode[16] = "";
-	int video_frame_buffer = 10, audio_frame_buffer = 50, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000, reopen_at_list_update = 0;
-	int ret = -1;
-	char* play_filename = NULL;
-	AVDictionary* play_dict = NULL;
-	AVDictionary* play_dict_in_list = NULL;
+	int tcp_port = opts->tcp_port;
 	char* pathvar = NULL;
-	if(config_path){
+	char* config_file_name = NULL;
+	char* buf = NULL;
+	char time_str[20] = { 0 };
+	char str2[1024] = { 0 };
+	char hw_decode[32] = "";
+	char* current_input = NULL;
+	char* global_video_filter = av_strdup("");
+	char* global_audio_filter = av_strdup("");
+	tcp_control_server control_server = { 0 };
+	inout_context* ctx = NULL;
+
+	if (!table) return -1;
+	if (config_path) {
 		pathvar = getenv(config_path);
-		if (pathvar)
-			printf("%s=%s\n", config_path, pathvar);
+		if (pathvar) printf("%s=%s\n", config_path, pathvar);
 	}
 
-	char* config_file_name = join_path(pathvar, "config.ini");
-	char* current_play_file_name = join_path(pathvar, "current_play_file.txt");
-	char* log_file_name = join_path(pathvar,"log.txt");
-
+	config_file_name = join_path(pathvar, "config.ini");
 	update_config_from_file(config_file_name, table);
 	paremeter_table_print(table);
 
-	play_list_file = get_paremeter_table_content(table, "config", "play_list",TRUE);
-	control_file_name = get_paremeter_table_content(table, "config", "control_file", TRUE);
-	filter_file = get_paremeter_table_content(table, "config", "filter_file", TRUE);
-	audio_filter_file = get_paremeter_table_content(table, "config", "audio_filter_file", TRUE);
-	index_file_name = get_paremeter_table_content(table, "config", "index_file", TRUE);
-	output_start_shift_file_name = get_paremeter_table_content(table, "config", "output_start_time_shift", TRUE);
-
-	play_list_file = join_path_free_filename(pathvar, play_list_file);
-	control_file_name = join_path_free_filename(pathvar, control_file_name);
-	filter_file = join_path_free_filename(pathvar, filter_file);
-	audio_filter_file = join_path_free_filename(pathvar, audio_filter_file);
-	index_file_name = join_path_free_filename(pathvar, index_file_name);
-	output_start_shift_file_name = join_path_free_filename(pathvar, output_start_shift_file_name);
-
 	if (buf = get_paremeter_table_content(table, "config", "hw_decode", FALSE)) strcpy_s(hw_decode, sizeof(hw_decode), buf);
-	if (buf = get_paremeter_table_content(table, "config", "reopen_at_list_update", FALSE)) reopen_at_list_update = atoi(buf);
+	if (buf = get_paremeter_table_content(table, "config", "tcp_port", FALSE)) tcp_port = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "log_level", FALSE)) av_log_set_level(get_loglevel_from_str(buf));
 	if (buf = get_paremeter_table_content(table, "config", "video_frame_buffer", FALSE)) video_frame_buffer = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "audio_frame_buffer", FALSE)) audio_frame_buffer = atoi(buf);
@@ -2658,364 +3051,270 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "av_max_offset_time", FALSE)) av_max_offset_time = atoi(buf);
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
-
 	video_frame_buffer = video_frame_buffer <= 0 ? (frame_rate.num / frame_rate.den) : video_frame_buffer;
-
 
 	AVChannelLayout ch_layout = { 0 };
 	av_channel_layout_default(&ch_layout, opts->audio_out_channels);
-	inout_context* ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, opts->audio_out_nb_samples, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over, av_max_offset_time);
+	ctx = inout_context_alloc(opts->video_out_width, opts->video_out_height, opts->video_out_format, opts->video_out_fps, opts->audio_out_sample_rate, opts->audio_out_format, &ch_layout, opts->audio_out_nb_samples, timeout, packet_queue_size, 5000, video_frame_buffer, audio_frame_buffer, use_fixed_frame_interval, output_ajust_start_if_delay_over, av_max_offset_time);
 	av_channel_layout_uninit(&ch_layout);
-	if (!ctx) {
-		goto end;
-	}
+	if (!ctx) goto end;
+
 	ctx->video_callback = opts->video_callback;
 	ctx->audio_callback = opts->audio_callback;
 	ctx->callback_private = opts->callback_private;
 
-	int64_t last_control_mtime = 0;
-	int64_t last_filters_mtime = 0;
-	int64_t last_audio_filters_mtime = 0;
-	int64_t last_inputs_mtime = 0;
-	int64_t last_indexs_mtime = 0;
-	int64_t last_shift_mtime = 0;
+	if (tcp_control_start(&control_server, tcp_port) < 0) {
+		printf("OmniVCam TCP control start failed on port %d\n", tcp_port);
+		goto end;
+	}
 
-	int seek_number = 1;
-	int play_mode = 3;//loop_list,loop_single,loop_random
 	start_output(ctx);
-	while (1)
-	{
-		int64_t ret = 0;
-		play_list* list_item;
+	while (1) {
+		tcp_control_command command;
+		int should_open = 0;
+		char* play_filename = NULL;
+		AVDictionary* play_dict = NULL;
+		AVDictionary* temp_dict = NULL;
+		char* format = NULL;
+		char* video_filter = NULL;
+		char* audio_filter = NULL;
+		char* video_index = NULL;
+		char* audio_index = NULL;
+		char* seek_time = NULL;
+		char* analyze_duration = NULL;
+		char* probesize = NULL;
+		char* queue_left = NULL;
+		char* queue_right = NULL;
+		char* queue_center = NULL;
+		char* vcodec_str = NULL;
+		char* acodec_str = NULL;
+		char* scodec_str = NULL;
+		char* dcodec_str = NULL;
+		int video_index_int = -1;
+		int audio_index_int = -1;
+		int analyze_duration_int = 0;
+		int probesize_int = 0;
+		int queue_left_int = -1;
+		int queue_right_int = -1;
+		int queue_center_int = -1;
+
 		if (opts->send_exit) {
 			ctx->output_exit = opts->send_exit;
 			ctx->force_exit = opts->send_exit;
 			break;
 		}
 		if (is_output_exit(ctx)) break;
-		//ctx->output_exit = 1;
-		if (ret = is_file_changed(play_list_file, last_inputs_mtime))
-		{
-			if (ret != -1) {
-				last_inputs_mtime = ret;
-				play_list_free(&play_list_ctx);
-				play_list_ctx = play_list_alloc();
-				if (play_list_ctx) {
-					update_play_list_from_file(play_list_ctx, play_list_file);
-					printf("play_list updated!\n");
-					if (reopen_at_list_update || ctx->special_source_running) {
-						stop_read(ctx, 1);
-						inout_context_reset_input(ctx);
-					}
-				}
-			}
+
+		EnterCriticalSection(&control_server.mutex);
+		control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
+		control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
+		control_server.status_size = (ctx->fmt_ctx && ctx->fmt_ctx->pb) ? avio_size(ctx->fmt_ctx->pb) : 0;
+		strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+		if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
+		else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
+		LeaveCriticalSection(&control_server.mutex);
+
+		memset(&command, 0, sizeof(command));
+		if (!tcp_control_pop(&control_server, &command)) {
+			av_usleep(100000);
+			continue;
 		}
 
-		if (ret = is_file_changed(control_file_name, last_control_mtime))
-		{
-			if (ret != -1) {
-				last_control_mtime = ret;
-				ret = control_input_playing(control_file_name, str, sizeof(str));
-				av_dict_free(&play_dict);
-				play_dict_in_list = NULL;
-				play_filename = NULL;
-				if (ret == 1)
-				{
-					list_item = play_list_search(play_list_ctx, str);
-					if (!list_item) {
-						char* tab_pos = strchr(str, '\t');
-						if (tab_pos) {
-							*tab_pos = '\0';
-							play_filename = str;
-							av_dict_parse_string(&play_dict, tab_pos + 1, "=", ",",0);
-						}
-						else {
-							play_filename = str;
-						}
-					}
-					else {
-						play_filename = list_item->value;
-						play_dict_in_list = list_item->dict;
-					}
-					stop_read(ctx, 1);
-					goto input;
-				}
-				else if (ret == 2)
-				{
-					list_item = play_list_seek(play_list_ctx, atoi(str));
-					if (list_item) {
-						play_filename = list_item->value;
-						play_dict_in_list = list_item->dict;
-					}
-					stop_read(ctx, 1);
-					goto input;
-				}
-				else if (ret >= 3) {
-					play_mode = (int)ret;
-				}
-			}
-		}
-
-		if ((ret = is_file_changed(index_file_name, last_indexs_mtime)) > 0)
-		{
-			last_indexs_mtime = ret;
-			if (set_stream_index_from_file(ctx, index_file_name) >= 0) {
-				printf("set indexs!\n");
-			}
-		}
-
-		if ((ret = is_file_changed(filter_file, last_filters_mtime)) > 0)
-		{
-			last_filters_mtime = ret;
-			char* buf = get_filter_text(filter_file);
-			set_input_filter(ctx, buf);
-			printf("filter:\"%s\"\n", buf);
-			av_free(buf);
-		}
-
-		if ((ret = is_file_changed(audio_filter_file, last_audio_filters_mtime)) > 0)
-		{
-			last_audio_filters_mtime = ret;
-			char* buf = get_filter_text(audio_filter_file);
-			set_input_audio_filter(ctx, buf);
-			printf("audio filter:\"%s\"\n", buf);
-			av_free(buf);
-		}
-
-		if ((ret = is_file_changed(output_start_shift_file_name, last_shift_mtime)) > 0)
-		{
-			last_shift_mtime = ret;
-			int64_t shift = get_txt_num(output_start_shift_file_name);
-			ctx->output_start_shift_time = shift * 1000LL;
-			printf("output start time shift: %I64d\n", shift);
-		}
-
-		if (is_input_exit(ctx)) {
-			av_dict_free(&play_dict);
-			play_dict_in_list = NULL;
-			play_filename = NULL;
-			switch (play_mode)
-			{
-			case 3:
-				seek_number = 1;
-				break;
-			case 4:
-				seek_number = 0;
-				break;
-			case 5:
-				seek_number = generate_random_number(play_list_get_size(play_list_ctx) - 1);
-				break;
-			default:
-				break;
-			}
-			list_item = play_list_seek(play_list_ctx, seek_number);
-			if (list_item) {
-				play_filename = list_item->value;
-				play_dict_in_list = list_item->dict;
-			}
-
-		input:
-			if (play_filename != NULL) {
-				stop_read(ctx, 0);
-				inout_ctx_frame_queue_wait_empty(ctx, &opts->send_exit);
-				inout_context_reset_input(ctx);
-				AVDictionary* dict_p = play_dict_in_list ? play_dict_in_list : play_dict;
-				AVDictionary* temp_dict = NULL;
-				char* format = NULL;
-				char* video_filter = NULL;
-
-				char* audio_filter = NULL;
-				char* video_index = NULL;
-				char* audio_index = NULL;
-				char* seek_time = NULL;
-				char* analyze_duration = NULL;
-				char* probesize = NULL;
-				char* queue_left = NULL;
-				char* queue_right = NULL;
-				char* queue_center = NULL;
-
-				char* vcodec_str = NULL;
-				char* acodec_str = NULL;
-				char* scodec_str = NULL;
-				char* dcodec_str = NULL;
-
-				int video_index_int = -1;
-				int audio_index_int = -1;
-				int analyze_duration_int = 0;
-				int probesize_int = 0;
-				int queue_left_int = -1;
-				int queue_right_int = -1;
-				int queue_center_int = -1;
-				if (dict_p) {
-					if (av_dict_copy(&temp_dict, dict_p, 0) >= 0) {
-						format = av_dict_pop_value(&temp_dict, "format");
-						video_filter = av_dict_pop_value(&temp_dict, "video_filter");
-						audio_filter = av_dict_pop_value(&temp_dict, "audio_filter");
-						video_index = av_dict_pop_value(&temp_dict, "video_index");
-						audio_index = av_dict_pop_value(&temp_dict, "audio_index");
-						seek_time = av_dict_pop_value(&temp_dict, "seek_time");
-						probesize = av_dict_pop_value(&temp_dict, "probesize");
-						analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
-						queue_left = av_dict_pop_value(&temp_dict, "queue_left");
-						queue_right = av_dict_pop_value(&temp_dict, "queue_right");
-						queue_center = av_dict_pop_value(&temp_dict, "queue_center");
-
-						vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
-						acodec_str = av_dict_pop_value(&temp_dict, "acodec");
-						scodec_str = av_dict_pop_value(&temp_dict, "scodec");
-						dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
-
-					}
-				}
-
-				if (video_index) {
-					video_index_int = atoi(video_index);
-				}
-				if (audio_index) {
-					audio_index_int = atoi(audio_index);
-				}
-
-				if (probesize) {
-					probesize_int = atoi(probesize);
-				}
-
-				if (analyze_duration) {
-					analyze_duration_int = atoi(analyze_duration);
-				}
-
-
-				if (queue_left) {
-					queue_left_int = atoi(queue_left);
-				}
-
-				if (queue_right) {
-					queue_right_int = atoi(queue_right);
-				}
-
-				if (queue_center) {
-					queue_center_int = atoi(queue_center);
-				}
-
-
-				if (open_input(format, play_filename, current_play_file_name, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int,
-					vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
-					if (!video_filter) {
-						buf = get_filter_text(filter_file);
-						set_input_filter(ctx, buf);
-						av_free(buf);
-					}
-					else {
-						set_input_filter(ctx, video_filter);
-					}
-
-					if (!audio_filter) {
-						buf = get_filter_text(audio_filter_file);
-						set_input_audio_filter(ctx, buf);
-						av_free(buf);
-					}
-					else {
-						set_input_audio_filter(ctx, audio_filter);
-					}
-					if (seek_time && ctx->fmt_ctx) {
-						int seek_time_int = atoi(seek_time);
-
-						int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + ctx->fmt_ctx->start_time;
-						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
-							printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
-						}
-						else {
-							printf("[%s] seek: %I64d failed!\n", play_filename, seek_time_int64);
-						}
-					}
-					set_stream_index_from_file(ctx, index_file_name);
-
+		switch (command.type) {
+		case TCP_CONTROL_PLAY:
+			av_freep(&current_input);
+			current_input = av_strdup(command.text);
+			EnterCriticalSection(&control_server.mutex);
+			strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
+			strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+			LeaveCriticalSection(&control_server.mutex);
+			play_filename = command.text ? av_strdup(command.text) : NULL;
+			should_open = play_filename != NULL;
+			break;
+		case TCP_CONTROL_SET_FILTER:
+			av_freep(&global_video_filter);
+			global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
+			set_input_filter(ctx, global_video_filter);
+			printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
+			break;
+		case TCP_CONTROL_SET_AUDIO_FILTER:
+			av_freep(&global_audio_filter);
+			global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
+			set_input_audio_filter(ctx, global_audio_filter);
+			printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
+			break;
+		case TCP_CONTROL_SET_INDEX:
+			if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
+			if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
+			break;
+		case TCP_CONTROL_SET_SHIFT:
+			ctx->output_start_shift_time = command.number * 1000LL;
+			printf("output start time shift: %I64d\n", command.number);
+			break;
+		case TCP_CONTROL_SEEK:
+			if (ctx->fmt_ctx) {
+				int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
+				int64_t seek_time_int64 = av_rescale_q(command.number, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
+				stop_read(ctx, 1);
+				reset_after_seek(ctx);
+				if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
 					start_read(ctx);
-					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
-					write_text_to_file(log_file_name, str2, "a");
-					printf(str2);
+					printf("seek seconds: %I64d\n", command.number);
 				}
 				else {
-					printf("[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
+					start_read(ctx);
+					printf("seek seconds: %I64d failed\n", command.number);
 				}
+			}
+			break;
+		case TCP_CONTROL_SEEK_BYTE_PERCENT:
+			if (ctx->fmt_ctx && ctx->fmt_ctx->pb) {
+				int64_t size = avio_size(ctx->fmt_ctx->pb);
+				if (size > 0) {
+					int64_t percent = command.number;
+					if (percent < 0) percent = 0;
+					if (percent > 10000) percent = 10000;
+					int64_t target = size * percent / 10000;
+					stop_read(ctx, 1);
+					reset_after_seek(ctx);
+					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, target, target, AVSEEK_FLAG_BYTE) >= 0) {
+						start_read(ctx);
+						printf("seek byte percent: %I64d\n", percent);
+					}
+					else {
+						start_read(ctx);
+						printf("seek byte percent: %I64d failed\n", percent);
+					}
+				}
+			}
+			break;
+		case TCP_CONTROL_SET_HW_DECODE:
+			strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
+			printf("hw_decode:\"%s\"\n", hw_decode);
+			if (current_input) {
+				play_filename = av_strdup(current_input);
+				should_open = 1;
+			}
+			break;
+		case TCP_CONTROL_STOP:
+			stop_read(ctx, 1);
+			inout_context_reset_input(ctx);
+			av_freep(&current_input);
+			EnterCriticalSection(&control_server.mutex);
+			strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
+			control_server.status_input[0] = '\0';
+			LeaveCriticalSection(&control_server.mutex);
+			break;
+		case TCP_CONTROL_REOPEN:
+			if (current_input) {
+				play_filename = av_strdup(current_input);
+				should_open = 1;
+			}
+			break;
+		default:
+			break;
+		}
 
-				av_dict_free(&temp_dict);
+		if (should_open && play_filename) {
+			char* tab_pos = strchr(play_filename, '\t');
+			if (tab_pos) {
+				*tab_pos = '\0';
+				av_dict_parse_string(&play_dict, tab_pos + 1, "=", ",", 0);
+			}
 
-				if (format)
-					av_free(format);
-				if (video_filter)
-					av_free(video_filter);
-				if (audio_filter)
-					av_free(audio_filter);
-				if (video_index)
-					av_free(video_index);
-				if (audio_index)
-					av_free(audio_index);
-				if (seek_time)
-					av_free(seek_time);
-				if (analyze_duration)
-					av_free(analyze_duration);
-				if (probesize)
-					av_free(probesize);
-				if (queue_left)
-					av_free(queue_left);
-				if (queue_right)
-					av_free(queue_right);
-				if (queue_center)
-					av_free(queue_center);
+			stop_read(ctx, 1);
+			inout_context_reset_input(ctx);
 
-				if (vcodec_str)
-					av_free(vcodec_str);
-				if (acodec_str)
-					av_free(acodec_str);
-				if (scodec_str)
-					av_free(scodec_str);
-				if (dcodec_str)
-					av_free(dcodec_str);
+			if (play_dict && av_dict_copy(&temp_dict, play_dict, 0) >= 0) {
+				format = av_dict_pop_value(&temp_dict, "format");
+				video_filter = av_dict_pop_value(&temp_dict, "video_filter");
+				audio_filter = av_dict_pop_value(&temp_dict, "audio_filter");
+				video_index = av_dict_pop_value(&temp_dict, "video_index");
+				audio_index = av_dict_pop_value(&temp_dict, "audio_index");
+				seek_time = av_dict_pop_value(&temp_dict, "seek_time");
+				probesize = av_dict_pop_value(&temp_dict, "probesize");
+				analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
+				queue_left = av_dict_pop_value(&temp_dict, "queue_left");
+				queue_right = av_dict_pop_value(&temp_dict, "queue_right");
+				queue_center = av_dict_pop_value(&temp_dict, "queue_center");
+				vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
+				acodec_str = av_dict_pop_value(&temp_dict, "acodec");
+				scodec_str = av_dict_pop_value(&temp_dict, "scodec");
+				dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
+			}
+
+			if (video_index) video_index_int = atoi(video_index);
+			if (audio_index) audio_index_int = atoi(audio_index);
+			if (probesize) probesize_int = atoi(probesize);
+			if (analyze_duration) analyze_duration_int = atoi(analyze_duration);
+			if (queue_left) queue_left_int = atoi(queue_left);
+			if (queue_right) queue_right_int = atoi(queue_right);
+			if (queue_center) queue_center_int = atoi(queue_center);
+
+			if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
+				set_input_filter(ctx, video_filter ? video_filter : global_video_filter);
+				set_input_audio_filter(ctx, audio_filter ? audio_filter : global_audio_filter);
+				if (seek_time && ctx->fmt_ctx) {
+					int seek_time_int = atoi(seek_time);
+					int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
+					int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
+					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
+						printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
+					}
+				}
+				start_read(ctx);
+				EnterCriticalSection(&control_server.mutex);
+				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
+				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+				LeaveCriticalSection(&control_server.mutex);
+				sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
+				printf(str2);
+			}
+			else {
+				EnterCriticalSection(&control_server.mutex);
+				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
+				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+				LeaveCriticalSection(&control_server.mutex);
+				printf("[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 			}
 		}
 
-
-		av_usleep(500000);
+		av_dict_free(&play_dict);
+		av_dict_free(&temp_dict);
+		if (format) av_free(format);
+		if (video_filter) av_free(video_filter);
+		if (audio_filter) av_free(audio_filter);
+		if (video_index) av_free(video_index);
+		if (audio_index) av_free(audio_index);
+		if (seek_time) av_free(seek_time);
+		if (analyze_duration) av_free(analyze_duration);
+		if (probesize) av_free(probesize);
+		if (queue_left) av_free(queue_left);
+		if (queue_right) av_free(queue_right);
+		if (queue_center) av_free(queue_center);
+		if (vcodec_str) av_free(vcodec_str);
+		if (acodec_str) av_free(acodec_str);
+		if (scodec_str) av_free(scodec_str);
+		if (dcodec_str) av_free(dcodec_str);
+		if (play_filename) av_free(play_filename);
+		tcp_control_command_free(&command);
 	}
 end:
-	stop_read(ctx, 1);
-	//printf("stop_read\n");
-	stop_output(ctx);
-
-	//printf("stop_output\n");
-	inout_context_free(&ctx);
-	play_list_free(&play_list_ctx);
+	if (ctx) {
+		stop_read(ctx, 1);
+		stop_output(ctx);
+		inout_context_free(&ctx);
+	}
+	tcp_control_stop(&control_server);
 	paremeter_table_free(&table);
-
-	if (config_file_name) {
-		av_free(config_file_name);
-	}
-	if (current_play_file_name) {
-		av_free(current_play_file_name);
-	}
-	if (log_file_name) {
-		av_free(log_file_name);
-	}
-	if (play_list_file)
-		av_free(play_list_file);
-	if (control_file_name)
-		av_free(control_file_name);
-	if (filter_file)
-		av_free(filter_file);
-	if (audio_filter_file)
-		av_free(audio_filter_file);
-	if (index_file_name)
-		av_free(index_file_name);
-	if (output_start_shift_file_name)
-		av_free(output_start_shift_file_name);
-
-	if (play_dict)
-		av_dict_free(&play_dict);
+	if (config_file_name) av_free(config_file_name);
+	av_freep(&current_input);
+	av_freep(&global_video_filter);
+	av_freep(&global_audio_filter);
 
 	CoUninitialize();
 	return 0;
 }
-
 
 void video_cb(void *p, AVFrame* f) {
 	printf("v: %lld\n", f->pts);
@@ -3050,7 +3349,7 @@ int main15() {
 		//av_usleep(0.01 * 1000000);
 		opts->send_exit = 1;
 		free_thread(&_main_thread);
-		//if (open_input(NULL, "D:\\1.mp4",NULL,
+		//if (open_input(NULL, "D:\\1.mp4",
 		//	ctx, -1, -1, -1, "dxva2") >= 0) {
 		//	//ctx->audio_filter_text = "volume=15dB";
 		//	start_read(ctx);
@@ -3124,7 +3423,7 @@ int main11() {
 		av_channel_layout_default(&ch_layout, 2);
 		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0,3000000);
 		av_channel_layout_uninit(&ch_layout);
-		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1,NULL, NULL, NULL, NULL);
+		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1,NULL, NULL, NULL, NULL);
 		inout_context_reset_input(ctx);
 		inout_context_free(&ctx);
 	}

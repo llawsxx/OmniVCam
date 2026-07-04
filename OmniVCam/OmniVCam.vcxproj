@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="DebugExe|Win32">
@@ -134,7 +134,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)OmniVCam.def</ModuleDefinitionFile>
-      <AdditionalDependencies>strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x86</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -152,7 +152,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)OmniVCam.def</ModuleDefinitionFile>
-      <AdditionalDependencies>strmbase.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;strmbase.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x86</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -169,7 +169,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)OmniVCam.def</ModuleDefinitionFile>
-      <AdditionalDependencies>strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x64;$(SolutionDir)ffmpeg_deps\lib</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -188,13 +188,13 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>$(ProjectDir)OmniVCam.def</ModuleDefinitionFile>
-      <AdditionalDependencies>strmbase.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;strmbase.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x64;$(SolutionDir)ffmpeg_deps\lib</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugExe|x64'">
     <Link>
-      <AdditionalDependencies>strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;strmbasd.lib;ole32.lib;oleaut32.lib;strmiids.lib;quartz.lib;user32.lib;advapi32.lib;winmm.lib;swscale.lib;swresample.lib;avutil.lib;avformat.lib;avfilter.lib;avdevice.lib;avcodec.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\x64;$(SolutionDir)ffmpeg_deps\lib</AdditionalLibraryDirectories>
     </Link>
     <ClCompile>

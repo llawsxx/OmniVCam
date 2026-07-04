@@ -390,7 +390,7 @@ STDMETHODIMP OmniMediaTypeEnum::Clone(IEnumMediaTypes** ppEnum) {
 }
 
 
-OmniVCam::OmniVCam(const GUID* clsId,const char* configPath) : m_refCount(1), m_state(State_Stopped), m_clock(NULL), m_graph(NULL), m_renderThread(NULL), m_renderOpts(NULL), m_clsId(clsId),m_configPath(configPath){
+OmniVCam::OmniVCam(const GUID* clsId,const char* configPath,int tcpPort) : m_refCount(1), m_state(State_Stopped), m_clock(NULL), m_graph(NULL), m_renderThread(NULL), m_renderOpts(NULL), m_clsId(clsId), m_configPath(configPath), m_tcpPort(tcpPort) {
     InitializeCriticalSection(&m_cs);
     m_videoPin = new OmniVideoPin(this);
     m_audioPin = new OmniAudioPin(this);
@@ -583,6 +583,7 @@ STDMETHODIMP OmniVCam::Run(REFERENCE_TIME tStart) {
         m_renderOpts->callback_private = this;
         m_renderOpts->send_exit = 0;
         m_renderOpts->config_path = m_configPath;
+        m_renderOpts->tcp_port = m_tcpPort;
         if (open_thread(&m_renderThread, main_thread, m_renderOpts) < 0) {
             hr = S_FALSE;
         }
@@ -818,9 +819,10 @@ AM_MEDIA_TYPE* FormatManager::CreateAudioMediaType(const AudioFormat& format) co
 class OmniVCamClassFactory : public IClassFactory, public DShowBase {
 public:
 
-    OmniVCamClassFactory(const GUID& clsId, const char* configPath) {
+    OmniVCamClassFactory(const GUID& clsId, const char* configPath,int tcpPort) {
         m_clsId = clsId;
         m_configPath = configPath;
+        m_tcpPort = tcpPort;
     }
     // IUnknown
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) {
@@ -841,7 +843,7 @@ public:
         if (pUnkOuter != NULL) return CLASS_E_NOAGGREGATION;
         //要注册一下，不然用不了dshow
         avdevice_register_all();
-        OmniVCam* pFilter = new OmniVCam(&m_clsId, m_configPath);
+        OmniVCam* pFilter = new OmniVCam(&m_clsId, m_configPath, m_tcpPort);
         if (!pFilter) return E_OUTOFMEMORY;
 
         HRESULT hr = pFilter->QueryInterface(riid, ppv);
@@ -861,17 +863,18 @@ public:
     }
 private:
     GUID m_clsId;
-    const char *m_configPath;
+    const char* m_configPath;
+    int m_tcpPort;
 };
 
 
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv) {
     static OmniVCamClassFactory factories[] = {
-        OmniVCamClassFactory(CLSID_OmniVCam, CONFIG_ROOT_ENV),
-        OmniVCamClassFactory(CLSID_OmniVCam2, CONFIG_ROOT_ENV2),
-        OmniVCamClassFactory(CLSID_OmniVCam3, CONFIG_ROOT_ENV3),
-        OmniVCamClassFactory(CLSID_OmniVCam4, CONFIG_ROOT_ENV4)
+        OmniVCamClassFactory(CLSID_OmniVCam, CONFIG_ROOT_ENV, 16999),
+        OmniVCamClassFactory(CLSID_OmniVCam2, CONFIG_ROOT_ENV2, 17000),
+        OmniVCamClassFactory(CLSID_OmniVCam3, CONFIG_ROOT_ENV3, 17001),
+        OmniVCamClassFactory(CLSID_OmniVCam4, CONFIG_ROOT_ENV4, 17002)
     };
 
     for (auto& factory : factories) {
@@ -1125,7 +1128,7 @@ int main() {
     while (0) {
         CComPtr<IBaseFilter> pFilter;
 
-        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV);
+        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV, 16999);
         if (!pFilterVCam) return E_OUTOFMEMORY;
 
         hr = pFilterVCam->QueryInterface(IID_PPV_ARGS(&pFilter));
@@ -1148,7 +1151,7 @@ int main() {
         CComPtr<IEnumMediaTypes> pMediaType = NULL;
         CComPtr<IEnumPins> pEnumPins = NULL;
 
-        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV);
+        OmniVCam* pFilterVCam = new OmniVCam(&CLSID_OmniVCam, CONFIG_ROOT_ENV,16999);
         if (!pFilterVCam) return E_OUTOFMEMORY;
 
         hr = pFilterVCam->QueryInterface(IID_PPV_ARGS(&pFilter));

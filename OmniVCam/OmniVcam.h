@@ -162,7 +162,7 @@ private:
 
 class OmniVCam : public IBaseFilter,public INonDelegatingUnknown, public DShowBase {
 public:
-    OmniVCam(const GUID *clsId,const char* configPath);
+    OmniVCam(const GUID *clsId,const char* configPath,int tcpPort);
     ~OmniVCam();
 
     // IUnknown
@@ -227,6 +227,7 @@ private:
     HANDLE m_renderThread;
     const GUID* m_clsId;
     const char* m_configPath;
+    int m_tcpPort;
 };
 
 

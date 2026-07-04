@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36408.4
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OmniVCam", "OmniVCam\OmniVCam.vcxproj", "{5154DECB-32E6-45A9-BD7B-A59F6249C21D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OmniVCamController", "OmniVCamController\OmniVCamController.csproj", "{A5C87F8C-7692-4AC1-B011-996681F9C4F4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -27,6 +29,18 @@ Global
 		{5154DECB-32E6-45A9-BD7B-A59F6249C21D}.Release|x64.Build.0 = Release|x64
 		{5154DECB-32E6-45A9-BD7B-A59F6249C21D}.Release|x86.ActiveCfg = Release|Win32
 		{5154DECB-32E6-45A9-BD7B-A59F6249C21D}.Release|x86.Build.0 = Release|Win32
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Debug|x64.Build.0 = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Debug|x86.Build.0 = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.DebugExe|x64.ActiveCfg = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.DebugExe|x64.Build.0 = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.DebugExe|x86.ActiveCfg = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.DebugExe|x86.Build.0 = Debug|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Release|x64.ActiveCfg = Release|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Release|x64.Build.0 = Release|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Release|x86.ActiveCfg = Release|Any CPU
+		{A5C87F8C-7692-4AC1-B011-996681F9C4F4}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
