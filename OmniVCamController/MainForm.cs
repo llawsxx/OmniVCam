@@ -44,6 +44,7 @@ namespace OmniVCamController
         public MainForm()
         {
             InitializeComponent();
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(rootSplitContainer.Panel1);
             BuildPlaylistPanel(rootSplitContainer.Panel2);
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
