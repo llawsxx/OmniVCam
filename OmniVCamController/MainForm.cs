@@ -77,6 +77,7 @@ namespace OmniVCamController
             progressBar.MouseDown += ProgressBar_MouseDown;
             progressBar.MouseMove += ProgressBar_MouseMove;
             progressBar.MouseUp += async (_, e) => await ProgressBar_MouseUpAsync(e);
+            shiftBox.ValueChanged += async (_, __) => await SendCommandAsync($"SET_SHIFT {(long)shiftBox.Value}");
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 10, 0, 10) };
             buttons.Controls.Add(MakeButton("Ping", async (_, __) => await SendCommandAsync("PING")));
@@ -84,7 +85,6 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton("Set video filter", async (_, __) => await SendCommandAsync("SET_FILTER " + videoFilterBox.Text.Trim())));
             buttons.Controls.Add(MakeButton("Set audio filter", async (_, __) => await SendCommandAsync("SET_AUDIO_FILTER " + audioFilterBox.Text.Trim())));
             buttons.Controls.Add(MakeButton("Set indexes", async (_, __) => await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}")));
-            buttons.Controls.Add(MakeButton("Set shift", async (_, __) => await SendCommandAsync($"SET_SHIFT {(long)shiftBox.Value}")));
             buttons.Controls.Add(MakeButton("Seek", async (_, __) => await SeekBySecondsAsync((long)seekBox.Value)));
             buttons.Controls.Add(MakeButton("Set HW decode", async (_, __) => await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}")));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));

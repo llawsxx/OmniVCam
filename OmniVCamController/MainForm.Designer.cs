@@ -90,8 +90,9 @@ namespace OmniVCamController
             audioIndexBox.Minimum = -1;
             audioIndexBox.Maximum = 128;
             audioIndexBox.Value = -1;
-            shiftBox.Minimum = -1000000;
-            shiftBox.Maximum = 1000000;
+            shiftBox.Minimum = 0;
+            shiftBox.Maximum = 41700;
+            shiftBox.Increment = 1500;
             seekBox.Maximum = 86400;
             positionLabel.Text = "00:00:00 / --:--:--";
             positionLabel.AutoSize = true;
