@@ -23,10 +23,13 @@
 
 #### 使用方法
 - 运行 `OmniVCamController.exe` 可以通过界面控制虚拟摄像头，默认连接 `127.0.0.1:16999`。
-- `Input` 填入要播放的文件、采集设备或特殊输入，如 `D:\example.mp4`、`<TESTCARD>`、`<TESTCARD2>`、`<OBSVCAM>`。也可以点 `Browse` 选择本地媒体文件。
+- 关闭控制器时会自动保存当前界面配置和播放列表，启动时会自动加载。自动配置文件为程序目录下的 `OmniVCamController.xml`。
+- `Input` 填入要播放的文件、采集设备或特殊输入，如 `D:\example.mp4`、`<TESTCARD>`、`<TESTCARD2>`、`<OBSVCAM>`。右侧下拉框可快速选择 `<TESTCARD>`、`<TESTCARD2>`、`<OBSVCAM>`，也可以点 `Browse` 选择本地媒体文件。
 - `Options` 填入本次播放的附加参数，例如 `seek_time=14`、`video_filter='bwdif=1',audio_filter='loudnorm'`、`format=dshow,rtbufsize=1G`。
 - 点 `Play` 开始播放当前 `Input`，点 `Stop` 停止，点 `Reopen` 重新打开当前输入。
-- `Video filter`、`Audio filter`、`Seek seconds`、`HW decode`、`Video index`、`Audio index` 都是改值后立即发送到虚拟摄像头，不需要再点额外的设置按钮。
+- `Video filter`、`Audio filter` 修改后需要点右侧 `Set` 才会发送到虚拟摄像头；点 `Cancel` 会清空输入框并发送空白滤镜，用于取消当前滤镜。
+- `HW decode` 修改后需要点右侧 `Set` 才会发送到虚拟摄像头。可选值包括 `none`、`dxva2`、`d3d11va`、`cuda`、`qsv`。
+- `Seek seconds`、`Video index`、`Audio index` 改值后会立即发送到虚拟摄像头。`Set video index`、`Set audio index` 可用于重新发送当前轨道设置。
 - `Shift us` 用来调整输出帧时间偏移，单位是微秒，数值变化会立即生效。右侧 `-` / `+` 按钮每次按当前步进值调整，适合在 OBS、直播伴侣等软件里观察丢帧情况时微调。60 帧输出时建议在 `0` 到 `16667` 之间调整，大于单帧间隔通常没有作用。
 - 进度条可拖动定位。普通模式按播放时长 Seek；勾选 `Byte seek` 后按文件位置百分比 Seek，适合时长识别不准或不可精确按时间跳转的输入。
 - 下半部分是播放列表。`Add files` / `Add folder` 添加节目，`Add bumper` 添加垫片，`Start playout` 开始按列表播出，`Next` 播放下一条，`Stop playout` 停止列表播出。`Mode` 可选择顺序、随机或定时模式。
