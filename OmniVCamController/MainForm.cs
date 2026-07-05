@@ -21,6 +21,7 @@ namespace OmniVCamController
         private Timer playoutTimer;
 
         private readonly List<PlaylistItem> playlist = new List<PlaylistItem>();
+        private readonly List<FavoriteInputItem> favoriteInputs = new List<FavoriteInputItem>();
         private readonly Random random = new Random();
         private int currentIndex = -1;
         private bool playoutRunning;
@@ -114,7 +115,44 @@ namespace OmniVCamController
             grid.SetColumnSpan(buttons, 4);
             grid.RowCount++;
 
-            root.Controls.Add(logBox, 0, 1);
+            root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 1);
+        }
+
+        private Control CreateLogAndFavoriteInputsPanel()
+        {
+            var split = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical
+            };
+            split.SizeChanged += (_, __) => split.SplitterDistance = Math.Max(1, split.ClientSize.Width / 2);
+            split.Panel1.Controls.Add(logBox);
+            split.Panel2.Controls.Add(CreateFavoriteInputsPanel());
+            return split;
+        }
+
+        private Control CreateFavoriteInputsPanel()
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8, 0, 0, 0) };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
+            toolbar.Controls.Add(new Label { Text = "Favorite inputs", AutoSize = true, Padding = new Padding(0, 5, 6, 0) });
+            toolbar.Controls.Add(MakeButton("Add current", (_, __) => AddCurrentFavoriteInput()));
+            toolbar.Controls.Add(MakeButton("Remove", (_, __) => RemoveSelectedFavoriteInput()));
+            toolbar.Controls.Add(MakeButton("Up", (_, __) => MoveSelectedFavoriteInput(-1)));
+            toolbar.Controls.Add(MakeButton("Down", (_, __) => MoveSelectedFavoriteInput(1)));
+            root.Controls.Add(toolbar, 0, 0);
+
+            favoriteInputView.Columns.Add("Title", 140);
+            favoriteInputView.Columns.Add("Options", 140);
+            favoriteInputView.Columns.Add("Input", 320);
+            favoriteInputView.SelectedIndexChanged += (_, __) => LoadSelectedFavoriteInputToInputs();
+            favoriteInputView.DoubleClick += async (_, __) => await PlaySelectedFavoriteInputAsync();
+            root.Controls.Add(favoriteInputView, 0, 1);
+
+            return root;
         }
 
         private void BuildPlaylistPanel(Control parent)
@@ -362,6 +400,94 @@ namespace OmniVCamController
                 return;
             }
             await SendCommandAsync(string.IsNullOrWhiteSpace(options) ? "PLAY " + input : "PLAY " + input + "\t" + options);
+        }
+
+        private void AddCurrentFavoriteInput()
+        {
+            string input = inputBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                AppendLog("Input is empty.");
+                return;
+            }
+
+            string options = optionsBox.Text.Trim();
+            FavoriteInputItem existing = favoriteInputs.FirstOrDefault(item => PathsEqual(item.Input, input) && string.Equals(item.Options, options, StringComparison.Ordinal));
+            if (existing != null)
+            {
+                existing.Title = GetInputTitle(input);
+            }
+            else
+            {
+                favoriteInputs.Add(new FavoriteInputItem
+                {
+                    Input = input,
+                    Title = GetInputTitle(input),
+                    Options = options
+                });
+            }
+            RefreshFavoriteInputView();
+        }
+
+        private void RemoveSelectedFavoriteInput()
+        {
+            foreach (int index in favoriteInputView.SelectedIndices.Cast<int>().OrderByDescending(i => i)) favoriteInputs.RemoveAt(index);
+            RefreshFavoriteInputView();
+        }
+
+        private void MoveSelectedFavoriteInput(int direction)
+        {
+            if (favoriteInputView.SelectedIndices.Count != 1) return;
+            int index = favoriteInputView.SelectedIndices[0];
+            int target = index + direction;
+            if (target < 0 || target >= favoriteInputs.Count) return;
+            FavoriteInputItem item = favoriteInputs[index];
+            favoriteInputs.RemoveAt(index);
+            favoriteInputs.Insert(target, item);
+            RefreshFavoriteInputView();
+            favoriteInputView.Items[target].Selected = true;
+        }
+
+        private void LoadSelectedFavoriteInputToInputs()
+        {
+            if (favoriteInputView.SelectedIndices.Count != 1) return;
+            int index = favoriteInputView.SelectedIndices[0];
+            if (index < 0 || index >= favoriteInputs.Count) return;
+            inputBox.Text = favoriteInputs[index].Input;
+            optionsBox.Text = favoriteInputs[index].Options;
+        }
+
+        private async Task PlaySelectedFavoriteInputAsync()
+        {
+            if (favoriteInputView.SelectedIndices.Count == 0) return;
+            int index = favoriteInputView.SelectedIndices[0];
+            if (index < 0 || index >= favoriteInputs.Count) return;
+            FavoriteInputItem item = favoriteInputs[index];
+            inputBox.Text = item.Input;
+            optionsBox.Text = item.Options;
+            await PlayInputAsync(item.Input, item.Options);
+        }
+
+        private void RefreshFavoriteInputView()
+        {
+            favoriteInputView.BeginUpdate();
+            favoriteInputView.Items.Clear();
+            foreach (FavoriteInputItem item in favoriteInputs)
+            {
+                var row = new ListViewItem(item.Title);
+                row.SubItems.Add(item.Options);
+                row.SubItems.Add(item.Input);
+                favoriteInputView.Items.Add(row);
+            }
+            favoriteInputView.EndUpdate();
+        }
+
+        private static string GetInputTitle(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+            if (input.StartsWith("<", StringComparison.Ordinal) && input.EndsWith(">", StringComparison.Ordinal)) return input;
+            string fileName = Path.GetFileNameWithoutExtension(input);
+            return string.IsNullOrWhiteSpace(fileName) ? input : fileName;
         }
 
         private async Task AddFilesAsync()
@@ -633,7 +759,12 @@ namespace OmniVCamController
                                 new XAttribute("title", item.Title),
                                 new XAttribute("durationSeconds", item.DurationSeconds),
                                 new XAttribute("options", item.Options),
-                                new XAttribute("isBumper", item.IsBumper ? "1" : "0"))))));
+                                new XAttribute("isBumper", item.IsBumper ? "1" : "0")))),
+                        new XElement("FavoriteInputs",
+                            favoriteInputs.Select(item => new XElement("Item",
+                                new XAttribute("input", item.Input),
+                                new XAttribute("title", item.Title),
+                                new XAttribute("options", item.Options))))));
 
                 document.Save(GetAutoConfigPath());
             }
@@ -664,7 +795,15 @@ namespace OmniVCamController
                     foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
                 }
 
+                XElement favoriteInputsElement = root.Element("FavoriteInputs");
+                if (favoriteInputsElement != null)
+                {
+                    favoriteInputs.Clear();
+                    foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
+                }
+
                 RefreshPlaylistView();
+                RefreshFavoriteInputView();
             }
             catch (Exception ex)
             {
@@ -711,6 +850,19 @@ namespace OmniVCamController
                 DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : (int)defaultDurationBox.Value,
                 Options = GetAttribute(itemElement, "options", string.Empty),
                 IsBumper = GetAttribute(itemElement, "isBumper", "0") == "1"
+            });
+        }
+
+        private void LoadFavoriteInputElement(XElement itemElement)
+        {
+            string input = GetAttribute(itemElement, "input", string.Empty);
+            if (string.IsNullOrWhiteSpace(input)) return;
+
+            favoriteInputs.Add(new FavoriteInputItem
+            {
+                Input = input,
+                Title = GetAttribute(itemElement, "title", GetInputTitle(input)),
+                Options = GetAttribute(itemElement, "options", string.Empty)
             });
         }
 
@@ -1056,6 +1208,13 @@ namespace OmniVCamController
             public int DurationSeconds { get; set; }
             public string Options { get; set; } = string.Empty;
             public bool IsBumper { get; set; }
+        }
+
+        private sealed class FavoriteInputItem
+        {
+            public string Input { get; set; } = string.Empty;
+            public string Title { get; set; } = string.Empty;
+            public string Options { get; set; } = string.Empty;
         }
     }
 }

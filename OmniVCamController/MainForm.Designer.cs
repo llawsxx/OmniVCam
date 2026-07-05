@@ -20,6 +20,7 @@ namespace OmniVCamController
         private TrackBar progressBar;
         private CheckBox byteSeekBox;
         private TextBox logBox;
+        private ListView favoriteInputView;
         private ListView playlistView;
         private Label playoutStatusLabel;
         private ComboBox playoutModeBox;
@@ -46,6 +47,7 @@ namespace OmniVCamController
             progressBar = new TrackBar();
             byteSeekBox = new CheckBox();
             logBox = new TextBox();
+            favoriteInputView = new ListView();
 
             playlistView = new ListView();
             playoutStatusLabel = new Label();
@@ -114,6 +116,11 @@ namespace OmniVCamController
             logBox.ReadOnly = true;
             logBox.ScrollBars = ScrollBars.Vertical;
             logBox.Dock = DockStyle.Fill;
+            favoriteInputView.Dock = DockStyle.Fill;
+            favoriteInputView.View = View.Details;
+            favoriteInputView.FullRowSelect = true;
+            favoriteInputView.GridLines = true;
+            favoriteInputView.HideSelection = false;
             playlistView.Dock = DockStyle.Fill;
             playlistView.View = View.Details;
             playlistView.FullRowSelect = true;
