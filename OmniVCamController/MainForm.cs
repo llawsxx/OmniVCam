@@ -8,12 +8,14 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Xml.Linq;
 
 namespace OmniVCamController
 {
     public sealed partial class MainForm : Form
     {
         private const string MediaFileFilter = "Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mp3;*.wav;*.aac|All files|*.*";
+        private const string AutoConfigFileName = "OmniVCamController.xml";
 
         private Timer statusTimer;
         private Timer playoutTimer;
@@ -38,8 +40,6 @@ namespace OmniVCamController
         private bool suppressSeekValueEvent;
         private bool controlsReady;
 
-        private String lastVideoFilter = "";
-        private String lastAudioFilter = "";
 
         public MainForm()
         {
@@ -52,12 +52,14 @@ namespace OmniVCamController
             playoutModeBox.Items.AddRange(new object[] { "Sequential", "Random" });
             playoutModeBox.SelectedIndex = 0;
             scheduledStartPicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
+            LoadAutoConfig();
             controlsReady = true;
 
             statusTimer.Tick += async (_, __) => await RefreshStatusAsync();
             statusTimer.Start();
             playoutTimer.Tick += async (_, __) => await PlayoutTickAsync();
             playoutTimer.Start();
+            FormClosing += (_, __) => SaveAutoConfig();
         }
 
         private void BuildManualPanel(Control parent)
@@ -76,8 +78,8 @@ namespace OmniVCamController
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
             AddRow(grid, "Input", CreateInputPicker(), "Options", optionsBox);
-            AddRow(grid, "HW decode", hwDecodeBox, "Shift us", CreateShiftControl());
-            AddRow(grid, "Video filter", videoFilterBox, "Audio filter", audioFilterBox);
+            AddRow(grid, "HW decode", CreateHwDecodeControl(), "Shift us", CreateShiftControl());
+            AddRow(grid, "Video filter", CreateVideoFilterControl(), "Audio filter", CreateAudioFilterControl());
             AddRow(grid, "Video index", videoIndexBox, "Audio index", audioIndexBox);
             AddRow(grid, "Position", positionLabel, "Seek seconds", seekBox);
             AddRow(grid, "Progress", progressBar, "Seek mode", byteSeekBox);
@@ -88,33 +90,13 @@ namespace OmniVCamController
             {
                 if (controlsReady) await SendCommandAsync($"SET_SHIFT {(long)shiftBox.Value}");
             };
-            videoFilterBox.Leave += async (_, __) =>
-            {
-                if (videoFilterBox.Text != lastVideoFilter)
-                {
-                    lastVideoFilter = videoFilterBox.Text;
-                    if (controlsReady) await SendCommandAsync("SET_FILTER " + videoFilterBox.Text.Trim());
-                }
-            };
-            audioFilterBox.Leave += async (_, __) =>
-            {
-                if (audioFilterBox.Text != lastAudioFilter)
-                {
-                    lastAudioFilter = audioFilterBox.Text;
-                    if (controlsReady) await SendCommandAsync("SET_AUDIO_FILTER " + audioFilterBox.Text.Trim());
-                }
-            };
             videoIndexBox.ValueChanged += async (_, __) =>
             {
-                if (controlsReady) await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
+                if (controlsReady) await SendIndexesAsync();
             };
             audioIndexBox.ValueChanged += async (_, __) =>
             {
-                if (controlsReady) await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
-            };
-            hwDecodeBox.TextChanged += async (_, __) =>
-            {
-                if (controlsReady) await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}");
+                if (controlsReady) await SendIndexesAsync();
             };
             seekBox.ValueChanged += async (_, __) =>
             {
@@ -124,6 +106,8 @@ namespace OmniVCamController
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
             buttons.Controls.Add(MakeButton("Ping", async (_, __) => await SendCommandAsync("PING")));
             buttons.Controls.Add(MakeButton("Play", async (_, __) => await PlayManualAsync()));
+            buttons.Controls.Add(MakeButton("Set video index", async (_, __) => await SendIndexesAsync()));
+            buttons.Controls.Add(MakeButton("Set audio index", async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
@@ -214,6 +198,64 @@ namespace OmniVCamController
             return panel;
         }
 
+        private Control CreateHwDecodeControl()
+        {
+            var panel = new TableLayoutPanel
+            {
+                ColumnCount = 2,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AutoSize = true
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+
+            hwDecodeBox.Dock = DockStyle.Fill;
+            var setButton = MakeButton("Set", async (_, __) => await SendHwDecodeAsync());
+            setButton.Margin = new Padding(4, 0, 0, 0);
+
+            panel.Controls.Add(hwDecodeBox, 0, 0);
+            panel.Controls.Add(setButton, 1, 0);
+
+            return panel;
+        }
+
+        private Control CreateVideoFilterControl()
+        {
+            return CreateFilterControl(videoFilterBox, async () => await SendVideoFilterAsync(), async () => await CancelVideoFilterAsync());
+        }
+
+        private Control CreateAudioFilterControl()
+        {
+            return CreateFilterControl(audioFilterBox, async () => await SendAudioFilterAsync(), async () => await CancelAudioFilterAsync());
+        }
+
+        private static Control CreateFilterControl(TextBox textBox, Func<Task> setAction, Func<Task> cancelAction)
+        {
+            var panel = new TableLayoutPanel
+            {
+                ColumnCount = 3,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AutoSize = true
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+
+            textBox.Dock = DockStyle.Fill;
+            var setButton = MakeButton("Set", async (_, __) => await setAction());
+            var cancelButton = MakeButton("Cancel", async (_, __) => await cancelAction());
+            setButton.Margin = new Padding(4, 0, 0, 0);
+            cancelButton.Margin = new Padding(4, 0, 0, 0);
+
+            panel.Controls.Add(textBox, 0, 0);
+            panel.Controls.Add(setButton, 1, 0);
+            panel.Controls.Add(cancelButton, 2, 0);
+
+            return panel;
+        }
+
         private static Button MakeStepButton(string text, Action action)
         {
             var button = new Button
@@ -237,20 +279,33 @@ namespace OmniVCamController
         {
             var panel = new TableLayoutPanel
             {
-                ColumnCount = 2,
+                ColumnCount = 3,
                 Dock = DockStyle.Fill,
                 Margin = Padding.Empty,
                 AutoSize = true
             };
 
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
 
             inputBox.Dock = DockStyle.Fill;
+            var quickBox = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(4, 0, 4, 0)
+            };
+            quickBox.Items.AddRange(new object[] { "<TESTCARD>", "<TESTCARD2>", "<OBSVCAM>" });
+            quickBox.SelectedIndexChanged += (_, __) =>
+            {
+                if (quickBox.SelectedItem != null) inputBox.Text = quickBox.SelectedItem.ToString();
+            };
             var button = MakeButton("Browse", (_, __) => BrowseInputFile());
             button.Dock = DockStyle.None;
 
             panel.Controls.Add(inputBox, 0, 0);
-            panel.Controls.Add(button, 1, 0);
+            panel.Controls.Add(quickBox, 1, 0);
+            panel.Controls.Add(button, 2, 0);
 
             return panel;
         }
@@ -267,6 +322,36 @@ namespace OmniVCamController
         private async Task PlayManualAsync()
         {
             await PlayInputAsync(inputBox.Text.Trim(), optionsBox.Text.Trim());
+        }
+
+        private async Task SendVideoFilterAsync()
+        {
+            await SendCommandAsync("SET_FILTER " + videoFilterBox.Text.Trim());
+        }
+
+        private async Task SendAudioFilterAsync()
+        {
+            await SendCommandAsync("SET_AUDIO_FILTER " + audioFilterBox.Text.Trim());
+        }
+
+        private async Task SendHwDecodeAsync()
+        {
+            await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}");
+        }
+
+        private async Task CancelVideoFilterAsync()
+        {
+            await SendCommandAsync("SET_FILTER ");
+        }
+
+        private async Task CancelAudioFilterAsync()
+        {
+            await SendCommandAsync("SET_AUDIO_FILTER ");
+        }
+
+        private async Task SendIndexesAsync()
+        {
+            await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
         }
 
         private async Task PlayInputAsync(string input, string options)
@@ -519,6 +604,145 @@ namespace OmniVCamController
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 File.WriteAllLines(dialog.FileName, playlist.Select(item => string.Join("\t", Escape(item.Path), Escape(item.Title), item.DurationSeconds, Escape(item.Options), item.IsBumper ? "1" : "0")), Encoding.UTF8);
             }
+        }
+
+        private void SaveAutoConfig()
+        {
+            try
+            {
+                var document = new XDocument(
+                    new XElement("OmniVCamController",
+                        new XElement("Settings",
+                            new XAttribute("host", hostBox.Text),
+                            new XAttribute("port", portBox.Value),
+                            new XAttribute("input", inputBox.Text),
+                            new XAttribute("options", optionsBox.Text),
+                            new XAttribute("hwDecode", hwDecodeBox.Text),
+                            new XAttribute("videoFilter", videoFilterBox.Text),
+                            new XAttribute("audioFilter", audioFilterBox.Text),
+                            new XAttribute("videoIndex", videoIndexBox.Value),
+                            new XAttribute("audioIndex", audioIndexBox.Value),
+                            new XAttribute("shift", shiftBox.Value),
+                            new XAttribute("seek", seekBox.Value),
+                            new XAttribute("byteSeek", byteSeekBox.Checked ? "1" : "0"),
+                            new XAttribute("playoutMode", playoutModeBox.Text),
+                            new XAttribute("scheduledStart", scheduledStartPicker.Value.ToString("HH:mm:ss"))),
+                        new XElement("Playlist",
+                            playlist.Select(item => new XElement("Item",
+                                new XAttribute("path", item.Path),
+                                new XAttribute("title", item.Title),
+                                new XAttribute("durationSeconds", item.DurationSeconds),
+                                new XAttribute("options", item.Options),
+                                new XAttribute("isBumper", item.IsBumper ? "1" : "0"))))));
+
+                document.Save(GetAutoConfigPath());
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Save config failed: " + ex.Message);
+            }
+        }
+
+        private void LoadAutoConfig()
+        {
+            string path = GetAutoConfigPath();
+            if (!File.Exists(path)) return;
+
+            try
+            {
+                playlist.Clear();
+                XDocument document = XDocument.Load(path);
+                XElement root = document.Root;
+                if (root == null) return;
+
+                XElement settings = root.Element("Settings");
+                if (settings != null) LoadSettingsElement(settings);
+
+                XElement playlistElement = root.Element("Playlist");
+                if (playlistElement != null)
+                {
+                    foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
+                }
+
+                RefreshPlaylistView();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Load config failed: " + ex.Message);
+            }
+        }
+
+        private void LoadSettingsElement(XElement settings)
+        {
+            decimal decimalValue;
+
+            hostBox.Text = GetAttribute(settings, "host", hostBox.Text);
+            inputBox.Text = GetAttribute(settings, "input", inputBox.Text);
+            optionsBox.Text = GetAttribute(settings, "options", optionsBox.Text);
+            hwDecodeBox.Text = GetAttribute(settings, "hwDecode", hwDecodeBox.Text);
+            videoFilterBox.Text = GetAttribute(settings, "videoFilter", videoFilterBox.Text);
+            audioFilterBox.Text = GetAttribute(settings, "audioFilter", audioFilterBox.Text);
+
+            if (decimal.TryParse(GetAttribute(settings, "port", null), out decimalValue)) portBox.Value = Clamp(decimalValue, portBox.Minimum, portBox.Maximum);
+            if (decimal.TryParse(GetAttribute(settings, "videoIndex", null), out decimalValue)) videoIndexBox.Value = Clamp(decimalValue, videoIndexBox.Minimum, videoIndexBox.Maximum);
+            if (decimal.TryParse(GetAttribute(settings, "audioIndex", null), out decimalValue)) audioIndexBox.Value = Clamp(decimalValue, audioIndexBox.Minimum, audioIndexBox.Maximum);
+            if (decimal.TryParse(GetAttribute(settings, "shift", null), out decimalValue)) shiftBox.Value = Clamp(decimalValue, shiftBox.Minimum, shiftBox.Maximum);
+            if (decimal.TryParse(GetAttribute(settings, "seek", null), out decimalValue)) seekBox.Value = Clamp(decimalValue, seekBox.Minimum, seekBox.Maximum);
+
+            byteSeekBox.Checked = GetAttribute(settings, "byteSeek", byteSeekBox.Checked ? "1" : "0") == "1";
+
+            string playoutMode = GetAttribute(settings, "playoutMode", playoutModeBox.Text);
+            if (playoutModeBox.Items.Contains(playoutMode)) playoutModeBox.Text = playoutMode;
+
+            DateTime scheduled;
+            if (DateTime.TryParse(GetAttribute(settings, "scheduledStart", null), out scheduled)) scheduledStartPicker.Value = scheduled;
+        }
+
+        private void LoadPlaylistElement(XElement itemElement)
+        {
+            string itemPath = GetAttribute(itemElement, "path", string.Empty);
+            if (string.IsNullOrWhiteSpace(itemPath)) return;
+
+            int duration;
+            playlist.Add(new PlaylistItem
+            {
+                Path = itemPath,
+                Title = GetAttribute(itemElement, "title", System.IO.Path.GetFileNameWithoutExtension(itemPath)),
+                DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : (int)defaultDurationBox.Value,
+                Options = GetAttribute(itemElement, "options", string.Empty),
+                IsBumper = GetAttribute(itemElement, "isBumper", "0") == "1"
+            });
+        }
+
+        private static string GetAttribute(XElement element, string name, string defaultValue)
+        {
+            XAttribute attribute = element.Attribute(name);
+            return attribute == null ? defaultValue : attribute.Value;
+        }
+
+        private void LoadPlaylistLine(string line)
+        {
+            string[] parts = line.Split('\t');
+            if (parts.Length < 1 || string.IsNullOrWhiteSpace(parts[0])) return;
+            string itemPath = Unescape(parts[0]);
+            playlist.Add(new PlaylistItem
+            {
+                Path = itemPath,
+                Title = parts.Length > 1 ? Unescape(parts[1]) : System.IO.Path.GetFileNameWithoutExtension(itemPath),
+                DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : (int)defaultDurationBox.Value,
+                Options = parts.Length > 3 ? Unescape(parts[3]) : string.Empty,
+                IsBumper = parts.Length > 4 && parts[4] == "1"
+            });
+        }
+
+        private static decimal Clamp(decimal value, decimal minimum, decimal maximum)
+        {
+            return Math.Max(minimum, Math.Min(maximum, value));
+        }
+
+        private static string GetAutoConfigPath()
+        {
+            return Path.Combine(Application.StartupPath, AutoConfigFileName);
         }
 
         private async Task LoadPlaylistAsync()
