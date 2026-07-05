@@ -83,7 +83,7 @@ namespace OmniVCamController
             AddRow(grid, "Video filter", CreateVideoFilterControl(), "Audio filter", CreateAudioFilterControl());
             AddRow(grid, "Video index", videoIndexBox, "Audio index", audioIndexBox);
             AddRow(grid, "Position", positionLabel, "Seek seconds", seekBox);
-            AddRow(grid, "Progress", progressBar, "Seek mode", byteSeekBox);
+            AddProgressRow(grid);
             progressBar.MouseDown += ProgressBar_MouseDown;
             progressBar.MouseMove += ProgressBar_MouseMove;
             progressBar.MouseUp += async (_, e) => await ProgressBar_MouseUpAsync(e);
@@ -203,6 +203,34 @@ namespace OmniVCamController
             grid.Controls.Add(control1, 1, row);
             grid.Controls.Add(new Label { Text = label2, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 4, 0, 0) }, 2, row);
             grid.Controls.Add(control2, 3, row);
+        }
+
+        private static void AddWideRow(TableLayoutPanel grid, string label, Control control)
+        {
+            int row = grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grid.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(0, 4, 0, 0) }, 0, row);
+            grid.Controls.Add(control, 1, row);
+            grid.SetColumnSpan(control, 3);
+        }
+
+        private void AddProgressRow(TableLayoutPanel grid)
+        {
+            var panel = new TableLayoutPanel
+            {
+                ColumnCount = 3,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AutoSize = true
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+            panel.Controls.Add(CreateProgressControl(), 0, 0);
+            panel.Controls.Add(new Label { Text = "Seek mode", AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 4, 0, 0) }, 1, 0);
+            panel.Controls.Add(byteSeekBox, 2, 0);
+
+            AddWideRow(grid, "Progress", panel);
         }
 
         private static Button MakeButton(string text, EventHandler handler)
@@ -344,6 +372,30 @@ namespace OmniVCamController
             panel.Controls.Add(inputBox, 0, 0);
             panel.Controls.Add(quickBox, 1, 0);
             panel.Controls.Add(button, 2, 0);
+
+            return panel;
+        }
+
+        private Control CreateProgressControl()
+        {
+            var panel = new TableLayoutPanel
+            {
+                ColumnCount = 3,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AutoSize = true
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+
+            var backButton = MakeButton("-5s", async (_, __) => await SeekRelativeAsync(-5));
+            var forwardButton = MakeButton("+5s", async (_, __) => await SeekRelativeAsync(5));
+
+            progressBar.Dock = DockStyle.Fill;
+            panel.Controls.Add(progressBar, 0, 0);
+            panel.Controls.Add(backButton, 1, 0);
+            panel.Controls.Add(forwardButton, 2, 0);
 
             return panel;
         }
@@ -1180,6 +1232,17 @@ namespace OmniVCamController
             pendingSeekSeconds = seconds;
             pendingSeekUntil = DateTime.Now.AddSeconds(5);
             await SendCommandAsync($"SEEK {seconds}");
+        }
+
+        private async Task SeekRelativeAsync(long deltaSeconds)
+        {
+            long targetSeconds = Math.Max(0, currentPositionSeconds + deltaSeconds);
+            if (currentDurationSeconds > 0) targetSeconds = Math.Min(currentDurationSeconds, targetSeconds);
+
+            suppressSeekValueEvent = true;
+            seekBox.Value = Math.Max(seekBox.Minimum, Math.Min(seekBox.Maximum, targetSeconds));
+            suppressSeekValueEvent = false;
+            await SeekBySecondsAsync(targetSeconds);
         }
 
         private const int TBM_GETCHANNELRECT = 0x041A;
