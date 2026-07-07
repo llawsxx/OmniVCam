@@ -82,7 +82,8 @@ namespace OmniVCamController
             root.Controls.Add(grid, 0, 0);
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
-            AddRow(grid, "Input", CreateInputPicker(), "Options", optionsBox);
+            AddWideRow(grid, "Input", CreateInputPicker());
+            AddWideRow(grid, "Options", optionsBox);
             AddRow(grid, "HW decode", CreateHwDecodeControl(), "Scale mode", CreateScaleModeControl());
             AddRow(grid, "Display AR", CreateDisplayAspectControl(), "Shift us", CreateShiftControl());
             AddRow(grid, "Video filter", CreateVideoFilterControl(), "Audio filter", CreateAudioFilterControl());
@@ -108,6 +109,8 @@ namespace OmniVCamController
             {
                 if (controlsReady && !suppressSeekValueEvent) await SeekBySecondsAsync((long)seekBox.Value);
             };
+            ConfigureFileDrop(inputBox, async files => await DropFilesToInputAsync(files));
+            ConfigureFileDrop(playlistView, async files => await DropFilesToPlaylistAsync(files));
             scaleModeBox.SelectedIndexChanged += async (_, __) =>
             {
                 if (controlsReady) await SendScaleModeAsync();
@@ -491,6 +494,54 @@ namespace OmniVCamController
             await SendCommandAsync(string.IsNullOrWhiteSpace(options) ? "PLAY " + input : "PLAY " + input + "\t" + options);
         }
 
+        private static void ConfigureFileDrop(Control control, Func<string[], Task> dropAction)
+        {
+            control.AllowDrop = true;
+            control.DragEnter += (_, e) =>
+            {
+                e.Effect = e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            };
+            control.DragDrop += async (_, e) =>
+            {
+                if (e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+                string[] files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (files == null || files.Length == 0) return;
+                await dropAction(files);
+            };
+        }
+
+        private async Task DropFilesToInputAsync(string[] files)
+        {
+            string file = files.FirstOrDefault(File.Exists);
+            if (string.IsNullOrWhiteSpace(file)) return;
+            inputBox.Text = file;
+            await Task.CompletedTask;
+        }
+
+        private async Task DropFilesToPlaylistAsync(string[] files)
+        {
+            foreach (string path in ExpandDroppedMediaFiles(files))
+            {
+                await AddPlaylistItemAsync(path, false, optionsBox.Text.Trim());
+            }
+            RefreshPlaylistView();
+        }
+
+        private static IEnumerable<string> ExpandDroppedMediaFiles(IEnumerable<string> paths)
+        {
+            foreach (string path in paths)
+            {
+                if (File.Exists(path))
+                {
+                    if (IsMediaFile(path)) yield return path;
+                }
+                else if (Directory.Exists(path))
+                {
+                    foreach (string file in Directory.GetFiles(path, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
+                        yield return file;
+                }
+            }
+        }
         private void AddCurrentFavoriteInput()
         {
             string input = inputBox.Text.Trim();
