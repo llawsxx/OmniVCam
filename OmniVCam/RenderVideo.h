@@ -34,6 +34,7 @@ extern AVRational DSHOW_TB;
 #endif // DEBUG
 
 #define MAX_AUTO_THREADS 16
+#define VIDEO_PROCESS_QUEUE_COUNT 4
 
 typedef struct avframe_node {
 	AVFrame* frame;
@@ -94,6 +95,7 @@ typedef struct inout_context {
 	packet_queue queues[3];//one video one audio one subtitle
 	filter_context filter_contexts[2];
 	frame_queue* frame_queues[2];//output queue, should convert to output format
+	frame_queue* decoded_video_frame_queue;
 
 	struct SwsContext* sws_ctx;
 	SwrContext* swr_ctx;
@@ -101,6 +103,7 @@ typedef struct inout_context {
 	HANDLE reading_tid;
 	HANDLE special_source_tid;
 	HANDLE decode_video_tid;
+	HANDLE process_video_tid;
 	HANDLE decode_audio_tid;
 
 	enum AVPixelFormat hw_pix_fmt;
