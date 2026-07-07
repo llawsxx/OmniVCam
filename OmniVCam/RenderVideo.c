@@ -459,6 +459,8 @@ inout_context* inout_context_alloc(
 	ctx->output_frame_width = video_out_width;
 	ctx->output_frame_height = video_out_height;
 	ctx->output_frame_format = video_out_format;
+	ctx->output_scale_mode = OUTPUT_SCALE_MODE_LETTERBOX;
+	ctx->output_display_aspect = (AVRational) { 0, 0 };
 	ctx->output_fps = video_out_fps;
 	ctx->output_time_per_video_frame = av_rescale_q_rnd(1, (AVRational) { video_out_fps.den, video_out_fps.num }, UNIVERSAL_TB, AV_ROUND_UP);
 	ctx->output_video_interval_ns = use_fixed_frame_interval ? util_mul_div64(1000000000ULL, video_out_fps.den, video_out_fps.num) : 0;
@@ -1379,9 +1381,164 @@ static void flip_frame(AVFrame* frame)
 	frame->linesize[0] *= -1;
 }
 
+static int parse_output_scale_mode(const char* mode, int default_mode)
+{
+	if (!mode || mode[0] == '\0')
+		return default_mode;
+	if (_stricmp(mode, "fill") == 0 || _stricmp(mode, "stretch") == 0 || _stricmp(mode, "fullscreen") == 0)
+		return OUTPUT_SCALE_MODE_FILL;
+	if (_stricmp(mode, "letterbox") == 0 || _stricmp(mode, "fit") == 0 || _stricmp(mode, "keep_aspect") == 0)
+		return OUTPUT_SCALE_MODE_LETTERBOX;
+	return default_mode;
+}
+
+static const char* output_scale_mode_name(int mode)
+{
+	return mode == OUTPUT_SCALE_MODE_LETTERBOX ? "letterbox" : "fill";
+}
+
+static AVRational parse_display_aspect(const char* text, AVRational default_aspect)
+{
+	int num = 0, den = 0;
+	double value = 0;
+
+	if (!text || text[0] == '\0' || _stricmp(text, "auto") == 0 || _stricmp(text, "sar") == 0)
+		return (AVRational) { 0, 0 };
+	if (sscanf_s(text, "%d:%d", &num, &den) == 2 || sscanf_s(text, "%d/%d", &num, &den) == 2) {
+		if (num > 0 && den > 0)
+			return av_d2q((double)num / den, 100000);
+		return default_aspect;
+	}
+	value = atof(text);
+	if (value > 0)
+		return av_d2q(value, 100000);
+	return default_aspect;
+}
+
+static void format_display_aspect(AVRational aspect, char* buffer, int buffer_size)
+{
+	if (aspect.num > 0 && aspect.den > 0)
+		sprintf_s(buffer, buffer_size, "%d:%d", aspect.num, aspect.den);
+	else
+		strcpy_s(buffer, buffer_size, "auto");
+}
+static int calc_letterbox_rect(const AVFrame* src, AVRational display_aspect, enum AVPixelFormat dst_format, int dst_width, int dst_height,
+	int* out_x, int* out_y, int* out_width, int* out_height)
+{
+	int64_t display_width = src->width;
+	int64_t display_height = src->height;
+	AVRational sar = src->sample_aspect_ratio;
+	int log2_chroma_w = 0, log2_chroma_h = 0;
+	int align_w = 1, align_h = 1;
+
+	if (display_aspect.num > 0 && display_aspect.den > 0) {
+		display_width = display_aspect.num;
+		display_height = display_aspect.den;
+	}
+	else if (sar.num > 0 && sar.den > 0) {
+		display_width *= sar.num;
+		display_height *= sar.den;
+	}
+
+	if (display_width <= 0 || display_height <= 0 || dst_width <= 0 || dst_height <= 0)
+		return -1;
+
+	if (display_width * dst_height > display_height * dst_width) {
+		*out_width = dst_width;
+		*out_height = (int)av_rescale(dst_width, display_height, display_width);
+	}
+	else {
+		*out_height = dst_height;
+		*out_width = (int)av_rescale(dst_height, display_width, display_height);
+	}
+	if (av_pix_fmt_get_chroma_sub_sample(dst_format, &log2_chroma_w, &log2_chroma_h) >= 0) {
+		align_w = 1 << log2_chroma_w;
+		align_h = 1 << log2_chroma_h;
+	}
+
+	*out_width = FFMAX(align_w, FFMIN(*out_width, dst_width));
+	*out_height = FFMAX(align_h, FFMIN(*out_height, dst_height));
+	*out_width &= ~(align_w - 1);
+	*out_height &= ~(align_h - 1);
+	*out_x = ((dst_width - *out_width) / 2) & ~(align_w - 1);
+	*out_y = ((dst_height - *out_height) / 2) & ~(align_h - 1);
+	return 0;
+}
+
+static int offset_frame_data(AVFrame* frame, int x, int y)
+{
+	int ret;
+	int x_linesizes[4] = { 0 };
+	ptrdiff_t dst_linesizes[4] = { 0 };
+	ptrdiff_t y_offsets[4] = { 0 };
+
+	ret = av_image_fill_linesizes(x_linesizes, frame->format, x);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < 4; i++) {
+		dst_linesizes[i] = frame->linesize[i];
+	}
+
+	ret = av_image_fill_plane_sizes(y_offsets, frame->format, y, dst_linesizes);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < 4 && frame->data[i]; i++) {
+		frame->data[i] += x_linesizes[i] + y_offsets[i];
+	}
+
+	return 0;
+}
+
+static int fill_black_rect(AVFrame* frame, int x, int y, int width, int height)
+{
+	const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(frame->format);
+	ptrdiff_t linesizes[4] = { 0 };
+	AVFrame rect = *frame;
+	int ret;
+
+	if (!desc || width <= 0 || height <= 0)
+		return -1;
+
+	ret = offset_frame_data(&rect, x, y);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < 4; i++)
+		linesizes[i] = rect.linesize[i];
+
+	if (desc->flags & AV_PIX_FMT_FLAG_ALPHA) {
+		const uint32_t transparent_black[4] = { 0, 0, 0, 0 };
+		return av_image_fill_color(rect.data, linesizes, rect.format,
+			transparent_black, width, height, 0);
+	}
+
+	return av_image_fill_black(rect.data, linesizes, rect.format,
+		desc->flags & AV_PIX_FMT_FLAG_RGB ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG,
+		width, height);
+}
+
+static void fill_letterbox_black(AVFrame* frame, int x, int y, int width, int height)
+{
+	int right = x + width;
+	int bottom = y + height;
+
+	if (y > 0)
+		fill_black_rect(frame, 0, 0, frame->width, y);
+	if (bottom < frame->height)
+		fill_black_rect(frame, 0, bottom, frame->width, frame->height - bottom);
+	if (x > 0)
+		fill_black_rect(frame, 0, y, x, height);
+	if (right < frame->width)
+		fill_black_rect(frame, right, y, frame->width - right, height);
+}
+
 int fill_output_video(inout_context* ctx, AVFrame* frame)
 {
 	int ret = 0, filp = 0;
+	int scale_x = 0, scale_y = 0, scale_width = 0, scale_height = 0;
+	int need_letterbox = 0;
 	AVFrame *f = av_frame_alloc();
 	if (!f) {
 		goto end;
@@ -1395,8 +1552,14 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		filp = 1;
 	}
 
+	if (calc_letterbox_rect(frame, ctx->output_display_aspect, f->format, f->width, f->height, &scale_x, &scale_y, &scale_width, &scale_height) < 0) {
+		scale_width = f->width;
+		scale_height = f->height;
+	}
+	need_letterbox = ctx->output_scale_mode == OUTPUT_SCALE_MODE_LETTERBOX && (scale_x != 0 || scale_y != 0 || scale_width != f->width || scale_height != f->height);
+
 	if (frame->width == f->width && frame->height == f->height &&
-		frame->format == f->format)
+		frame->format == f->format && !need_letterbox)
 	{
 		if (!filp && avframe_is_data_continuous(frame)) {
 			if ((ret = av_frame_ref(f, frame)) < 0) {
@@ -1442,11 +1605,30 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		goto end;
 	}
 
+	if (need_letterbox) {
+		fill_letterbox_black(f, scale_x, scale_y, scale_width, scale_height);
+	}
+
 	if (filp) {
 		flip_frame(f);
 	}
 	av_frame_copy_props(f, frame); // 先复制属性，防止自动转换色域等，如需转色域，用视频滤镜
-	sws_scale_frame(ctx->sws_ctx, f, frame);
+	if (need_letterbox) {
+		AVFrame dst = *f;
+		dst.width = scale_width;
+		dst.height = scale_height;
+		if (offset_frame_data(&dst, scale_x, scale_y) < 0) {
+			ret = -1;
+			goto end;
+		}
+		ret = sws_scale_frame(ctx->sws_ctx, &dst, frame);
+	}
+	else {
+		ret = sws_scale_frame(ctx->sws_ctx, f, frame);
+	}
+	if (ret < 0) {
+		goto end;
+	}
 
 	if (filp) {
 		flip_frame(f);
@@ -2725,6 +2907,8 @@ typedef enum tcp_control_command_type {
 	TCP_CONTROL_SEEK,
 	TCP_CONTROL_SEEK_BYTE_PERCENT,
 	TCP_CONTROL_SET_HW_DECODE,
+	TCP_CONTROL_SET_SCALE_MODE,
+	TCP_CONTROL_SET_DISPLAY_ASPECT,
 	TCP_CONTROL_STOP,
 	TCP_CONTROL_REOPEN
 } tcp_control_command_type;
@@ -2735,6 +2919,7 @@ typedef struct tcp_control_command {
 	int video_index;
 	int audio_index;
 	int64_t number;
+	AVRational aspect;
 } tcp_control_command;
 
 static int64_t probe_input_duration_seconds(char* text)
@@ -2804,6 +2989,7 @@ end:
 }
 
 #define TCP_CONTROL_QUEUE_SIZE 32
+#define TCP_CONTROL_BUFFER_SIZE 8192
 
 typedef struct tcp_control_server {
 	CRITICAL_SECTION mutex;
@@ -2818,6 +3004,8 @@ typedef struct tcp_control_server {
 	int64_t status_size;
 	char status_input[1024];
 	char status_state[32];
+	int scale_mode;
+	AVRational display_aspect;
 	tcp_control_command queue[TCP_CONTROL_QUEUE_SIZE];
 	int queue_head;
 	int queue_count;
@@ -2885,6 +3073,7 @@ static int starts_with_command(const char* line, const char* command)
 static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_control_command* cmd, char* reply, int reply_size)
 {
 	char* arg;
+	char aspect_text[32];
 	memset(cmd, 0, sizeof(*cmd));
 	strcpy_s(reply, reply_size, "OK\n");
 	tcp_trim_right(line);
@@ -2921,7 +3110,8 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	}
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, server->status_input);
+		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->status_input);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
@@ -2946,6 +3136,26 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 		cmd->type = TCP_CONTROL_SET_HW_DECODE;
 		if (!arg || _stricmp(arg, "none") == 0 || _stricmp(arg, "off") == 0) arg = "";
 		cmd->text = av_strdup(arg);
+		return;
+	}
+	if (starts_with_command(line, "SET_SCALE_MODE")) {
+		arg = tcp_trim_left(line + 14);
+		cmd->type = TCP_CONTROL_SET_SCALE_MODE;
+		cmd->number = parse_output_scale_mode(arg, -1);
+		if (cmd->number < 0) {
+			cmd->type = TCP_CONTROL_NONE;
+			strcpy_s(reply, reply_size, "ERR SET_SCALE_MODE requires fill or letterbox\n");
+		}
+		return;
+	}
+	if (starts_with_command(line, "SET_DISPLAY_ASPECT")) {
+		arg = tcp_trim_left(line + 18);
+		cmd->type = TCP_CONTROL_SET_DISPLAY_ASPECT;
+		cmd->aspect = parse_display_aspect(arg, (AVRational) { -1, -1 });
+		if (cmd->aspect.num < 0 || cmd->aspect.den < 0) {
+			cmd->type = TCP_CONTROL_NONE;
+			strcpy_s(reply, reply_size, "ERR SET_DISPLAY_ASPECT requires auto or num:den\n");
+		}
 		return;
 	}
 	if (starts_with_command(line, "SET_INDEX")) {
@@ -3003,9 +3213,17 @@ static DWORD tcp_control_thread(LPVOID p)
 		if (client == INVALID_SOCKET) continue;
 		server->client_socket = client;
 
+		char* buffer = (char*)av_malloc(TCP_CONTROL_BUFFER_SIZE);
+		char* reply = (char*)av_malloc(TCP_CONTROL_BUFFER_SIZE);
+		if (!buffer || !reply) {
+			av_free(buffer);
+			av_free(reply);
+			closesocket(client);
+			server->client_socket = INVALID_SOCKET;
+			continue;
+		}
+
 		while (!server->exit) {
-			char buffer[4096];
-			char reply[256];
 			tcp_control_command cmd;
 			fd_set clientfds;
 			struct timeval client_tv;
@@ -3015,13 +3233,15 @@ static DWORD tcp_control_thread(LPVOID p)
 			client_tv.tv_sec = 0;
 			client_tv.tv_usec = 200000;
 			if (select(0, &clientfds, NULL, NULL, &client_tv) <= 0) continue;
-			n = recv(client, buffer, sizeof(buffer) - 1, 0);
+			n = recv(client, buffer, TCP_CONTROL_BUFFER_SIZE - 1, 0);
 			if (n <= 0) break;
 			buffer[n] = '\0';
-			tcp_control_parse_line(server, buffer, &cmd, reply, sizeof(reply));
+			tcp_control_parse_line(server, buffer, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
 			if (cmd.type != TCP_CONTROL_NONE) tcp_control_push(server, &cmd);
 			send(client, reply, (int)strlen(reply), 0);
 		}
+		av_free(buffer);
+		av_free(reply);
 		closesocket(client);
 		server->client_socket = INVALID_SOCKET;
 	}
@@ -3078,6 +3298,8 @@ DWORD main_thread(LPVOID p) {
 	inout_options* opts = (inout_options*)p;
 	int use_fixed_frame_interval = 0;
 	int output_ajust_start_if_delay_over = 0;
+	int output_scale_mode = OUTPUT_SCALE_MODE_LETTERBOX;
+	AVRational output_display_aspect = { 0, 0 };
 	int av_max_offset_time = 3 * 1000000;
 	int video_frame_buffer = 10, audio_frame_buffer = 50, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000;
 	AVRational frame_rate = opts->video_out_fps;
@@ -3115,6 +3337,8 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "use_fixed_frame_interval", FALSE)) use_fixed_frame_interval = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "ajust_start_time_if_delay_over", FALSE)) output_ajust_start_if_delay_over = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "av_max_offset_time", FALSE)) av_max_offset_time = atoi(buf);
+	if (buf = get_paremeter_table_content(table, "config", "scale_mode", FALSE)) output_scale_mode = parse_output_scale_mode(buf, output_scale_mode);
+	if (buf = get_paremeter_table_content(table, "config", "display_aspect", FALSE)) output_display_aspect = parse_display_aspect(buf, output_display_aspect);
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
 	video_frame_buffer = video_frame_buffer <= 0 ? (frame_rate.num / frame_rate.den) : video_frame_buffer;
@@ -3128,6 +3352,8 @@ DWORD main_thread(LPVOID p) {
 	ctx->video_callback = opts->video_callback;
 	ctx->audio_callback = opts->audio_callback;
 	ctx->callback_private = opts->callback_private;
+	ctx->output_scale_mode = output_scale_mode;
+	ctx->output_display_aspect = output_display_aspect;
 
 	if (tcp_control_start(&control_server, tcp_port) < 0) {
 		printf("OmniVCam TCP control start failed on port %d\n", tcp_port);
@@ -3175,6 +3401,8 @@ DWORD main_thread(LPVOID p) {
 		control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
 		control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
 		control_server.status_size = (ctx->fmt_ctx && ctx->fmt_ctx->pb) ? avio_size(ctx->fmt_ctx->pb) : 0;
+		control_server.scale_mode = ctx->output_scale_mode;
+		control_server.display_aspect = ctx->output_display_aspect;
 		strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
 		if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
 		else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
@@ -3209,7 +3437,18 @@ DWORD main_thread(LPVOID p) {
 			set_input_audio_filter(ctx, global_audio_filter);
 			printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
 			break;
-		case TCP_CONTROL_SET_INDEX:
+		case TCP_CONTROL_SET_SCALE_MODE:
+			ctx->output_scale_mode = (int)command.number;
+			printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
+			break;
+		case TCP_CONTROL_SET_DISPLAY_ASPECT:
+			ctx->output_display_aspect = command.aspect;
+			{
+				char aspect_text[32];
+				format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
+				printf("output display aspect: %s\n", aspect_text);
+			}
+			break;		case TCP_CONTROL_SET_INDEX:
 			if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
 			if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
 			break;

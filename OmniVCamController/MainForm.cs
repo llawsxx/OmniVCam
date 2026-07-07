@@ -50,6 +50,10 @@ namespace OmniVCamController
             BuildPlaylistPanel(rootSplitContainer.Panel2);
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
+            scaleModeBox.Items.AddRange(new object[] { "letterbox", "fill" });
+            scaleModeBox.Text = "letterbox";
+            displayAspectBox.Items.AddRange(new object[] { "auto", "16:9", "4:3", "1:1" });
+            displayAspectBox.Text = "auto";
             playoutModeBox.Items.AddRange(new object[] { "Sequential", "Random" });
             playoutModeBox.SelectedIndex = 0;
             scheduledStartPicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
@@ -79,7 +83,8 @@ namespace OmniVCamController
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
             AddRow(grid, "Input", CreateInputPicker(), "Options", optionsBox);
-            AddRow(grid, "HW decode", CreateHwDecodeControl(), "Shift us", CreateShiftControl());
+            AddRow(grid, "HW decode", CreateHwDecodeControl(), "Scale mode", CreateScaleModeControl());
+            AddRow(grid, "Display AR", CreateDisplayAspectControl(), "Shift us", CreateShiftControl());
             AddRow(grid, "Video filter", CreateVideoFilterControl(), "Audio filter", CreateAudioFilterControl());
             AddRow(grid, "Video index", videoIndexBox, "Audio index", audioIndexBox);
             AddRow(grid, "Position", positionLabel, "Seek seconds", seekBox);
@@ -102,6 +107,18 @@ namespace OmniVCamController
             seekBox.ValueChanged += async (_, __) =>
             {
                 if (controlsReady && !suppressSeekValueEvent) await SeekBySecondsAsync((long)seekBox.Value);
+            };
+            scaleModeBox.SelectedIndexChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendScaleModeAsync();
+            };
+            displayAspectBox.Leave += async (_, __) =>
+            {
+                if (controlsReady) await SendDisplayAspectAsync();
+            };
+            displayAspectBox.SelectedIndexChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendDisplayAspectAsync();
             };
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
@@ -286,6 +303,17 @@ namespace OmniVCamController
             return panel;
         }
 
+        private Control CreateScaleModeControl()
+        {
+            scaleModeBox.Dock = DockStyle.Fill;
+            return scaleModeBox;
+        }
+
+        private Control CreateDisplayAspectControl()
+        {
+            displayAspectBox.Dock = DockStyle.Fill;
+            return displayAspectBox;
+        }
         private Control CreateVideoFilterControl()
         {
             return CreateFilterControl(videoFilterBox, async () => await SendVideoFilterAsync(), async () => await CancelVideoFilterAsync());
@@ -429,6 +457,15 @@ namespace OmniVCamController
             await SendCommandAsync($"SET_HW_DECODE {hwDecodeBox.Text.Trim()}");
         }
 
+        private async Task SendScaleModeAsync()
+        {
+            await SendCommandAsync($"SET_SCALE_MODE {scaleModeBox.Text.Trim()}");
+        }
+
+        private async Task SendDisplayAspectAsync()
+        {
+            await SendCommandAsync($"SET_DISPLAY_ASPECT {displayAspectBox.Text.Trim()}");
+        }
         private async Task CancelVideoFilterAsync()
         {
             await SendCommandAsync("SET_FILTER ");
@@ -796,6 +833,8 @@ namespace OmniVCamController
                             new XAttribute("input", inputBox.Text),
                             new XAttribute("options", optionsBox.Text),
                             new XAttribute("hwDecode", hwDecodeBox.Text),
+                            new XAttribute("scaleMode", scaleModeBox.Text),
+                            new XAttribute("displayAspect", displayAspectBox.Text),
                             new XAttribute("videoFilter", videoFilterBox.Text),
                             new XAttribute("audioFilter", audioFilterBox.Text),
                             new XAttribute("videoIndex", videoIndexBox.Value),
@@ -871,6 +910,9 @@ namespace OmniVCamController
             inputBox.Text = GetAttribute(settings, "input", inputBox.Text);
             optionsBox.Text = GetAttribute(settings, "options", optionsBox.Text);
             hwDecodeBox.Text = GetAttribute(settings, "hwDecode", hwDecodeBox.Text);
+            string scaleMode = GetAttribute(settings, "scaleMode", scaleModeBox.Text);
+            if (scaleModeBox.Items.Contains(scaleMode)) scaleModeBox.Text = scaleMode;
+            displayAspectBox.Text = GetAttribute(settings, "displayAspect", displayAspectBox.Text);
             videoFilterBox.Text = GetAttribute(settings, "videoFilter", videoFilterBox.Text);
             audioFilterBox.Text = GetAttribute(settings, "audioFilter", audioFilterBox.Text);
 

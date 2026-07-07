@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Windows.Forms;
 
 namespace OmniVCamController
@@ -10,6 +10,8 @@ namespace OmniVCamController
         private TextBox inputBox;
         private TextBox optionsBox;
         private ComboBox hwDecodeBox;
+        private ComboBox scaleModeBox;
+        private ComboBox displayAspectBox;
         private TextBox videoFilterBox;
         private TextBox audioFilterBox;
         private NumericUpDown videoIndexBox;
@@ -37,6 +39,8 @@ namespace OmniVCamController
             inputBox = new TextBox();
             optionsBox = new TextBox();
             hwDecodeBox = new ComboBox();
+            scaleModeBox = new ComboBox();
+            displayAspectBox = new ComboBox();
             videoFilterBox = new TextBox();
             audioFilterBox = new TextBox();
             videoIndexBox = new NumericUpDown();
@@ -84,6 +88,8 @@ namespace OmniVCamController
             inputBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             optionsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             hwDecodeBox.DropDownStyle = ComboBoxStyle.DropDown;
+            scaleModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            displayAspectBox.DropDownStyle = ComboBoxStyle.DropDown;
             videoFilterBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             audioFilterBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             videoIndexBox.Minimum = -1;

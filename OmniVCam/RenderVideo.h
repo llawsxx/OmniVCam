@@ -17,6 +17,7 @@ extern "C" {
 #include "libavutil/audio_fifo.h"
 #include <libavutil/time.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/samplefmt.h>
 #include <libavutil/cpu.h>
 #include <libavdevice/avdevice.h>
@@ -87,6 +88,11 @@ typedef struct filter_context {
 	AVFilterContext* buffer_src, * buffer_sink;
 }filter_context;
 
+typedef enum output_scale_mode {
+	OUTPUT_SCALE_MODE_FILL = 0,
+	OUTPUT_SCALE_MODE_LETTERBOX = 1
+} output_scale_mode;
+
 typedef struct inout_context {
 	char* input_name;
 	CRITICAL_SECTION input_change_mutex;
@@ -148,6 +154,8 @@ typedef struct inout_context {
 	int output_frame_width;
 	int output_frame_height;
 	int output_frame_format;
+	int output_scale_mode;
+	AVRational output_display_aspect;
 
 	int output_audio_sample_rate;
 	int output_audio_format;
