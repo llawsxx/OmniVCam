@@ -1521,17 +1521,17 @@ static int fill_black_rect(AVFrame* frame, int x, int y, int width, int height)
 
 static void fill_letterbox_black(AVFrame* frame, int x, int y, int width, int height)
 {
-	int right = x + width;
-	int bottom = y + height;
+	int right = FFMIN(frame->width, x + width);
+	int bottom = FFMIN(frame->height, y + height);
 
 	if (y > 0)
 		fill_black_rect(frame, 0, 0, frame->width, y);
 	if (bottom < frame->height)
 		fill_black_rect(frame, 0, bottom, frame->width, frame->height - bottom);
 	if (x > 0)
-		fill_black_rect(frame, 0, y, x, height);
+		fill_black_rect(frame, 0, 0, x, frame->height);
 	if (right < frame->width)
-		fill_black_rect(frame, right, y, frame->width - right, height);
+		fill_black_rect(frame, right, 0, frame->width - right, frame->height);
 }
 
 int fill_output_video(inout_context* ctx, AVFrame* frame)
@@ -1605,10 +1605,6 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		goto end;
 	}
 
-	if (need_letterbox) {
-		fill_letterbox_black(f, scale_x, scale_y, scale_width, scale_height);
-	}
-
 	if (filp) {
 		flip_frame(f);
 	}
@@ -1632,6 +1628,11 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 
 	if (filp) {
 		flip_frame(f);
+	}
+
+	//要在scale后再填充，因为scale可能会有一些杂像素在边缘
+	if (need_letterbox) {
+		fill_letterbox_black(f, scale_x, scale_y, scale_width, scale_height);
 	}
 
 	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
