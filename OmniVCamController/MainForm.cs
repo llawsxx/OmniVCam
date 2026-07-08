@@ -16,6 +16,7 @@ namespace OmniVCamController
     {
         private const string MediaFileFilter = "Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mp3;*.wav;*.aac|All files|*.*";
         private const string AutoConfigFileName = "OmniVCamController.xml";
+        private const string NowPlayingFileName = "OmniVCamNowPlaying.xml";
 
         private Timer statusTimer;
         private Timer playoutTimer;
@@ -105,6 +106,7 @@ namespace OmniVCamController
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
             AddWideRow(grid, "Input", CreateInputPicker());
+            AddWideRow(grid, "Title", titleBox);
             AddWideRow(grid, "Options", optionsBox);
             AddRow(grid, "HW decode", CreateHwDecodeControl(), "Scale mode", CreateScaleModeControl());
             AddRow(grid, "Display AR", CreateDisplayAspectControl(), "Shift us", CreateShiftControl());
@@ -240,6 +242,7 @@ namespace OmniVCamController
             header.Controls.Add(MakeButton("Next", async (_, __) => await PlayNextAsync(true)));
             header.Controls.Add(MakeButton("Stop playout", async (_, __) => await StopPlayoutAsync()));
             header.Controls.Add(MakeButton("Save XML", (_, __) => SaveAutoConfig()));
+            header.Controls.Add(writeNowPlayingXmlBox);
             root.Controls.Add(header, 0, 0);
 
             var split = new SplitContainer
@@ -289,6 +292,8 @@ namespace OmniVCamController
             startSettings.Controls.Add(fridayBox);
             startSettings.Controls.Add(saturdayBox);
             startSettings.Controls.Add(sundayBox);
+            startSettings.Controls.Add(MakeInlineLabel("Input title"));
+            startSettings.Controls.Add(scheduledTitleBox);
             startSettings.Controls.Add(MakeInlineLabel("Input options"));
             startSettings.Controls.Add(scheduledOptionsBox);
             root.Controls.Add(startSettings, 0, 1);
@@ -340,6 +345,7 @@ namespace OmniVCamController
             toolbar.Controls.Add(MakeButton("Remove", (_, __) => RemoveSelected()));
             toolbar.Controls.Add(MakeButton("Up", (_, __) => MoveSelected(-1)));
             toolbar.Controls.Add(MakeButton("Down", (_, __) => MoveSelected(1)));
+            toolbar.Controls.Add(MakeButton("Set title", (_, __) => SetSelectedTitle()));
             toolbar.Controls.Add(MakeButton("Set options", (_, __) => SetSelectedOptions()));
             toolbar.Controls.Add(MakeButton("Load", async (_, __) => await LoadPlaylistAsync()));
             toolbar.Controls.Add(MakeButton("Save file", (_, __) => SavePlaylist()));
@@ -745,6 +751,8 @@ namespace OmniVCamController
             int index = favoriteInputView.SelectedIndices[0];
             if (index < 0 || index >= favoriteInputs.Count) return;
             inputBox.Text = favoriteInputs[index].Input;
+            titleBox.Text = favoriteInputs[index].Title;
+            scheduledTitleBox.Text = favoriteInputs[index].Title;
             optionsBox.Text = favoriteInputs[index].Options;
             scheduledOptionsBox.Text = favoriteInputs[index].Options;
         }
@@ -756,6 +764,8 @@ namespace OmniVCamController
             if (index < 0 || index >= favoriteInputs.Count) return;
             FavoriteInputItem item = favoriteInputs[index];
             inputBox.Text = item.Input;
+            titleBox.Text = item.Title;
+            scheduledTitleBox.Text = item.Title;
             optionsBox.Text = item.Options;
             scheduledOptionsBox.Text = item.Options;
             await PlayInputAsync(item.Input, item.Options);
@@ -781,6 +791,12 @@ namespace OmniVCamController
             if (input.StartsWith("<", StringComparison.Ordinal) && input.EndsWith(">", StringComparison.Ordinal)) return input;
             string fileName = Path.GetFileNameWithoutExtension(input);
             return string.IsNullOrWhiteSpace(fileName) ? input : fileName;
+        }
+
+        private string GetTitleInputOrDefault(string input)
+        {
+            string title = titleBox.Text.Trim();
+            return string.IsNullOrWhiteSpace(title) ? GetInputTitle(input) : title;
         }
 
         private Task AddFilesAsync()
@@ -833,7 +849,7 @@ namespace OmniVCamController
             playlist.Add(new PlaylistItem
             {
                 Path = file,
-                Title = GetInputTitle(file),
+                Title = GetTitleInputOrDefault(file),
                 DurationSeconds = 0,
                 Options = options,
                 IsBumper = bumper
@@ -880,7 +896,7 @@ namespace OmniVCamController
             var item = new ScheduledPlaylistItem
             {
                 Path = input,
-                Title = GetInputTitle(input),
+                Title = GetScheduledTitleInputOrDefault(input),
                 DurationSeconds = 0,
                 Options = GetScheduledOptionsInput(),
                 ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime,
@@ -928,6 +944,8 @@ namespace OmniVCamController
             if (index < 0 || index >= scheduledPlaylist.Count) return;
             ScheduledPlaylistItem item = scheduledPlaylist[index];
             inputBox.Text = item.Path;
+            titleBox.Text = item.Title;
+            scheduledTitleBox.Text = item.Title;
             optionsBox.Text = item.Options;
             scheduledOptionsBox.Text = item.Options;
             scheduleTypeBox.Text = item.ScheduleKind == ScheduleKind.Weekly ? "Weekly" : "One-time";
@@ -948,7 +966,8 @@ namespace OmniVCamController
             if (index < 0 || index >= scheduledPlaylist.Count) return;
             ScheduledPlaylistItem item = scheduledPlaylist[index];
             item.Path = inputBox.Text.Trim();
-            item.Title = GetInputTitle(item.Path);
+            item.Title = GetScheduledTitleInputOrDefault(item.Path);
+            titleBox.Text = item.Title;
             item.Options = scheduledOptionsBox.Text.Trim();
             optionsBox.Text = item.Options;
             item.ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime;
@@ -979,6 +998,12 @@ namespace OmniVCamController
         {
             string scheduledOptions = scheduledOptionsBox.Text.Trim();
             return string.IsNullOrWhiteSpace(scheduledOptions) ? optionsBox.Text.Trim() : scheduledOptions;
+        }
+
+        private string GetScheduledTitleInputOrDefault(string input)
+        {
+            string title = scheduledTitleBox.Text.Trim();
+            return string.IsNullOrWhiteSpace(title) ? GetTitleInputOrDefault(input) : title;
         }
 
         private async Task PlaySelectedScheduledAsync()
@@ -1028,6 +1053,8 @@ namespace OmniVCamController
             int index = playlistView.SelectedIndices[0];
             if (index < 0 || index >= playlist.Count) return;
             inputBox.Text = playlist[index].Path;
+            titleBox.Text = playlist[index].Title;
+            scheduledTitleBox.Text = playlist[index].Title;
             optionsBox.Text = playlist[index].Options;
             scheduledOptionsBox.Text = playlist[index].Options;
         }
@@ -1041,6 +1068,17 @@ namespace OmniVCamController
             {
                 if (index < 0 || index >= playlist.Count) continue;
                 playlist[index].Options = options;
+            }
+            RefreshPlaylistView();
+        }
+
+        private void SetSelectedTitle()
+        {
+            if (playlistView.SelectedIndices.Count == 0) return;
+            foreach (int index in playlistView.SelectedIndices.Cast<int>())
+            {
+                if (index < 0 || index >= playlist.Count) continue;
+                playlist[index].Title = GetTitleInputOrDefault(playlist[index].Path);
             }
             RefreshPlaylistView();
         }
@@ -1080,6 +1118,7 @@ namespace OmniVCamController
             await SendCommandAsync("STOP");
             SetPlayoutTimerRunning(false);
             UpdatePlayoutStatusLabel();
+            WriteNowPlayingXml();
             AppendLog("Playout stopped.");
         }
 
@@ -1093,6 +1132,7 @@ namespace OmniVCamController
             await SendCommandAsync("STOP");
             SetPlayoutTimerRunning(false);
             UpdatePlayoutStatusLabel();
+            WriteNowPlayingXml();
         }
 
         private void ResetScheduledTriggers()
@@ -1221,6 +1261,8 @@ namespace OmniVCamController
             currentStatusInput = item.Path;
             SelectCurrentRow();
             inputBox.Text = item.Path;
+            titleBox.Text = item.Title;
+            scheduledTitleBox.Text = item.Title;
             optionsBox.Text = item.Options;
             scheduledOptionsBox.Text = item.Options;
             await PlayInputAsync(item.Path, item.Options);
@@ -1242,6 +1284,8 @@ namespace OmniVCamController
             SelectCurrentRow();
             SelectCurrentScheduledRow();
             inputBox.Text = item.Path;
+            titleBox.Text = item.Title;
+            scheduledTitleBox.Text = item.Title;
             optionsBox.Text = item.Options;
             scheduledOptionsBox.Text = item.Options;
             item.LastTriggeredAt = window.Start;
@@ -1379,6 +1423,7 @@ namespace OmniVCamController
                             new XAttribute("host", hostBox.Text),
                             new XAttribute("port", portBox.Value),
                             new XAttribute("input", inputBox.Text),
+                            new XAttribute("title", titleBox.Text),
                             new XAttribute("options", optionsBox.Text),
                             new XAttribute("hwDecode", hwDecodeBox.Text),
                             new XAttribute("scaleMode", scaleModeBox.Text),
@@ -1390,6 +1435,7 @@ namespace OmniVCamController
                             new XAttribute("shift", shiftBox.Value),
                             new XAttribute("seek", seekBox.Value),
                             new XAttribute("byteSeek", byteSeekBox.Checked ? "1" : "0"),
+                            new XAttribute("writeNowPlayingXml", writeNowPlayingXmlBox.Checked ? "1" : "0"),
                             new XAttribute("playoutMode", playoutModeBox.Text),
                             new XAttribute("scheduledStart", scheduledStartPicker.Value.ToString("HH:mm:ss"))),
                         new XElement("Playlist",
@@ -1478,6 +1524,7 @@ namespace OmniVCamController
 
             hostBox.Text = GetAttribute(settings, "host", hostBox.Text);
             inputBox.Text = GetAttribute(settings, "input", inputBox.Text);
+            titleBox.Text = GetAttribute(settings, "title", titleBox.Text);
             optionsBox.Text = GetAttribute(settings, "options", optionsBox.Text);
             hwDecodeBox.Text = GetAttribute(settings, "hwDecode", hwDecodeBox.Text);
             string scaleMode = GetAttribute(settings, "scaleMode", scaleModeBox.Text);
@@ -1493,6 +1540,7 @@ namespace OmniVCamController
             if (decimal.TryParse(GetAttribute(settings, "seek", null), out decimalValue)) seekBox.Value = Clamp(decimalValue, seekBox.Minimum, seekBox.Maximum);
 
             byteSeekBox.Checked = GetAttribute(settings, "byteSeek", byteSeekBox.Checked ? "1" : "0") == "1";
+            writeNowPlayingXmlBox.Checked = GetAttribute(settings, "writeNowPlayingXml", writeNowPlayingXmlBox.Checked ? "1" : "0") == "1";
 
             string playoutMode = GetAttribute(settings, "playoutMode", playoutModeBox.Text);
             if (playoutModeBox.Items.Contains(playoutMode)) playoutModeBox.Text = playoutMode;
@@ -1598,6 +1646,53 @@ namespace OmniVCamController
         private static string GetAutoConfigPath()
         {
             return Path.Combine(Application.StartupPath, AutoConfigFileName);
+        }
+
+        private static string GetNowPlayingPath()
+        {
+            return Path.Combine(Application.StartupPath, NowPlayingFileName);
+        }
+
+        private void WriteNowPlayingXml()
+        {
+            if (!writeNowPlayingXmlBox.Checked) return;
+            try
+            {
+                string path = GetStatusInputPath(currentStatusInput);
+                long position = Math.Max(0, currentPositionSeconds);
+                long duration = Math.Max(0, currentDurationSeconds);
+                var document = new XDocument(
+                    new XElement("NowPlaying",
+                        new XElement("Title", GetCurrentPlaybackTitle(path)),
+                        new XElement("Path", path),
+                        new XElement("PositionSeconds", position),
+                        new XElement("Position", FormatSeconds(position)),
+                        new XElement("DurationSeconds", duration),
+                        new XElement("Duration", duration > 0 ? FormatSeconds(duration) : string.Empty),
+                        new XElement("Status", FormatState(currentStatusState))));
+                document.Save(GetNowPlayingPath());
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Save now playing XML failed: " + ex.Message);
+            }
+        }
+
+        private string GetCurrentPlaybackTitle(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+            if (playingScheduled && currentScheduledIndex >= 0 && currentScheduledIndex < scheduledPlaylist.Count && PathsEqual(scheduledPlaylist[currentScheduledIndex].Path, path)) return scheduledPlaylist[currentScheduledIndex].Title;
+            if (!playingScheduled && currentIndex >= 0 && currentIndex < playlist.Count && PathsEqual(playlist[currentIndex].Path, path)) return playlist[currentIndex].Title;
+            if (PathsEqual(inputBox.Text.Trim(), path) && !string.IsNullOrWhiteSpace(titleBox.Text)) return titleBox.Text.Trim();
+            ScheduledPlaylistItem scheduled = scheduledPlaylist.FirstOrDefault(item => PathsEqual(item.Path, path));
+            if (scheduled != null) return scheduled.Title;
+            PlaylistItem normal = playlist.FirstOrDefault(item => PathsEqual(item.Path, path));
+            return normal != null ? normal.Title : GetInputTitle(path);
+        }
+
+        private static string FormatSeconds(long seconds)
+        {
+            return TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(@"hh\:mm\:ss");
         }
 
         private Task LoadPlaylistAsync()
@@ -1803,6 +1898,7 @@ namespace OmniVCamController
                     progressBar.Value = progress;
                     updatingProgress = false;
                 }
+                WriteNowPlayingXml();
             }
         }
         private static long ParseStatusLong(string reply, string key)

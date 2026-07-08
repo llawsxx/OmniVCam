@@ -8,6 +8,7 @@ namespace OmniVCamController
         private TextBox hostBox;
         private NumericUpDown portBox;
         private TextBox inputBox;
+        private TextBox titleBox;
         private TextBox optionsBox;
         private ComboBox hwDecodeBox;
         private ComboBox scaleModeBox;
@@ -39,7 +40,9 @@ namespace OmniVCamController
         private CheckBox sundayBox;
         private CheckBox scheduleEndBox;
         private DateTimePicker scheduleEndPicker;
+        private TextBox scheduledTitleBox;
         private TextBox scheduledOptionsBox;
+        private CheckBox writeNowPlayingXmlBox;
         private ComboBox scheduleEndActionBox;
         private ComboBox scheduleStartActionBox;
         private CheckBox autoAdvanceBox;
@@ -52,6 +55,7 @@ namespace OmniVCamController
             hostBox = new TextBox();
             portBox = new NumericUpDown();
             inputBox = new TextBox();
+            titleBox = new TextBox();
             optionsBox = new TextBox();
             hwDecodeBox = new ComboBox();
             scaleModeBox = new ComboBox();
@@ -84,7 +88,9 @@ namespace OmniVCamController
             sundayBox = new CheckBox();
             scheduleEndBox = new CheckBox();
             scheduleEndPicker = new DateTimePicker();
+            scheduledTitleBox = new TextBox();
             scheduledOptionsBox = new TextBox();
+            writeNowPlayingXmlBox = new CheckBox();
             scheduleEndActionBox = new ComboBox();
             scheduleStartActionBox = new ComboBox();
             autoAdvanceBox = new CheckBox();
@@ -115,6 +121,7 @@ namespace OmniVCamController
             portBox.Maximum = 65535;
             portBox.Value = 16999;
             inputBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            titleBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             optionsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             hwDecodeBox.DropDownStyle = ComboBoxStyle.DropDown;
             scaleModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -196,7 +203,11 @@ namespace OmniVCamController
             scheduleEndPicker.Format = DateTimePickerFormat.Custom;
             scheduleEndPicker.CustomFormat = "yyyy-MM-dd HH:mm:ss";
             scheduleEndPicker.Width = 150;
+            scheduledTitleBox.Width = 220;
             scheduledOptionsBox.Width = 260;
+            writeNowPlayingXmlBox.Text = "Write now playing XML";
+            writeNowPlayingXmlBox.Checked = true;
+            writeNowPlayingXmlBox.AutoSize = true;
             scheduleEndActionBox.DropDownStyle = ComboBoxStyle.DropDownList;
             scheduleStartActionBox.DropDownStyle = ComboBoxStyle.DropDownList;
             autoAdvanceBox.Text = "Normal auto next";
