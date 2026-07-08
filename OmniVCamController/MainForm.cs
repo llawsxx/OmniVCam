@@ -305,13 +305,13 @@ namespace OmniVCamController
 
             scheduledPlaylistView.Columns.Add("#", 38);
             scheduledPlaylistView.Columns.Add("Status", 78);
+            scheduledPlaylistView.Columns.Add("Title", 180);
+            scheduledPlaylistView.Columns.Add("Duration", 76);
             scheduledPlaylistView.Columns.Add("Schedule", 210);
             scheduledPlaylistView.Columns.Add("End", 150);
             scheduledPlaylistView.Columns.Add("Start", 120);
             scheduledPlaylistView.Columns.Add("End action", 150);
             scheduledPlaylistView.Columns.Add("Last triggered", 150);
-            scheduledPlaylistView.Columns.Add("Title", 180);
-            scheduledPlaylistView.Columns.Add("Duration", 76);
             scheduledPlaylistView.Columns.Add("Path", 360);
             scheduledPlaylistView.SelectedIndexChanged += (_, __) => LoadSelectedScheduledItemToInputs();
             scheduledPlaylistView.DoubleClick += async (_, __) => await PlaySelectedScheduledAsync();
@@ -1688,13 +1688,13 @@ namespace OmniVCamController
                 ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
                 var row = new ListViewItem((i + 1).ToString());
                 row.SubItems.Add(isCurrent ? FormatState(currentStatusState) : FormatScheduledIdleStatus(item, window));
+                row.SubItems.Add(item.Title);
+                row.SubItems.Add(FormatDuration(item.DurationSeconds));
                 row.SubItems.Add(FormatSchedule(item));
                 row.SubItems.Add(FormatScheduleEnd(item));
                 row.SubItems.Add(StartActionText(item.StartAction));
                 row.SubItems.Add(EndActionText(item.EndAction));
                 row.SubItems.Add(FormatLastTriggered(item.LastTriggeredAt));
-                row.SubItems.Add(item.Title);
-                row.SubItems.Add(FormatDuration(item.DurationSeconds));
                 row.SubItems.Add(item.Path);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
                 else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
@@ -1728,7 +1728,7 @@ namespace OmniVCamController
                 ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
                 string idleStatus = FormatScheduledIdleStatus(scheduledPlaylist[i], window);
                 row.SubItems[1].Text = isCurrent ? FormatState(currentStatusState) : idleStatus;
-                row.SubItems[6].Text = FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt);
+                row.SubItems[8].Text = FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
                 else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
                 else if (idleStatus == "Blocked") row.BackColor = Color.FromArgb(255, 248, 220);
