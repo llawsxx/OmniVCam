@@ -1098,7 +1098,8 @@ namespace OmniVCamController
             waitingForScheduledStart = scheduledStartBox.Checked;
             if (!waitingForScheduledStart)
             {
-                if (playlist.Count > 0)
+                bool startedScheduled = await StartDueScheduledItemAsync();
+                if (!startedScheduled && playlist.Count > 0)
                 {
                     currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
                     await PlayCurrentAsync();
@@ -1293,25 +1294,41 @@ namespace OmniVCamController
             UpdatePlayoutStatusLabel();
         }
 
-        private async Task StartDueScheduledItemAsync()
+        private async Task<bool> StartDueScheduledItemAsync()
         {
             DateTime now = DateTime.Now;
+            int selectedIndex = -1;
+            ScheduleWindow selectedWindow = ScheduleWindow.Empty;
+
             for (int i = 0; i < scheduledPlaylist.Count; i++)
             {
                 ScheduledPlaylistItem item = scheduledPlaylist[i];
                 ScheduleWindow window = GetScheduleWindow(i, now);
                 if (!window.IsActive) continue;
                 if (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End) continue;
+                if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) continue;
 
-                if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive())
+                if (selectedIndex < 0 || window.Start > selectedWindow.Start)
                 {
-                    continue;
+                    selectedIndex = i;
+                    selectedWindow = window;
                 }
-                
-                currentScheduledIndex = i;
-                await PlayScheduledCurrentAsync();
-                return;
             }
+
+            if (selectedIndex < 0) return false;
+            if (playingScheduled && IsCurrentPlaybackActive())
+            {
+                if (currentScheduledIndex >= 0 && currentScheduledIndex < scheduledPlaylist.Count)
+                {
+                    ScheduleWindow currentWindow = GetScheduleWindow(currentScheduledIndex, now);
+                    if (selectedWindow.Start <= currentWindow.Start) return false;
+                }
+                if (scheduledPlaylist[selectedIndex].StartAction != ScheduleStartAction.StartImmediately) return false;
+            }
+
+            currentScheduledIndex = selectedIndex;
+            await PlayScheduledCurrentAsync();
+            return true;
         }
 
         private async Task HandleScheduledEndAsync()
