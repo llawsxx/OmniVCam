@@ -14,7 +14,7 @@ namespace OmniVCamController
 {
     public sealed partial class MainForm : Form
     {
-        private const string MediaFileFilter = "Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mp3;*.wav;*.aac|All files|*.*";
+        private const string MediaFileFilter = "Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mxf;*.vob;*.dat;*.mpg;*.mpeg;*.asf;*.rm;*.rmvb;*.mp3;*.wav;*.aac|All files|*.*";
         private const string AutoConfigFileName = "OmniVCamController.xml";
         private const string NowPlayingFileName = "OmniVCamNowPlaying.xml";
 
@@ -249,7 +249,7 @@ namespace OmniVCamController
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterDistance = 250
+                SplitterDistance = 50
             };
             root.Controls.Add(split, 0, 1);
 
@@ -671,6 +671,8 @@ namespace OmniVCamController
             string file = files.FirstOrDefault(File.Exists);
             if (string.IsNullOrWhiteSpace(file)) return Task.CompletedTask;
             inputBox.Text = file;
+            titleBox.Text = GetInputTitle(file);
+            scheduledTitleBox.Text = titleBox.Text;
             return Task.CompletedTask;
         }
 
@@ -678,7 +680,7 @@ namespace OmniVCamController
         {
             foreach (string path in ExpandDroppedMediaFiles(files))
             {
-                AddPlaylistItem(path, false, optionsBox.Text.Trim());
+                AddPlaylistItem(path, false, optionsBox.Text.Trim(), false);
             }
             RefreshPlaylistView();
             return Task.CompletedTask;
@@ -804,7 +806,7 @@ namespace OmniVCamController
             using (var dialog = new OpenFileDialog { Multiselect = true, Filter = MediaFileFilter })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
-                foreach (string file in dialog.FileNames) AddPlaylistItem(file, false, optionsBox.Text.Trim());
+                foreach (string file in dialog.FileNames) AddPlaylistItem(file, false, optionsBox.Text.Trim(), false);
             }
             RefreshPlaylistView();
             return Task.CompletedTask;
@@ -817,7 +819,7 @@ namespace OmniVCamController
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
                 foreach (string file in Directory.GetFiles(dialog.SelectedPath, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
                 {
-                    AddPlaylistItem(file, false, optionsBox.Text.Trim());
+                    AddPlaylistItem(file, false, optionsBox.Text.Trim(), false);
                 }
             }
             RefreshPlaylistView();
@@ -829,7 +831,7 @@ namespace OmniVCamController
             using (var dialog = new OpenFileDialog { Filter = MediaFileFilter })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
-                AddPlaylistItem(dialog.FileName, true, optionsBox.Text.Trim());
+                AddPlaylistItem(dialog.FileName, true, optionsBox.Text.Trim(), false);
             }
             RefreshPlaylistView();
             return Task.CompletedTask;
@@ -839,17 +841,17 @@ namespace OmniVCamController
         {
             string input = inputBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
-            AddPlaylistItem(input, bumper, optionsBox.Text.Trim());
+            AddPlaylistItem(input, bumper, optionsBox.Text.Trim(), true);
             RefreshPlaylistView();
             return Task.CompletedTask;
         }
 
-        private void AddPlaylistItem(string file, bool bumper, string options)
+        private void AddPlaylistItem(string file, bool bumper, string options, bool useTitleInput)
         {
             playlist.Add(new PlaylistItem
             {
                 Path = file,
-                Title = GetTitleInputOrDefault(file),
+                Title = useTitleInput ? GetTitleInputOrDefault(file) : GetInputTitle(file),
                 DurationSeconds = 0,
                 Options = options,
                 IsBumper = bumper
@@ -861,7 +863,7 @@ namespace OmniVCamController
             string input = inputBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
 
-            scheduledPlaylist.Add(CreateScheduledItem(input));
+            scheduledPlaylist.Add(CreateScheduledItem(input, true));
             RefreshScheduledPlaylistView();
             return Task.CompletedTask;
         }
@@ -871,7 +873,7 @@ namespace OmniVCamController
             using (var dialog = new OpenFileDialog { Multiselect = true, Filter = MediaFileFilter })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
-                foreach (string file in dialog.FileNames) scheduledPlaylist.Add(CreateScheduledItem(file));
+                foreach (string file in dialog.FileNames) scheduledPlaylist.Add(CreateScheduledItem(file, false));
             }
             RefreshScheduledPlaylistView();
             return Task.CompletedTask;
@@ -884,19 +886,19 @@ namespace OmniVCamController
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
                 foreach (string file in Directory.GetFiles(dialog.SelectedPath, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
                 {
-                    scheduledPlaylist.Add(CreateScheduledItem(file));
+                    scheduledPlaylist.Add(CreateScheduledItem(file, false));
                 }
             }
             RefreshScheduledPlaylistView();
             return Task.CompletedTask;
         }
 
-        private ScheduledPlaylistItem CreateScheduledItem(string input)
+        private ScheduledPlaylistItem CreateScheduledItem(string input, bool useTitleInput)
         {
             var item = new ScheduledPlaylistItem
             {
                 Path = input,
-                Title = GetScheduledTitleInputOrDefault(input),
+                Title = useTitleInput ? GetScheduledTitleInputOrDefault(input) : GetInputTitle(input),
                 DurationSeconds = 0,
                 Options = GetScheduledOptionsInput(),
                 ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime,
@@ -1025,7 +1027,7 @@ namespace OmniVCamController
         private static bool IsMediaFile(string file)
         {
             string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
-            return new[] { ".mp4", ".mov", ".mkv", ".ts", ".m2ts", ".avi", ".flv", ".wmv", ".mp3", ".wav", ".aac" }.Contains(ext);
+            return new[] { ".mp4", ".mov", ".mkv", ".ts", ".m2ts", ".avi", ".flv", ".wmv", ".mxf", ".vob", ".dat", ".mpg", ".mpeg", ".asf", ".rm", ".rmvb", ".mp3", ".wav", ".aac" }.Contains(ext);
         }
 
         private void RemoveSelected()
