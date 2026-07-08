@@ -21,11 +21,15 @@ namespace OmniVCamController
         private Timer playoutTimer;
 
         private readonly List<PlaylistItem> playlist = new List<PlaylistItem>();
+        private readonly List<ScheduledPlaylistItem> scheduledPlaylist = new List<ScheduledPlaylistItem>();
         private readonly List<FavoriteInputItem> favoriteInputs = new List<FavoriteInputItem>();
         private readonly Random random = new Random();
         private int currentIndex = -1;
+        private int currentScheduledIndex = -1;
         private bool playoutRunning;
+        private bool playingScheduled;
         private bool waitingForScheduledStart;
+        private DateTime scheduledSlotEndAt = DateTime.MinValue;
         private DateTime currentStartedAt;
         private long currentPositionSeconds;
         private long currentDurationSeconds;
@@ -40,6 +44,8 @@ namespace OmniVCamController
         private bool draggingProgress;
         private bool suppressSeekValueEvent;
         private bool controlsReady;
+        private Form playoutForm;
+        private bool closingMainForm;
 
 
         public MainForm()
@@ -47,7 +53,8 @@ namespace OmniVCamController
             InitializeComponent();
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(rootSplitContainer.Panel1);
-            BuildPlaylistPanel(rootSplitContainer.Panel2);
+            BuildPlayoutWindow();
+            rootSplitContainer.Panel2Collapsed = true;
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
             scaleModeBox.Items.AddRange(new object[] { "letterbox", "fill" });
@@ -56,15 +63,29 @@ namespace OmniVCamController
             displayAspectBox.Text = "auto";
             playoutModeBox.Items.AddRange(new object[] { "Sequential", "Random" });
             playoutModeBox.SelectedIndex = 0;
+            scheduleTypeBox.Items.AddRange(new object[] { "One-time", "Weekly" });
+            scheduleTypeBox.SelectedIndex = 0;
+            scheduleEndActionBox.Items.AddRange(new object[] { "Replay until end", "Wait until end", "Continue immediately" });
+            scheduleEndActionBox.SelectedIndex = 1;
+            scheduleStartActionBox.Items.AddRange(new object[] { "Start immediately", "Wait current item" });
+            scheduleStartActionBox.SelectedIndex = 0;
             scheduledStartPicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
+            scheduleDateTimePicker.Value = DateTime.Now.AddMinutes(1);
+            scheduleTimePicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
+            scheduleEndPicker.Value = DateTime.Now.AddMinutes(31);
+            scheduleEndBox.CheckedChanged += (_, __) => UpdateScheduleEndControls();
             LoadAutoConfig();
+            UpdateScheduleEndControls();
             controlsReady = true;
 
             statusTimer.Tick += async (_, __) => await RefreshStatusAsync();
             statusTimer.Start();
             playoutTimer.Tick += async (_, __) => await PlayoutTickAsync();
-            playoutTimer.Start();
-            FormClosing += (_, __) => SaveAutoConfig();
+            FormClosing += (_, __) =>
+            {
+                closingMainForm = true;
+                SaveAutoConfig();
+            };
         }
 
         private void BuildManualPanel(Control parent)
@@ -131,6 +152,7 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton("Set audio index", async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
+            buttons.Controls.Add(MakeButton("Open playout", (_, __) => OpenPlayoutWindow()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
             grid.SetColumnSpan(buttons, 4);
             grid.RowCount++;
@@ -175,32 +197,154 @@ namespace OmniVCamController
             return root;
         }
 
+        private void BuildPlayoutWindow()
+        {
+            playoutForm = new Form
+            {
+                Text = "OmniVCam Playout",
+                Size = new Size(1120, 720),
+                MinimumSize = new Size(980, 600),
+                StartPosition = FormStartPosition.CenterParent,
+                Font = Font,
+                Icon = Icon
+            };
+            playoutForm.FormClosing += (_, e) =>
+            {
+                if (closingMainForm) return;
+                e.Cancel = true;
+                playoutForm.Hide();
+            };
+            BuildPlaylistPanel(playoutForm);
+        }
+
+        private void OpenPlayoutWindow()
+        {
+            if (playoutForm == null || playoutForm.IsDisposed) BuildPlayoutWindow();
+            if (!playoutForm.Visible) playoutForm.Show(this);
+            if (playoutForm.WindowState == FormWindowState.Minimized) playoutForm.WindowState = FormWindowState.Normal;
+            playoutForm.Activate();
+        }
+
         private void BuildPlaylistPanel(Control parent)
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8, 0, 8, 8) };
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             parent.Controls.Add(root);
 
+            var header = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
+            header.Controls.Add(new Label { Text = "Playout", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(2, 5, 12, 0) });
+            header.Controls.Add(playoutStatusLabel);
+            header.Controls.Add(MakeButton("Start playout", async (_, __) => await StartPlayoutAsync()));
+            header.Controls.Add(MakeButton("Next", async (_, __) => await PlayNextAsync(true)));
+            header.Controls.Add(MakeButton("Stop playout", async (_, __) => await StopPlayoutAsync()));
+            header.Controls.Add(MakeButton("Save XML", (_, __) => SaveAutoConfig()));
+            root.Controls.Add(header, 0, 0);
+
+            var split = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterDistance = 250
+            };
+            root.Controls.Add(split, 0, 1);
+
+            split.Panel1.Controls.Add(CreateScheduledPlaylistPanel());
+            split.Panel2.Controls.Add(CreateNormalPlaylistPanel());
+        }
+
+        private Control CreateScheduledPlaylistPanel()
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 3) };
+            actions.Controls.Add(new Label { Text = "Scheduled playlist", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 8, 0) });
+            actions.Controls.Add(MakeButton("Add current", async (_, __) => await AddScheduledFromCurrentAsync()));
+            actions.Controls.Add(MakeButton("Apply", (_, __) => ApplyScheduledControlsToSelected()));
+            actions.Controls.Add(MakeButton("Remove", (_, __) => RemoveSelectedScheduled()));
+            actions.Controls.Add(MakeButton("Up", (_, __) => MoveSelectedScheduled(-1)));
+            actions.Controls.Add(MakeButton("Down", (_, __) => MoveSelectedScheduled(1)));
+            root.Controls.Add(actions, 0, 0);
+
+            var startSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 3) };
+            startSettings.Controls.Add(MakeInlineLabel("Schedule type"));
+            startSettings.Controls.Add(scheduleTypeBox);
+            startSettings.Controls.Add(MakeInlineLabel("One-time start"));
+            startSettings.Controls.Add(scheduleDateTimePicker);
+            startSettings.Controls.Add(MakeInlineLabel("Weekly time"));
+            startSettings.Controls.Add(scheduleTimePicker);
+            startSettings.Controls.Add(MakeInlineLabel("Days"));
+            startSettings.Controls.Add(mondayBox);
+            startSettings.Controls.Add(tuesdayBox);
+            startSettings.Controls.Add(wednesdayBox);
+            startSettings.Controls.Add(thursdayBox);
+            startSettings.Controls.Add(fridayBox);
+            startSettings.Controls.Add(saturdayBox);
+            startSettings.Controls.Add(sundayBox);
+            startSettings.Controls.Add(MakeInlineLabel("Input options"));
+            startSettings.Controls.Add(scheduledOptionsBox);
+            root.Controls.Add(startSettings, 0, 1);
+
+            var endSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
+            endSettings.Controls.Add(scheduleEndBox);
+            endSettings.Controls.Add(MakeInlineLabel("End time"));
+            endSettings.Controls.Add(scheduleEndPicker);
+            endSettings.Controls.Add(MakeInlineLabel("If media ends early"));
+            endSettings.Controls.Add(scheduleEndActionBox);
+            endSettings.Controls.Add(MakeInlineLabel("At scheduled time"));
+            endSettings.Controls.Add(scheduleStartActionBox);
+            root.Controls.Add(endSettings, 0, 2);
+
+            scheduledPlaylistView.Columns.Add("#", 38);
+            scheduledPlaylistView.Columns.Add("Status", 78);
+            scheduledPlaylistView.Columns.Add("Schedule", 210);
+            scheduledPlaylistView.Columns.Add("End", 150);
+            scheduledPlaylistView.Columns.Add("Start", 120);
+            scheduledPlaylistView.Columns.Add("End action", 150);
+            scheduledPlaylistView.Columns.Add("Last triggered", 150);
+            scheduledPlaylistView.Columns.Add("Title", 180);
+            scheduledPlaylistView.Columns.Add("Duration", 76);
+            scheduledPlaylistView.Columns.Add("Path", 360);
+            scheduledPlaylistView.SelectedIndexChanged += (_, __) => LoadSelectedScheduledItemToInputs();
+            scheduledPlaylistView.DoubleClick += async (_, __) => await PlaySelectedScheduledAsync();
+            root.Controls.Add(scheduledPlaylistView, 0, 3);
+
+            return root;
+        }
+
+        private static Label MakeInlineLabel(string text)
+        {
+            return new Label { Text = text, AutoSize = true, Padding = new Padding(8, 5, 2, 0) };
+        }
+
+        private Control CreateNormalPlaylistPanel()
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
             var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
+            toolbar.Controls.Add(new Label { Text = "Normal playlist", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 8, 0) });
+            toolbar.Controls.Add(MakeButton("Add current", async (_, __) => await AddCurrentToPlaylistAsync(false)));
             toolbar.Controls.Add(MakeButton("Add files", async (_, __) => await AddFilesAsync()));
             toolbar.Controls.Add(MakeButton("Add folder", async (_, __) => await AddFolderAsync()));
             toolbar.Controls.Add(MakeButton("Add bumper", async (_, __) => await AddBumperAsync()));
             toolbar.Controls.Add(MakeButton("Remove", (_, __) => RemoveSelected()));
             toolbar.Controls.Add(MakeButton("Up", (_, __) => MoveSelected(-1)));
             toolbar.Controls.Add(MakeButton("Down", (_, __) => MoveSelected(1)));
-            toolbar.Controls.Add(MakeButton("Set options", async (_, __) => await SetSelectedOptionsAsync()));
+            toolbar.Controls.Add(MakeButton("Set options", (_, __) => SetSelectedOptions()));
             toolbar.Controls.Add(MakeButton("Load", async (_, __) => await LoadPlaylistAsync()));
-            toolbar.Controls.Add(MakeButton("Save", (_, __) => SavePlaylist()));
+            toolbar.Controls.Add(MakeButton("Save file", (_, __) => SavePlaylist()));
             toolbar.Controls.Add(MakeButton("Refresh durations", async (_, __) => await RefreshDurationsAsync()));
             toolbar.Controls.Add(new Label { Text = "Mode", AutoSize = true, Padding = new Padding(8, 5, 0, 0) });
             toolbar.Controls.Add(playoutModeBox);
-            toolbar.Controls.Add(playoutStatusLabel);
+            toolbar.Controls.Add(autoAdvanceBox);
             toolbar.Controls.Add(scheduledStartBox);
             toolbar.Controls.Add(scheduledStartPicker);
-            toolbar.Controls.Add(MakeButton("Start playout", async (_, __) => await StartPlayoutAsync()));
-            toolbar.Controls.Add(MakeButton("Next", async (_, __) => await PlayNextAsync(true)));
-            toolbar.Controls.Add(MakeButton("Stop playout", async (_, __) => await StopPlayoutAsync()));
             root.Controls.Add(toolbar, 0, 0);
 
             playlistView.Columns.Add("#", 40);
@@ -213,6 +357,8 @@ namespace OmniVCamController
             playlistView.SelectedIndexChanged += (_, __) => LoadSelectedPlaylistItemToInputs();
             playlistView.DoubleClick += async (_, __) => await PlaySelectedAsync();
             root.Controls.Add(playlistView, 0, 1);
+
+            return root;
         }
 
         private static void AddRow(TableLayoutPanel grid, string label1, Control control1, string label2, Control control2)
@@ -510,21 +656,22 @@ namespace OmniVCamController
             };
         }
 
-        private async Task DropFilesToInputAsync(string[] files)
+        private Task DropFilesToInputAsync(string[] files)
         {
             string file = files.FirstOrDefault(File.Exists);
-            if (string.IsNullOrWhiteSpace(file)) return;
+            if (string.IsNullOrWhiteSpace(file)) return Task.CompletedTask;
             inputBox.Text = file;
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
-        private async Task DropFilesToPlaylistAsync(string[] files)
+        private Task DropFilesToPlaylistAsync(string[] files)
         {
             foreach (string path in ExpandDroppedMediaFiles(files))
             {
-                await AddPlaylistItemAsync(path, false, optionsBox.Text.Trim());
+                AddPlaylistItem(path, false, optionsBox.Text.Trim());
             }
             RefreshPlaylistView();
+            return Task.CompletedTask;
         }
 
         private static IEnumerable<string> ExpandDroppedMediaFiles(IEnumerable<string> paths)
@@ -595,6 +742,7 @@ namespace OmniVCamController
             if (index < 0 || index >= favoriteInputs.Count) return;
             inputBox.Text = favoriteInputs[index].Input;
             optionsBox.Text = favoriteInputs[index].Options;
+            scheduledOptionsBox.Text = favoriteInputs[index].Options;
         }
 
         private async Task PlaySelectedFavoriteInputAsync()
@@ -605,6 +753,7 @@ namespace OmniVCamController
             FavoriteInputItem item = favoriteInputs[index];
             inputBox.Text = item.Input;
             optionsBox.Text = item.Options;
+            scheduledOptionsBox.Text = item.Options;
             await PlayInputAsync(item.Input, item.Options);
         }
 
@@ -630,50 +779,180 @@ namespace OmniVCamController
             return string.IsNullOrWhiteSpace(fileName) ? input : fileName;
         }
 
-        private async Task AddFilesAsync()
+        private Task AddFilesAsync()
         {
             using (var dialog = new OpenFileDialog { Multiselect = true, Filter = MediaFileFilter })
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                foreach (string file in dialog.FileNames) await AddPlaylistItemAsync(file, false, optionsBox.Text.Trim());
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+                foreach (string file in dialog.FileNames) AddPlaylistItem(file, false, optionsBox.Text.Trim());
             }
             RefreshPlaylistView();
+            return Task.CompletedTask;
         }
 
-        private async Task AddFolderAsync()
+        private Task AddFolderAsync()
         {
             using (var dialog = new FolderBrowserDialog())
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
                 foreach (string file in Directory.GetFiles(dialog.SelectedPath, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
                 {
-                    await AddPlaylistItemAsync(file, false, optionsBox.Text.Trim());
+                    AddPlaylistItem(file, false, optionsBox.Text.Trim());
                 }
             }
             RefreshPlaylistView();
+            return Task.CompletedTask;
         }
 
-        private async Task AddBumperAsync()
+        private Task AddBumperAsync()
         {
             using (var dialog = new OpenFileDialog { Filter = MediaFileFilter })
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                await AddPlaylistItemAsync(dialog.FileName, true, optionsBox.Text.Trim());
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+                AddPlaylistItem(dialog.FileName, true, optionsBox.Text.Trim());
             }
             RefreshPlaylistView();
+            return Task.CompletedTask;
         }
 
-        private async Task AddPlaylistItemAsync(string file, bool bumper, string options)
+        private Task AddCurrentToPlaylistAsync(bool bumper)
         {
-            int duration = await GetDurationOrDefaultAsync(file, options);
+            string input = inputBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
+            AddPlaylistItem(input, bumper, optionsBox.Text.Trim());
+            RefreshPlaylistView();
+            return Task.CompletedTask;
+        }
+
+        private void AddPlaylistItem(string file, bool bumper, string options)
+        {
             playlist.Add(new PlaylistItem
             {
                 Path = file,
-                Title = System.IO.Path.GetFileNameWithoutExtension(file),
-                DurationSeconds = duration,
+                Title = GetInputTitle(file),
+                DurationSeconds = 0,
                 Options = options,
                 IsBumper = bumper
             });
+        }
+
+        private Task AddScheduledFromCurrentAsync()
+        {
+            string input = inputBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
+
+            string options = GetScheduledOptionsInput();
+            var item = new ScheduledPlaylistItem
+            {
+                Path = input,
+                Title = GetInputTitle(input),
+                DurationSeconds = 0,
+                Options = options,
+                ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime,
+                StartAt = scheduleDateTimePicker.Value,
+                WeeklyTime = scheduleTimePicker.Value.TimeOfDay,
+                WeekDays = GetSelectedWeekDays(),
+                HasEndTime = scheduleEndBox.Checked,
+                EndAt = scheduleEndPicker.Value,
+                EndAction = GetSelectedEndAction(),
+                StartAction = GetSelectedStartAction()
+            };
+            if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) item.WeekDays = WeekDayMaskFromDay(DateTime.Now.DayOfWeek);
+            scheduledPlaylist.Add(item);
+            RefreshScheduledPlaylistView();
+            return Task.CompletedTask;
+        }
+
+        private void RemoveSelectedScheduled()
+        {
+            foreach (int index in scheduledPlaylistView.SelectedIndices.Cast<int>().OrderByDescending(i => i))
+            {
+                scheduledPlaylist.RemoveAt(index);
+                if (currentScheduledIndex == index) currentScheduledIndex = -1;
+                else if (currentScheduledIndex > index) currentScheduledIndex--;
+            }
+            RefreshScheduledPlaylistView();
+        }
+
+        private void MoveSelectedScheduled(int direction)
+        {
+            if (scheduledPlaylistView.SelectedIndices.Count != 1) return;
+            int index = scheduledPlaylistView.SelectedIndices[0];
+            int target = index + direction;
+            if (target < 0 || target >= scheduledPlaylist.Count) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[index];
+            scheduledPlaylist.RemoveAt(index);
+            scheduledPlaylist.Insert(target, item);
+            if (currentScheduledIndex == index) currentScheduledIndex = target;
+            RefreshScheduledPlaylistView();
+            scheduledPlaylistView.Items[target].Selected = true;
+        }
+
+        private void LoadSelectedScheduledItemToInputs()
+        {
+            if (scheduledPlaylistView.SelectedIndices.Count != 1) return;
+            int index = scheduledPlaylistView.SelectedIndices[0];
+            if (index < 0 || index >= scheduledPlaylist.Count) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[index];
+            inputBox.Text = item.Path;
+            optionsBox.Text = item.Options;
+            scheduledOptionsBox.Text = item.Options;
+            scheduleTypeBox.Text = item.ScheduleKind == ScheduleKind.Weekly ? "Weekly" : "One-time";
+            scheduleDateTimePicker.Value = ClampDateTimePicker(scheduleDateTimePicker, item.StartAt);
+            scheduleTimePicker.Value = DateTime.Today.Add(item.WeeklyTime);
+            SetSelectedWeekDays(item.WeekDays);
+            scheduleEndBox.Checked = item.HasEndTime;
+            scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, item.EndAt);
+            scheduleEndActionBox.Text = EndActionText(item.EndAction);
+            scheduleStartActionBox.Text = StartActionText(item.StartAction);
+            UpdateScheduleEndControls();
+        }
+
+        private void ApplyScheduledControlsToSelected()
+        {
+            if (scheduledPlaylistView.SelectedIndices.Count != 1) return;
+            int index = scheduledPlaylistView.SelectedIndices[0];
+            if (index < 0 || index >= scheduledPlaylist.Count) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[index];
+            item.Path = inputBox.Text.Trim();
+            item.Title = GetInputTitle(item.Path);
+            item.Options = scheduledOptionsBox.Text.Trim();
+            optionsBox.Text = item.Options;
+            item.ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime;
+            item.StartAt = scheduleDateTimePicker.Value;
+            item.WeeklyTime = scheduleTimePicker.Value.TimeOfDay;
+            item.WeekDays = GetSelectedWeekDays();
+            if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) item.WeekDays = WeekDayMaskFromDay(DateTime.Now.DayOfWeek);
+            item.HasEndTime = scheduleEndBox.Checked;
+            item.EndAt = scheduleEndPicker.Value;
+            item.EndAction = GetSelectedEndAction();
+            item.StartAction = GetSelectedStartAction();
+            if (playingScheduled && index == currentScheduledIndex)
+            {
+                scheduledSlotEndAt = GetScheduleWindow(index, DateTime.Now).End;
+            }
+            RefreshScheduledPlaylistView();
+            scheduledPlaylistView.Items[index].Selected = true;
+        }
+
+        private void UpdateScheduleEndControls()
+        {
+            bool enabled = scheduleEndBox.Checked;
+            scheduleEndPicker.Enabled = enabled;
+            scheduleEndActionBox.Enabled = enabled;
+        }
+
+        private string GetScheduledOptionsInput()
+        {
+            string scheduledOptions = scheduledOptionsBox.Text.Trim();
+            return string.IsNullOrWhiteSpace(scheduledOptions) ? optionsBox.Text.Trim() : scheduledOptions;
+        }
+
+        private async Task PlaySelectedScheduledAsync()
+        {
+            if (scheduledPlaylistView.SelectedIndices.Count == 0) return;
+            currentScheduledIndex = scheduledPlaylistView.SelectedIndices[0];
+            await PlayScheduledCurrentAsync();
         }
 
         private async Task<int> GetDurationOrDefaultAsync(string input, string options)
@@ -681,8 +960,8 @@ namespace OmniVCamController
             string command = string.IsNullOrWhiteSpace(options) ? "DURATION " + input : "DURATION " + input + "\t" + options;
             string reply = await SendRawCommandAsync(command);
             long duration = ParseStatusLong(reply ?? string.Empty, "duration=");
-            if (duration > 0 && duration <= (long)defaultDurationBox.Maximum) return (int)duration;
-            return (int)defaultDurationBox.Value;
+            if (duration > 0 && duration <= int.MaxValue) return (int)duration;
+            return 0;
         }
 
         private static bool IsMediaFile(string file)
@@ -717,17 +996,18 @@ namespace OmniVCamController
             if (index < 0 || index >= playlist.Count) return;
             inputBox.Text = playlist[index].Path;
             optionsBox.Text = playlist[index].Options;
+            scheduledOptionsBox.Text = playlist[index].Options;
         }
 
-        private async Task SetSelectedOptionsAsync()
+        private void SetSelectedOptions()
         {
             if (playlistView.SelectedIndices.Count == 0) return;
-            string options = optionsBox.Text.Trim();
+            string options = scheduledOptionsBox.Text.Trim();
+            optionsBox.Text = options;
             foreach (int index in playlistView.SelectedIndices.Cast<int>())
             {
                 if (index < 0 || index >= playlist.Count) continue;
                 playlist[index].Options = options;
-                playlist[index].DurationSeconds = await GetDurationOrDefaultAsync(playlist[index].Path, options);
             }
             RefreshPlaylistView();
         }
@@ -741,14 +1021,19 @@ namespace OmniVCamController
 
         private async Task StartPlayoutAsync()
         {
-            if (playlist.Count == 0) return;
+            if (playlist.Count == 0 && scheduledPlaylist.Count == 0) return;
             playoutRunning = true;
+            SetPlayoutTimerRunning(true);
             waitingForScheduledStart = scheduledStartBox.Checked;
             if (!waitingForScheduledStart)
             {
-                currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
-                await PlayCurrentAsync();
+                if (playlist.Count > 0)
+                {
+                    currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+                    await PlayCurrentAsync();
+                }
             }
+            UpdatePlayoutStatusLabel();
             AppendLog("Playout started.");
         }
 
@@ -756,7 +1041,12 @@ namespace OmniVCamController
         {
             playoutRunning = false;
             waitingForScheduledStart = false;
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            ResetScheduledTriggers();
             await SendCommandAsync("STOP");
+            SetPlayoutTimerRunning(false);
+            UpdatePlayoutStatusLabel();
             AppendLog("Playout stopped.");
         }
 
@@ -764,12 +1054,38 @@ namespace OmniVCamController
         {
             playoutRunning = false;
             waitingForScheduledStart = false;
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            ResetScheduledTriggers();
             await SendCommandAsync("STOP");
+            SetPlayoutTimerRunning(false);
+            UpdatePlayoutStatusLabel();
+        }
+
+        private void ResetScheduledTriggers()
+        {
+            foreach (ScheduledPlaylistItem item in scheduledPlaylist)
+            {
+                item.LastTriggeredAt = DateTime.MinValue;
+            }
+            RefreshScheduledPlaylistView();
+        }
+
+        private void SetPlayoutTimerRunning(bool running)
+        {
+            if (running)
+            {
+                if (!playoutTimer.Enabled) playoutTimer.Start();
+            }
+            else if (playoutTimer.Enabled)
+            {
+                playoutTimer.Stop();
+            }
         }
 
         private async Task PlayoutTickAsync()
         {
-            if (!playoutRunning || playlist.Count == 0) return;
+            if (!playoutRunning || (playlist.Count == 0 && scheduledPlaylist.Count == 0)) return;
             if (advancingPlayout) return;
 
             if (waitingForScheduledStart)
@@ -779,24 +1095,34 @@ namespace OmniVCamController
                 if (now.Hours == scheduled.Hours && now.Minutes == scheduled.Minutes && now.Seconds == scheduled.Seconds)
                 {
                     waitingForScheduledStart = false;
-                    currentIndex = 0;
-                    await PlayCurrentAsync();
+                    if (playlist.Count > 0)
+                    {
+                        currentIndex = 0;
+                        await PlayCurrentAsync();
+                    }
                 }
                 return;
             }
 
+            await StartDueScheduledItemAsync();
+            await HandleScheduledEndAsync();
             await AutoAdvanceIfNeededAsync();
         }
 
         private async Task AutoAdvanceIfNeededAsync()
         {
             if (advancingPlayout) return;
+            if (playingScheduled)
+            {
+                await AutoAdvanceScheduledIfNeededAsync();
+                return;
+            }
             if (!autoAdvanceBox.Checked || currentIndex < 0 || currentIndex >= playlist.Count) return;
             if ((DateTime.Now - lastAutoAdvanceAt).TotalSeconds < 2) return;
 
             PlaylistItem current = playlist[currentIndex];
             bool statusMatchesCurrent = PathsEqual(current.Path, GetStatusInputPath(currentStatusInput));
-            bool reachedPlaylistDuration = (DateTime.Now - currentStartedAt).TotalSeconds >= Math.Max(1, current.DurationSeconds);
+            bool reachedPlaylistDuration = current.DurationSeconds > 0 && (DateTime.Now - currentStartedAt).TotalSeconds >= current.DurationSeconds;
             bool playbackFailed = statusMatchesCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
             bool playbackEnded = statusMatchesCurrent && string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
 
@@ -817,6 +1143,12 @@ namespace OmniVCamController
 
         private async Task PlayNextAsync(bool manual)
         {
+            if (playingScheduled)
+            {
+                await ReturnToNormalPlaylistAsync();
+                if (manual && playlist.Count > 0) await PlayNextAsync(false);
+                return;
+            }
             if (playlist.Count == 0) return;
             if (playoutModeBox.Text == "Random")
             {
@@ -834,7 +1166,11 @@ namespace OmniVCamController
             {
                 currentIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % playlist.Count;
             }
-            if (manual) playoutRunning = true;
+            if (manual)
+            {
+                playoutRunning = true;
+                SetPlayoutTimerRunning(true);
+            }
             await PlayCurrentAsync();
         }
 
@@ -842,6 +1178,9 @@ namespace OmniVCamController
         {
             if (currentIndex < 0 || currentIndex >= playlist.Count) return;
             PlaylistItem item = playlist[currentIndex];
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            scheduledSlotEndAt = DateTime.MinValue;
             currentStartedAt = DateTime.Now;
             currentPositionSeconds = 0;
             currentDurationSeconds = 0;
@@ -850,16 +1189,141 @@ namespace OmniVCamController
             SelectCurrentRow();
             inputBox.Text = item.Path;
             optionsBox.Text = item.Options;
+            scheduledOptionsBox.Text = item.Options;
             await PlayInputAsync(item.Path, item.Options);
+            UpdatePlayoutStatusLabel();
+        }
+
+        private async Task PlayScheduledCurrentAsync()
+        {
+            if (currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            playingScheduled = true;
+            currentStartedAt = DateTime.Now;
+            currentPositionSeconds = 0;
+            currentDurationSeconds = 0;
+            currentStatusState = "playing";
+            currentStatusInput = item.Path;
+            ScheduleWindow window = GetScheduleWindow(currentScheduledIndex, DateTime.Now);
+            scheduledSlotEndAt = window.End;
+            SelectCurrentRow();
+            SelectCurrentScheduledRow();
+            inputBox.Text = item.Path;
+            optionsBox.Text = item.Options;
+            scheduledOptionsBox.Text = item.Options;
+            item.LastTriggeredAt = window.Start;
+            await PlayInputAsync(item.Path, item.Options);
+            UpdatePlayoutStatusLabel();
+        }
+
+        private async Task StartDueScheduledItemAsync()
+        {
+            DateTime now = DateTime.Now;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                ScheduleWindow window = GetScheduleWindow(i, now);
+                if (!window.IsActive) continue;
+                if (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End) continue;
+
+                if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive())
+                {
+                    continue;
+                }
+                
+                currentScheduledIndex = i;
+                await PlayScheduledCurrentAsync();
+                return;
+            }
+        }
+
+        private async Task HandleScheduledEndAsync()
+        {
+            if (!playingScheduled || currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            DateTime now = DateTime.Now;
+
+            if (scheduledSlotEndAt != DateTime.MinValue && now >= scheduledSlotEndAt)
+            {
+                await FinishScheduledSlotAsync();
+                return;
+            }
+
+            if (item.HasEndTime && item.EndAction == ScheduleEndAction.WaitUntilEnd) return;
+            bool ended = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase) || string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
+            bool durationReached = item.DurationSeconds > 0 && (now - currentStartedAt).TotalSeconds >= item.DurationSeconds;
+            if (!ended && !durationReached) return;
+
+            if (item.HasEndTime && item.EndAction == ScheduleEndAction.ReplayUntilEnd)
+            {
+                await PlayScheduledCurrentAsync();
+                return;
+            }
+
+            await ReturnToNormalPlaylistAsync();
+        }
+
+        private async Task AutoAdvanceScheduledIfNeededAsync()
+        {
+            if (currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
+            if ((DateTime.Now - lastAutoAdvanceAt).TotalSeconds < 2) return;
+            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            if (scheduledSlotEndAt != DateTime.MinValue) return;
+            bool ended = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase) || string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
+            bool durationReached = item.DurationSeconds > 0 && (DateTime.Now - currentStartedAt).TotalSeconds >= item.DurationSeconds;
+            if (!ended && !durationReached) return;
+            lastAutoAdvanceAt = DateTime.Now;
+            await ReturnToNormalPlaylistAsync();
+        }
+
+        private async Task FinishScheduledSlotAsync()
+        {
+            await SendCommandAsync("STOP");
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            scheduledSlotEndAt = DateTime.MinValue;
+            currentStatusState = "stopped";
+            currentStatusInput = string.Empty;
+            RefreshScheduledPlaylistView();
+            UpdatePlayoutStatusLabel();
+
+            if (playlist.Count == 0) return;
+            currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            await PlayCurrentAsync();
+        }
+
+        private async Task ReturnToNormalPlaylistAsync()
+        {
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            scheduledSlotEndAt = DateTime.MinValue;
+            RefreshScheduledPlaylistView();
+            if (playlist.Count == 0)
+            {
+                UpdatePlayoutStatusLabel();
+                return;
+            }
+            currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            await PlayCurrentAsync();
         }
 
         private void SelectCurrentRow()
         {
             foreach (ListViewItem row in playlistView.Items) row.Selected = false;
-            if (currentIndex >= 0 && currentIndex < playlistView.Items.Count)
+            if (!playingScheduled && currentIndex >= 0 && currentIndex < playlistView.Items.Count)
             {
                 playlistView.Items[currentIndex].Selected = true;
                 playlistView.Items[currentIndex].EnsureVisible();
+            }
+        }
+
+        private void SelectCurrentScheduledRow()
+        {
+            foreach (ListViewItem row in scheduledPlaylistView.Items) row.Selected = false;
+            if (playingScheduled && currentScheduledIndex >= 0 && currentScheduledIndex < scheduledPlaylistView.Items.Count)
+            {
+                scheduledPlaylistView.Items[currentScheduledIndex].Selected = true;
+                scheduledPlaylistView.Items[currentScheduledIndex].EnsureVisible();
             }
         }
 
@@ -902,6 +1366,20 @@ namespace OmniVCamController
                                 new XAttribute("durationSeconds", item.DurationSeconds),
                                 new XAttribute("options", item.Options),
                                 new XAttribute("isBumper", item.IsBumper ? "1" : "0")))),
+                        new XElement("ScheduledPlaylist",
+                            scheduledPlaylist.Select(item => new XElement("Item",
+                                new XAttribute("path", item.Path),
+                                new XAttribute("title", item.Title),
+                                new XAttribute("durationSeconds", item.DurationSeconds),
+                                new XAttribute("options", item.Options),
+                                new XAttribute("scheduleKind", item.ScheduleKind),
+                                new XAttribute("startAt", item.StartAt.ToString("o")),
+                                new XAttribute("weeklyTime", item.WeeklyTime.ToString()),
+                                new XAttribute("weekDays", item.WeekDays),
+                                new XAttribute("hasEndTime", item.HasEndTime ? "1" : "0"),
+                                new XAttribute("endAt", item.EndAt.ToString("o")),
+                                new XAttribute("endAction", item.EndAction),
+                                new XAttribute("startAction", item.StartAction)))),
                         new XElement("FavoriteInputs",
                             favoriteInputs.Select(item => new XElement("Item",
                                 new XAttribute("input", item.Input),
@@ -924,6 +1402,7 @@ namespace OmniVCamController
             try
             {
                 playlist.Clear();
+                scheduledPlaylist.Clear();
                 XDocument document = XDocument.Load(path);
                 XElement root = document.Root;
                 if (root == null) return;
@@ -937,6 +1416,12 @@ namespace OmniVCamController
                     foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
                 }
 
+                XElement scheduledPlaylistElement = root.Element("ScheduledPlaylist");
+                if (scheduledPlaylistElement != null)
+                {
+                    foreach (XElement itemElement in scheduledPlaylistElement.Elements("Item")) LoadScheduledPlaylistElement(itemElement);
+                }
+
                 XElement favoriteInputsElement = root.Element("FavoriteInputs");
                 if (favoriteInputsElement != null)
                 {
@@ -945,6 +1430,7 @@ namespace OmniVCamController
                 }
 
                 RefreshPlaylistView();
+                RefreshScheduledPlaylistView();
                 RefreshFavoriteInputView();
             }
             catch (Exception ex)
@@ -992,9 +1478,48 @@ namespace OmniVCamController
             {
                 Path = itemPath,
                 Title = GetAttribute(itemElement, "title", System.IO.Path.GetFileNameWithoutExtension(itemPath)),
-                DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : (int)defaultDurationBox.Value,
+                DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : 0,
                 Options = GetAttribute(itemElement, "options", string.Empty),
                 IsBumper = GetAttribute(itemElement, "isBumper", "0") == "1"
+            });
+        }
+
+        private void LoadScheduledPlaylistElement(XElement itemElement)
+        {
+            string itemPath = GetAttribute(itemElement, "path", string.Empty);
+            if (string.IsNullOrWhiteSpace(itemPath)) return;
+
+            int duration;
+            DateTime startAt;
+            DateTime endAt;
+            TimeSpan weeklyTime;
+            int weekDays;
+            ScheduleKind scheduleKind;
+            ScheduleEndAction endAction;
+            ScheduleStartAction startAction;
+
+            if (!Enum.TryParse(GetAttribute(itemElement, "scheduleKind", "OneTime"), out scheduleKind)) scheduleKind = ScheduleKind.OneTime;
+            if (!DateTime.TryParse(GetAttribute(itemElement, "startAt", null), out startAt)) startAt = DateTime.Now.AddMinutes(1);
+            if (!DateTime.TryParse(GetAttribute(itemElement, "endAt", null), out endAt)) endAt = startAt.AddMinutes(30);
+            if (!TimeSpan.TryParse(GetAttribute(itemElement, "weeklyTime", null), out weeklyTime)) weeklyTime = startAt.TimeOfDay;
+            if (!int.TryParse(GetAttribute(itemElement, "weekDays", null), out weekDays)) weekDays = WeekDayMaskFromDay(startAt.DayOfWeek);
+            if (!Enum.TryParse(GetAttribute(itemElement, "endAction", "WaitUntilEnd"), out endAction)) endAction = ScheduleEndAction.WaitUntilEnd;
+            if (!Enum.TryParse(GetAttribute(itemElement, "startAction", "StartImmediately"), out startAction)) startAction = ScheduleStartAction.StartImmediately;
+
+            scheduledPlaylist.Add(new ScheduledPlaylistItem
+            {
+                Path = itemPath,
+                Title = GetAttribute(itemElement, "title", GetInputTitle(itemPath)),
+                DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : 0,
+                Options = GetAttribute(itemElement, "options", string.Empty),
+                ScheduleKind = scheduleKind,
+                StartAt = startAt,
+                WeeklyTime = weeklyTime,
+                WeekDays = weekDays,
+                HasEndTime = GetAttribute(itemElement, "hasEndTime", "0") == "1",
+                EndAt = endAt,
+                EndAction = endAction,
+                StartAction = startAction
             });
         }
 
@@ -1026,7 +1551,7 @@ namespace OmniVCamController
             {
                 Path = itemPath,
                 Title = parts.Length > 1 ? Unescape(parts[1]) : System.IO.Path.GetFileNameWithoutExtension(itemPath),
-                DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : (int)defaultDurationBox.Value,
+                DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : 0,
                 Options = parts.Length > 3 ? Unescape(parts[3]) : string.Empty,
                 IsBumper = parts.Length > 4 && parts[4] == "1"
             });
@@ -1042,11 +1567,11 @@ namespace OmniVCamController
             return Path.Combine(Application.StartupPath, AutoConfigFileName);
         }
 
-        private async Task LoadPlaylistAsync()
+        private Task LoadPlaylistAsync()
         {
             using (var dialog = new OpenFileDialog { Filter = "OmniVCam playlist|*.ovcpl;*.txt|All files|*.*" })
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
                 playlist.Clear();
                 foreach (string line in File.ReadAllLines(dialog.FileName, Encoding.UTF8))
                 {
@@ -1056,15 +1581,15 @@ namespace OmniVCamController
                     {
                         Path = Unescape(parts[0]),
                         Title = parts.Length > 1 ? Unescape(parts[1]) : System.IO.Path.GetFileNameWithoutExtension(Unescape(parts[0])),
-                        DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : (int)defaultDurationBox.Value,
+                        DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : 0,
                         Options = parts.Length > 3 ? Unescape(parts[3]) : string.Empty,
                         IsBumper = parts.Length > 4 && parts[4] == "1"
                     });
                 }
             }
             currentIndex = -1;
-            await RefreshDurationsAsync();
             RefreshPlaylistView();
+            return Task.CompletedTask;
         }
 
         private async Task RefreshDurationsAsync()
@@ -1073,7 +1598,12 @@ namespace OmniVCamController
             {
                 item.DurationSeconds = await GetDurationOrDefaultAsync(item.Path, item.Options);
             }
+            foreach (ScheduledPlaylistItem item in scheduledPlaylist)
+            {
+                item.DurationSeconds = await GetDurationOrDefaultAsync(item.Path, item.Options);
+            }
             RefreshPlaylistView();
+            RefreshScheduledPlaylistView();
         }
 
         private static string Escape(string value)
@@ -1093,12 +1623,12 @@ namespace OmniVCamController
             for (int i = 0; i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
-                bool isCurrent = PathsEqual(item.Path, GetStatusInputPath(currentStatusInput));
+                bool isCurrent = !playingScheduled && PathsEqual(item.Path, GetStatusInputPath(currentStatusInput));
                 var row = new ListViewItem((i + 1).ToString());
                 row.SubItems.Add(isCurrent ? FormatState(currentStatusState) : string.Empty);
                 row.SubItems.Add(item.IsBumper ? "Bumper" : "Program");
                 row.SubItems.Add(item.Title);
-                row.SubItems.Add(TimeSpan.FromSeconds(item.DurationSeconds).ToString(@"hh\:mm\:ss"));
+                row.SubItems.Add(FormatDuration(item.DurationSeconds));
                 row.SubItems.Add(item.Options);
                 row.SubItems.Add(item.Path);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
@@ -1110,6 +1640,34 @@ namespace OmniVCamController
             SelectCurrentRow();
         }
 
+        private void RefreshScheduledPlaylistView()
+        {
+            scheduledPlaylistView.BeginUpdate();
+            scheduledPlaylistView.Items.Clear();
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                bool isCurrent = playingScheduled && i == currentScheduledIndex;
+                ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
+                var row = new ListViewItem((i + 1).ToString());
+                row.SubItems.Add(isCurrent ? FormatState(currentStatusState) : FormatScheduledIdleStatus(item, window));
+                row.SubItems.Add(FormatSchedule(item));
+                row.SubItems.Add(FormatScheduleEnd(item));
+                row.SubItems.Add(StartActionText(item.StartAction));
+                row.SubItems.Add(EndActionText(item.EndAction));
+                row.SubItems.Add(FormatLastTriggered(item.LastTriggeredAt));
+                row.SubItems.Add(item.Title);
+                row.SubItems.Add(FormatDuration(item.DurationSeconds));
+                row.SubItems.Add(item.Path);
+                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
+                else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
+                else if (FormatScheduledIdleStatus(item, window) == "Blocked") row.BackColor = Color.FromArgb(255, 248, 220);
+                scheduledPlaylistView.Items.Add(row);
+            }
+            scheduledPlaylistView.EndUpdate();
+            SelectCurrentScheduledRow();
+        }
+
         private void UpdatePlaylistStatusView()
         {
             string statusPath = GetStatusInputPath(currentStatusInput);
@@ -1117,7 +1675,7 @@ namespace OmniVCamController
             for (int i = 0; i < playlistView.Items.Count && i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
-                bool isCurrent = PathsEqual(item.Path, statusPath);
+                bool isCurrent = !playingScheduled && PathsEqual(item.Path, statusPath);
                 ListViewItem row = playlistView.Items[i];
                 row.SubItems[1].Text = isCurrent ? FormatState(currentStatusState) : string.Empty;
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
@@ -1125,6 +1683,21 @@ namespace OmniVCamController
                 else row.BackColor = item.IsBumper ? Color.FromArgb(245, 245, 230) : SystemColors.Window;
             }
             playlistView.EndUpdate();
+            scheduledPlaylistView.BeginUpdate();
+            for (int i = 0; i < scheduledPlaylistView.Items.Count && i < scheduledPlaylist.Count; i++)
+            {
+                bool isCurrent = playingScheduled && i == currentScheduledIndex;
+                ListViewItem row = scheduledPlaylistView.Items[i];
+                ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
+                string idleStatus = FormatScheduledIdleStatus(scheduledPlaylist[i], window);
+                row.SubItems[1].Text = isCurrent ? FormatState(currentStatusState) : idleStatus;
+                row.SubItems[6].Text = FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt);
+                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
+                else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
+                else if (idleStatus == "Blocked") row.BackColor = Color.FromArgb(255, 248, 220);
+                else row.BackColor = SystemColors.Window;
+            }
+            scheduledPlaylistView.EndUpdate();
         }
 
         private async Task SendCommandAsync(string command)
@@ -1181,7 +1754,7 @@ namespace OmniVCamController
                 currentSizeBytes = ParseStatusLong(reply, "size=");
                 currentStatusState = ParseStatusString(reply, "state=");
                 currentStatusInput = ParseStatusString(reply, "input=");
-                playoutStatusLabel.Text = "Status: " + FormatState(currentStatusState);
+                UpdatePlayoutStatusLabel();
                 UpdatePlaylistStatusView();
                 string durationText = currentDurationSeconds > 0 ? TimeSpan.FromSeconds(currentDurationSeconds).ToString(@"hh\:mm\:ss") : "--:--:--";
                 long displaySeconds = ignoreStaleSeekStatus ? pendingSeekSeconds : seconds;
@@ -1193,7 +1766,6 @@ namespace OmniVCamController
                     progressBar.Value = progress;
                     updatingProgress = false;
                 }
-                if (!ignoreStaleSeekStatus) await AutoAdvanceIfNeededAsync();
             }
         }
         private static long ParseStatusLong(string reply, string key)
@@ -1243,6 +1815,194 @@ namespace OmniVCamController
             if (string.Equals(state, "ended", StringComparison.OrdinalIgnoreCase)) return "Ended";
             if (string.Equals(state, "error", StringComparison.OrdinalIgnoreCase)) return "Error";
             return "Stopped";
+        }
+
+        private static string FormatDuration(int seconds)
+        {
+            return seconds > 0 ? TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss") : "--:--:--";
+        }
+
+        private void UpdatePlayoutStatusLabel()
+        {
+            string running = playoutRunning ? "running" : "stopped";
+            string source = playingScheduled ? "scheduled" : "normal";
+            playoutStatusLabel.Text = "Playout: " + running + " / " + source + " / " + FormatState(currentStatusState);
+            playoutStatusLabel.ForeColor = playoutRunning ? Color.DarkGreen : SystemColors.ControlText;
+            playoutStatusLabel.Font = new Font(playoutStatusLabel.Font, playoutRunning ? FontStyle.Bold : FontStyle.Regular);
+        }
+
+        private bool IsCurrentPlaybackActive()
+        {
+            return string.Equals(currentStatusState, "playing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(currentStatusState, "opening", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string FormatScheduledIdleStatus(ScheduledPlaylistItem item, ScheduleWindow window)
+        {
+            if (!window.IsActive) return "Waiting";
+            if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) return "Blocked";
+            return "In window";
+        }
+
+        private ScheduleWindow GetScheduleWindow(int index, DateTime now)
+        {
+            if (index < 0 || index >= scheduledPlaylist.Count) return ScheduleWindow.Empty;
+            ScheduledPlaylistItem item = scheduledPlaylist[index];
+            DateTime start = GetCurrentScheduleStart(item, now);
+            if (start == DateTime.MinValue) return ScheduleWindow.Empty;
+
+            DateTime end = item.HasEndTime ? GetExplicitScheduleEnd(item, start) : GetNextScheduleStart(start);
+            if (end <= start) end = DateTime.MaxValue;
+            return new ScheduleWindow(start, end, now >= start && now < end);
+        }
+
+        private DateTime GetCurrentScheduleStart(ScheduledPlaylistItem item, DateTime now)
+        {
+            if (item.ScheduleKind == ScheduleKind.OneTime) return item.StartAt;
+
+            DateTime best = DateTime.MinValue;
+            for (int offset = -7; offset <= 0; offset++)
+            {
+                DateTime candidateDate = now.Date.AddDays(offset);
+                if ((item.WeekDays & WeekDayMaskFromDay(candidateDate.DayOfWeek)) == 0) continue;
+                DateTime candidate = candidateDate.Add(item.WeeklyTime);
+                if (candidate <= now && candidate > best) best = candidate;
+            }
+            return best;
+        }
+
+        private DateTime GetExplicitScheduleEnd(ScheduledPlaylistItem item, DateTime start)
+        {
+            if (item.ScheduleKind == ScheduleKind.OneTime) return item.EndAt;
+            DateTime end = start.Date.Add(item.EndAt.TimeOfDay);
+            if (end <= start) end = end.AddDays(1);
+            return end;
+        }
+
+        private DateTime GetNextScheduleStart(DateTime start)
+        {
+            DateTime best = DateTime.MaxValue;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                DateTime candidate = GetNextScheduleStartAfter(scheduledPlaylist[i], start);
+                if (candidate > start && candidate < best) best = candidate;
+            }
+            return best;
+        }
+
+        private static DateTime GetNextScheduleStartAfter(ScheduledPlaylistItem item, DateTime after)
+        {
+            if (item.ScheduleKind == ScheduleKind.OneTime) return item.StartAt > after ? item.StartAt : DateTime.MaxValue;
+
+            DateTime best = DateTime.MaxValue;
+            for (int offset = 0; offset <= 7; offset++)
+            {
+                DateTime candidateDate = after.Date.AddDays(offset);
+                if ((item.WeekDays & WeekDayMaskFromDay(candidateDate.DayOfWeek)) == 0) continue;
+                DateTime candidate = candidateDate.Add(item.WeeklyTime);
+                if (candidate > after && candidate < best) best = candidate;
+            }
+            return best;
+        }
+
+        private ScheduleEndAction GetSelectedEndAction()
+        {
+            if (scheduleEndActionBox.Text == "Replay until end") return ScheduleEndAction.ReplayUntilEnd;
+            if (scheduleEndActionBox.Text == "Continue immediately") return ScheduleEndAction.ContinueImmediately;
+            return ScheduleEndAction.WaitUntilEnd;
+        }
+
+        private ScheduleStartAction GetSelectedStartAction()
+        {
+            return scheduleStartActionBox.Text == "Wait current item" ? ScheduleStartAction.WaitCurrentItem : ScheduleStartAction.StartImmediately;
+        }
+
+        private static string EndActionText(ScheduleEndAction action)
+        {
+            if (action == ScheduleEndAction.ReplayUntilEnd) return "Replay until end";
+            if (action == ScheduleEndAction.ContinueImmediately) return "Continue immediately";
+            return "Wait until end";
+        }
+
+        private static string StartActionText(ScheduleStartAction action)
+        {
+            return action == ScheduleStartAction.WaitCurrentItem ? "Wait current item" : "Start immediately";
+        }
+
+        private int GetSelectedWeekDays()
+        {
+            int mask = 0;
+            if (mondayBox.Checked) mask |= (int)WeekDayMask.Monday;
+            if (tuesdayBox.Checked) mask |= (int)WeekDayMask.Tuesday;
+            if (wednesdayBox.Checked) mask |= (int)WeekDayMask.Wednesday;
+            if (thursdayBox.Checked) mask |= (int)WeekDayMask.Thursday;
+            if (fridayBox.Checked) mask |= (int)WeekDayMask.Friday;
+            if (saturdayBox.Checked) mask |= (int)WeekDayMask.Saturday;
+            if (sundayBox.Checked) mask |= (int)WeekDayMask.Sunday;
+            return mask;
+        }
+
+        private void SetSelectedWeekDays(int mask)
+        {
+            mondayBox.Checked = (mask & (int)WeekDayMask.Monday) != 0;
+            tuesdayBox.Checked = (mask & (int)WeekDayMask.Tuesday) != 0;
+            wednesdayBox.Checked = (mask & (int)WeekDayMask.Wednesday) != 0;
+            thursdayBox.Checked = (mask & (int)WeekDayMask.Thursday) != 0;
+            fridayBox.Checked = (mask & (int)WeekDayMask.Friday) != 0;
+            saturdayBox.Checked = (mask & (int)WeekDayMask.Saturday) != 0;
+            sundayBox.Checked = (mask & (int)WeekDayMask.Sunday) != 0;
+        }
+
+        private static int WeekDayMaskFromDay(DayOfWeek day)
+        {
+            switch (day)
+            {
+                case DayOfWeek.Monday: return (int)WeekDayMask.Monday;
+                case DayOfWeek.Tuesday: return (int)WeekDayMask.Tuesday;
+                case DayOfWeek.Wednesday: return (int)WeekDayMask.Wednesday;
+                case DayOfWeek.Thursday: return (int)WeekDayMask.Thursday;
+                case DayOfWeek.Friday: return (int)WeekDayMask.Friday;
+                case DayOfWeek.Saturday: return (int)WeekDayMask.Saturday;
+                default: return (int)WeekDayMask.Sunday;
+            }
+        }
+
+        private static string FormatSchedule(ScheduledPlaylistItem item)
+        {
+            if (item.ScheduleKind == ScheduleKind.OneTime) return item.StartAt.ToString("yyyy-MM-dd HH:mm:ss");
+            return FormatWeekDays(item.WeekDays) + " " + item.WeeklyTime.ToString(@"hh\:mm\:ss");
+        }
+
+        private static string FormatScheduleEnd(ScheduledPlaylistItem item)
+        {
+            if (!item.HasEndTime) return "Next schedule";
+            if (item.ScheduleKind == ScheduleKind.Weekly) return item.EndAt.TimeOfDay.ToString(@"hh\:mm\:ss");
+            return item.EndAt.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+        private static string FormatLastTriggered(DateTime value)
+        {
+            return value == DateTime.MinValue ? string.Empty : value.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+        private static string FormatWeekDays(int mask)
+        {
+            var names = new List<string>();
+            if ((mask & (int)WeekDayMask.Monday) != 0) names.Add("Mon");
+            if ((mask & (int)WeekDayMask.Tuesday) != 0) names.Add("Tue");
+            if ((mask & (int)WeekDayMask.Wednesday) != 0) names.Add("Wed");
+            if ((mask & (int)WeekDayMask.Thursday) != 0) names.Add("Thu");
+            if ((mask & (int)WeekDayMask.Friday) != 0) names.Add("Fri");
+            if ((mask & (int)WeekDayMask.Saturday) != 0) names.Add("Sat");
+            if ((mask & (int)WeekDayMask.Sunday) != 0) names.Add("Sun");
+            return names.Count == 0 ? "No days" : string.Join(",", names);
+        }
+
+        private static DateTime ClampDateTimePicker(DateTimePicker picker, DateTime value)
+        {
+            if (value < picker.MinDate) return picker.MinDate;
+            if (value > picker.MaxDate) return picker.MaxDate;
+            return value;
         }
 
         private void ProgressBar_MouseDown(object sender, MouseEventArgs e)
@@ -1364,6 +2124,70 @@ namespace OmniVCamController
             public int DurationSeconds { get; set; }
             public string Options { get; set; } = string.Empty;
             public bool IsBumper { get; set; }
+        }
+
+        private sealed class ScheduledPlaylistItem
+        {
+            public string Path { get; set; } = string.Empty;
+            public string Title { get; set; } = string.Empty;
+            public int DurationSeconds { get; set; }
+            public string Options { get; set; } = string.Empty;
+            public ScheduleKind ScheduleKind { get; set; }
+            public DateTime StartAt { get; set; }
+            public TimeSpan WeeklyTime { get; set; }
+            public int WeekDays { get; set; }
+            public bool HasEndTime { get; set; }
+            public DateTime EndAt { get; set; }
+            public ScheduleEndAction EndAction { get; set; }
+            public ScheduleStartAction StartAction { get; set; }
+            public DateTime LastTriggeredAt { get; set; } = DateTime.MinValue;
+        }
+
+        private struct ScheduleWindow
+        {
+            public static readonly ScheduleWindow Empty = new ScheduleWindow(DateTime.MinValue, DateTime.MinValue, false);
+
+            public ScheduleWindow(DateTime start, DateTime end, bool isActive)
+            {
+                Start = start;
+                End = end;
+                IsActive = isActive;
+            }
+
+            public DateTime Start { get; }
+            public DateTime End { get; }
+            public bool IsActive { get; }
+        }
+
+        private enum ScheduleKind
+        {
+            OneTime,
+            Weekly
+        }
+
+        private enum ScheduleEndAction
+        {
+            ReplayUntilEnd,
+            WaitUntilEnd,
+            ContinueImmediately
+        }
+
+        private enum ScheduleStartAction
+        {
+            StartImmediately,
+            WaitCurrentItem
+        }
+
+        [Flags]
+        private enum WeekDayMask
+        {
+            Monday = 1,
+            Tuesday = 2,
+            Wednesday = 4,
+            Thursday = 8,
+            Friday = 16,
+            Saturday = 32,
+            Sunday = 64
         }
 
         private sealed class FavoriteInputItem
