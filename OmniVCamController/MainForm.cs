@@ -84,6 +84,7 @@ namespace OmniVCamController
             FormClosing += (_, __) =>
             {
                 closingMainForm = true;
+                if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
                 SaveAutoConfig();
             };
         }
@@ -210,7 +211,7 @@ namespace OmniVCamController
             };
             playoutForm.FormClosing += (_, e) =>
             {
-                if (closingMainForm) return;
+                if (closingMainForm || e.CloseReason != CloseReason.UserClosing) return;
                 e.Cancel = true;
                 playoutForm.Hide();
             };
