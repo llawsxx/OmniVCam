@@ -264,10 +264,13 @@ namespace OmniVCamController
             var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 3) };
             actions.Controls.Add(new Label { Text = "Scheduled playlist", AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 8, 0) });
             actions.Controls.Add(MakeButton("Add current", async (_, __) => await AddScheduledFromCurrentAsync()));
+            actions.Controls.Add(MakeButton("Add files", async (_, __) => await AddScheduledFilesAsync()));
+            actions.Controls.Add(MakeButton("Add folder", async (_, __) => await AddScheduledFolderAsync()));
             actions.Controls.Add(MakeButton("Apply", (_, __) => ApplyScheduledControlsToSelected()));
             actions.Controls.Add(MakeButton("Remove", (_, __) => RemoveSelectedScheduled()));
             actions.Controls.Add(MakeButton("Up", (_, __) => MoveSelectedScheduled(-1)));
             actions.Controls.Add(MakeButton("Down", (_, __) => MoveSelectedScheduled(1)));
+            actions.Controls.Add(MakeButton("Refresh durations", async (_, __) => await RefreshScheduledDurationsAsync()));
             root.Controls.Add(actions, 0, 0);
 
             var startSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 3) };
@@ -841,13 +844,44 @@ namespace OmniVCamController
             string input = inputBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
 
-            string options = GetScheduledOptionsInput();
+            scheduledPlaylist.Add(CreateScheduledItem(input));
+            RefreshScheduledPlaylistView();
+            return Task.CompletedTask;
+        }
+
+        private Task AddScheduledFilesAsync()
+        {
+            using (var dialog = new OpenFileDialog { Multiselect = true, Filter = MediaFileFilter })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+                foreach (string file in dialog.FileNames) scheduledPlaylist.Add(CreateScheduledItem(file));
+            }
+            RefreshScheduledPlaylistView();
+            return Task.CompletedTask;
+        }
+
+        private Task AddScheduledFolderAsync()
+        {
+            using (var dialog = new FolderBrowserDialog())
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+                foreach (string file in Directory.GetFiles(dialog.SelectedPath, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
+                {
+                    scheduledPlaylist.Add(CreateScheduledItem(file));
+                }
+            }
+            RefreshScheduledPlaylistView();
+            return Task.CompletedTask;
+        }
+
+        private ScheduledPlaylistItem CreateScheduledItem(string input)
+        {
             var item = new ScheduledPlaylistItem
             {
                 Path = input,
                 Title = GetInputTitle(input),
                 DurationSeconds = 0,
-                Options = options,
+                Options = GetScheduledOptionsInput(),
                 ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime,
                 StartAt = scheduleDateTimePicker.Value,
                 WeeklyTime = scheduleTimePicker.Value.TimeOfDay,
@@ -858,9 +892,7 @@ namespace OmniVCamController
                 StartAction = GetSelectedStartAction()
             };
             if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) item.WeekDays = WeekDayMaskFromDay(DateTime.Now.DayOfWeek);
-            scheduledPlaylist.Add(item);
-            RefreshScheduledPlaylistView();
-            return Task.CompletedTask;
+            return item;
         }
 
         private void RemoveSelectedScheduled()
@@ -1598,11 +1630,15 @@ namespace OmniVCamController
             {
                 item.DurationSeconds = await GetDurationOrDefaultAsync(item.Path, item.Options);
             }
+            RefreshPlaylistView();
+        }
+
+        private async Task RefreshScheduledDurationsAsync()
+        {
             foreach (ScheduledPlaylistItem item in scheduledPlaylist)
             {
                 item.DurationSeconds = await GetDurationOrDefaultAsync(item.Path, item.Options);
             }
-            RefreshPlaylistView();
             RefreshScheduledPlaylistView();
         }
 
