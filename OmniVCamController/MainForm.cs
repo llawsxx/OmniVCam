@@ -50,6 +50,7 @@ namespace OmniVCamController
         private bool suppressSeekValueEvent;
         private bool controlsReady;
         private bool syncingInitialCameraSettings;
+        private Button manualPlayButton;
         private Form playoutForm;
         private bool closingMainForm;
 
@@ -479,7 +480,9 @@ namespace OmniVCamController
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
             buttons.Controls.Add(MakeButton("Ping", async (_, __) => await SendCommandAsync("PING")));
-            buttons.Controls.Add(MakeButton("Play", async (_, __) => await PlayManualAsync()));
+            buttons.Controls.Add(MakeButton("Open", async (_, __) => await PlayManualAsync()));
+            manualPlayButton = MakeButton("Play", async (_, __) => await ToggleManualPlayPauseAsync());
+            buttons.Controls.Add(manualPlayButton);
             buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Set video index", async (_, __) => await SendIndexesAsync()));
@@ -929,6 +932,30 @@ namespace OmniVCamController
         private async Task PlayManualAsync()
         {
             await PlayInputAsync(inputBox.Text.Trim(), optionsBox.Text.Trim());
+        }
+
+        private async Task ToggleManualPlayPauseAsync()
+        {
+            if (string.Equals(currentStatusState, "playing", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(currentStatusState, "opening", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendCommandAsync("PAUSE");
+                currentStatusState = "paused";
+                UpdateManualPlayButtonText();
+                return;
+            }
+
+            if (string.Equals(currentStatusState, "paused", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendCommandAsync("RESUME");
+                currentStatusState = "playing";
+                UpdateManualPlayButtonText();
+                return;
+            }
+
+            await PlayManualAsync();
+            currentStatusState = "playing";
+            UpdateManualPlayButtonText();
         }
 
         private async Task SendVideoFilterAsync()
@@ -2410,6 +2437,7 @@ namespace OmniVCamController
                 currentSizeBytes = ParseStatusLong(reply, "size=");
                 currentStatusState = ParseStatusString(reply, "state=");
                 currentStatusInput = ParseStatusString(reply, "input=");
+                UpdateManualPlayButtonText();
                 if (!syncingInitialCameraSettings && ParseStatusLong(reply, "controller_connected=") == 0)
                 {
                     syncingInitialCameraSettings = true;
@@ -2480,6 +2508,7 @@ namespace OmniVCamController
         private static string FormatState(string state)
         {
             if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase)) return "Playing";
+            if (string.Equals(state, "paused", StringComparison.OrdinalIgnoreCase)) return "Paused";
             if (string.Equals(state, "opening", StringComparison.OrdinalIgnoreCase)) return "Opening";
             if (string.Equals(state, "ended", StringComparison.OrdinalIgnoreCase)) return "Ended";
             if (string.Equals(state, "error", StringComparison.OrdinalIgnoreCase)) return "Error";
@@ -2503,7 +2532,17 @@ namespace OmniVCamController
         private bool IsCurrentPlaybackActive()
         {
             return string.Equals(currentStatusState, "playing", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(currentStatusState, "paused", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(currentStatusState, "opening", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void UpdateManualPlayButtonText()
+        {
+            if (manualPlayButton == null) return;
+            manualPlayButton.Text = string.Equals(currentStatusState, "playing", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(currentStatusState, "opening", StringComparison.OrdinalIgnoreCase)
+                ? "Pause"
+                : "Play";
         }
 
         private string FormatScheduledIdleStatus(ScheduledPlaylistItem item, ScheduleWindow window)
