@@ -123,7 +123,7 @@ namespace OmniVCamController
             hostPanel.Controls.Add(addTabButton);
             hostPanel.Controls.Add(removeTabButton);
 
-            connectionTabs.Width = 540;
+            connectionTabs.Width = 680;
             connectionTabs.Height = 28;
             connectionTabs.Dock = DockStyle.None;
             mainContentPanel.Dock = DockStyle.Fill;
@@ -480,10 +480,10 @@ namespace OmniVCamController
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
             buttons.Controls.Add(MakeButton("Ping", async (_, __) => await SendCommandAsync("PING")));
             buttons.Controls.Add(MakeButton("Play", async (_, __) => await PlayManualAsync()));
+            buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
+            buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Set video index", async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton("Set audio index", async (_, __) => await SendIndexesAsync()));
-            buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
-            buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
             buttons.Controls.Add(MakeButton("Save XML", (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton("Open playout", (_, __) => OpenPlayoutWindow()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
