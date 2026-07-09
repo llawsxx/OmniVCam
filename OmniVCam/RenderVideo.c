@@ -3335,6 +3335,8 @@ DWORD main_thread(LPVOID p) {
 	tcp_control_server control_server = { 0 };
 	inout_context* ctx = NULL;
 	int config_loaded = 0;
+	int selected_video_index = -1;
+	int selected_audio_index = -1;
 
 	if (!table) return -1;
 	if (config_path) {
@@ -3441,8 +3443,8 @@ DWORD main_thread(LPVOID p) {
 		char* acodec_str = NULL;
 		char* scodec_str = NULL;
 		char* dcodec_str = NULL;
-		int video_index_int = -1;
-		int audio_index_int = -1;
+		int video_index_int = selected_video_index;
+		int audio_index_int = selected_audio_index;
 		int analyze_duration_int = 0;
 		int probesize_int = 0;
 		int queue_left_int = -1;
@@ -3485,35 +3487,52 @@ DWORD main_thread(LPVOID p) {
 			should_open = play_filename != NULL;
 			break;
 		case TCP_CONTROL_SET_FILTER:
-			av_freep(&global_video_filter);
-			global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
-			set_input_filter(ctx, global_video_filter);
-			printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
+			if (strcmp(global_video_filter ? global_video_filter : "", command.text ? command.text : "") != 0) {
+				av_freep(&global_video_filter);
+				global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
+				set_input_filter(ctx, global_video_filter);
+				printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
+			}
 			break;
 		case TCP_CONTROL_SET_AUDIO_FILTER:
-			av_freep(&global_audio_filter);
-			global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
-			set_input_audio_filter(ctx, global_audio_filter);
-			printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
+			if (strcmp(global_audio_filter ? global_audio_filter : "", command.text ? command.text : "") != 0) {
+				av_freep(&global_audio_filter);
+				global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
+				set_input_audio_filter(ctx, global_audio_filter);
+				printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
+			}
 			break;
 		case TCP_CONTROL_SET_SCALE_MODE:
-			ctx->output_scale_mode = (int)command.number;
-			printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
+			if (ctx->output_scale_mode != (int)command.number) {
+				ctx->output_scale_mode = (int)command.number;
+				printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
+			}
 			break;
 		case TCP_CONTROL_SET_DISPLAY_ASPECT:
-			ctx->output_display_aspect = command.aspect;
-			{
-				char aspect_text[32];
-				format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
-				printf("output display aspect: %s\n", aspect_text);
+			if (ctx->output_display_aspect.num != command.aspect.num || ctx->output_display_aspect.den != command.aspect.den) {
+				ctx->output_display_aspect = command.aspect;
+				{
+					char aspect_text[32];
+					format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
+					printf("output display aspect: %s\n", aspect_text);
+				}
 			}
-			break;		case TCP_CONTROL_SET_INDEX:
-			if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
-			if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
+			break;
+		case TCP_CONTROL_SET_INDEX:
+			if (command.video_index != selected_video_index) {
+				selected_video_index = command.video_index;
+				if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
+			}
+			if (command.audio_index != selected_audio_index) {
+				selected_audio_index = command.audio_index;
+				if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
+			}
 			break;
 		case TCP_CONTROL_SET_SHIFT:
-			ctx->output_start_shift_time = command.number * 1000LL;
-			printf("output start time shift: %I64d\n", command.number);
+			if (ctx->output_start_shift_time != command.number * 1000LL) {
+				ctx->output_start_shift_time = command.number * 1000LL;
+				printf("output start time shift: %I64d\n", command.number);
+			}
 			break;
 		case TCP_CONTROL_SEEK:
 			if (ctx->fmt_ctx) {
@@ -3553,11 +3572,13 @@ DWORD main_thread(LPVOID p) {
 			}
 			break;
 		case TCP_CONTROL_SET_HW_DECODE:
-			strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
-			printf("hw_decode:\"%s\"\n", hw_decode);
-			if (current_input) {
-				play_filename = av_strdup(current_input);
-				should_open = 1;
+			if (strcmp(hw_decode, command.text ? command.text : "") != 0) {
+				strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
+				printf("hw_decode:\"%s\"\n", hw_decode);
+				if (current_input) {
+					play_filename = av_strdup(current_input);
+					should_open = 1;
+				}
 			}
 			break;
 		case TCP_CONTROL_STOP:
