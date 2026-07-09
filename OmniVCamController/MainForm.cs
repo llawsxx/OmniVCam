@@ -21,9 +21,13 @@ namespace OmniVCamController
         private Timer statusTimer;
         private Timer playoutTimer;
 
-        private readonly List<PlaylistItem> playlist = new List<PlaylistItem>();
-        private readonly List<ScheduledPlaylistItem> scheduledPlaylist = new List<ScheduledPlaylistItem>();
-        private readonly List<FavoriteInputItem> favoriteInputs = new List<FavoriteInputItem>();
+        private readonly List<ConnectionTabState> connectionStates = new List<ConnectionTabState>();
+        private ConnectionTabState activeState;
+        private bool switchingConnectionTab;
+
+        private List<PlaylistItem> playlist = new List<PlaylistItem>();
+        private List<ScheduledPlaylistItem> scheduledPlaylist = new List<ScheduledPlaylistItem>();
+        private List<FavoriteInputItem> favoriteInputs = new List<FavoriteInputItem>();
         private readonly Random random = new Random();
         private int currentIndex = -1;
         private int currentScheduledIndex = -1;
@@ -53,9 +57,8 @@ namespace OmniVCamController
         {
             InitializeComponent();
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            BuildManualPanel(rootSplitContainer.Panel1);
+            BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
-            rootSplitContainer.Panel2Collapsed = true;
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
             scaleModeBox.Items.AddRange(new object[] { "letterbox", "fill" });
@@ -74,6 +77,7 @@ namespace OmniVCamController
             scheduleDateTimePicker.Value = DateTime.Now.AddMinutes(1);
             scheduleTimePicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
             scheduleEndPicker.Value = DateTime.Now.AddMinutes(31);
+            InitializeConnectionTabs();
             scheduleEndBox.CheckedChanged += (_, __) => UpdateScheduleEndControls();
             LoadAutoConfig();
             UpdateScheduleEndControls();
@@ -86,8 +90,324 @@ namespace OmniVCamController
             {
                 closingMainForm = true;
                 if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
+                SaveActiveConnectionState();
                 SaveAutoConfig();
             };
+        }
+
+        private void InitializeConnectionTabs()
+        {
+            Controls.Remove(mainContentPanel);
+            Controls.Remove(connectionTabs);
+
+            var shell = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var hostPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(4, 3, 4, 0)
+            };
+            hostPanel.Controls.Add(connectionTabs);
+            hostPanel.Controls.Add(addTabButton);
+            hostPanel.Controls.Add(removeTabButton);
+
+            connectionTabs.Width = 540;
+            connectionTabs.Height = 28;
+            connectionTabs.Dock = DockStyle.None;
+            mainContentPanel.Dock = DockStyle.Fill;
+            shell.Controls.Add(hostPanel, 0, 0);
+            shell.Controls.Add(mainContentPanel, 0, 1);
+            Controls.Add(shell);
+
+            addTabButton.Click += (_, __) => AddConnectionTab(null, true);
+            removeTabButton.Click += (_, __) => RemoveCurrentConnectionTab();
+            connectionTabs.SelectedIndexChanged += (_, __) => SwitchToSelectedConnectionTab();
+
+            AddConnectionTab(CreateDefaultConnectionState(), true);
+        }
+
+        private ConnectionTabState CreateDefaultConnectionState()
+        {
+            return new ConnectionTabState
+            {
+                Name = "OmniVCam",
+                Host = hostBox.Text,
+                Port = portBox.Value,
+                Input = inputBox.Text,
+                Title = titleBox.Text,
+                Options = optionsBox.Text,
+                HwDecode = hwDecodeBox.Text,
+                ScaleMode = scaleModeBox.Text,
+                DisplayAspect = displayAspectBox.Text,
+                VideoFilter = videoFilterBox.Text,
+                AudioFilter = audioFilterBox.Text,
+                VideoIndex = videoIndexBox.Value,
+                AudioIndex = audioIndexBox.Value,
+                Shift = shiftBox.Value,
+                Seek = seekBox.Value,
+                ByteSeek = byteSeekBox.Checked,
+                WriteNowPlayingXml = writeNowPlayingXmlBox.Checked,
+                PlayoutMode = playoutModeBox.Text,
+                AutoAdvance = autoAdvanceBox.Checked,
+                ScheduledStartEnabled = scheduledStartBox.Checked,
+                ScheduledStart = scheduledStartPicker.Value,
+                ScheduleType = scheduleTypeBox.Text,
+                ScheduleDateTime = scheduleDateTimePicker.Value,
+                ScheduleTime = scheduleTimePicker.Value,
+                ScheduleEndEnabled = scheduleEndBox.Checked,
+                ScheduleEnd = scheduleEndPicker.Value,
+                ScheduledTitle = scheduledTitleBox.Text,
+                ScheduledOptions = scheduledOptionsBox.Text,
+                ScheduleEndAction = scheduleEndActionBox.Text,
+                ScheduleStartAction = scheduleStartActionBox.Text,
+                WeekDays = GetSelectedWeekDays(),
+                CurrentStatusState = currentStatusState,
+                CurrentStatusInput = currentStatusInput,
+                ScheduledSlotEndAt = scheduledSlotEndAt,
+                CurrentStartedAt = currentStartedAt,
+                PendingSeekUntil = pendingSeekUntil,
+                LastAutoAdvanceAt = lastAutoAdvanceAt
+            };
+        }
+
+        private void AddConnectionTab(ConnectionTabState state, bool select)
+        {
+            if (state == null)
+            {
+                SaveActiveConnectionState();
+                state = CreateDefaultConnectionState();
+                state.Name = "OmniVCam";
+                state.Port = connectionStates.Count == 0 ? portBox.Value : connectionStates[connectionStates.Count - 1].Port + 1;
+            }
+
+            connectionStates.Add(state);
+            var page = new TabPage(state.Name) { Tag = state };
+            connectionTabs.TabPages.Add(page);
+            UpdateConnectionTabTitle(state);
+            if (select) connectionTabs.SelectedTab = page;
+            removeTabButton.Enabled = connectionStates.Count > 1;
+        }
+
+        private void RemoveCurrentConnectionTab()
+        {
+            if (connectionStates.Count <= 1 || connectionTabs.SelectedTab == null) return;
+            SaveActiveConnectionState();
+            var state = connectionTabs.SelectedTab.Tag as ConnectionTabState;
+            int index = connectionTabs.SelectedIndex;
+            if (state != null) connectionStates.Remove(state);
+            connectionTabs.TabPages.RemoveAt(index);
+            connectionTabs.SelectedIndex = Math.Max(0, Math.Min(index, connectionTabs.TabPages.Count - 1));
+            removeTabButton.Enabled = connectionStates.Count > 1;
+            SwitchToSelectedConnectionTab();
+        }
+
+        private void SwitchToSelectedConnectionTab()
+        {
+            if (switchingConnectionTab || connectionTabs.SelectedTab == null) return;
+            switchingConnectionTab = true;
+            try
+            {
+                if (activeState != null) SaveActiveConnectionState();
+                activeState = connectionTabs.SelectedTab.Tag as ConnectionTabState;
+                if (activeState == null) return;
+                LoadConnectionStateToControls(activeState);
+            }
+            finally
+            {
+                switchingConnectionTab = false;
+            }
+        }
+
+        private void SaveActiveConnectionState()
+        {
+            if (activeState == null) return;
+            activeState.Host = hostBox.Text;
+            activeState.Port = portBox.Value;
+            activeState.Input = inputBox.Text;
+            activeState.Title = titleBox.Text;
+            activeState.Options = optionsBox.Text;
+            activeState.HwDecode = hwDecodeBox.Text;
+            activeState.ScaleMode = scaleModeBox.Text;
+            activeState.DisplayAspect = displayAspectBox.Text;
+            activeState.VideoFilter = videoFilterBox.Text;
+            activeState.AudioFilter = audioFilterBox.Text;
+            activeState.VideoIndex = videoIndexBox.Value;
+            activeState.AudioIndex = audioIndexBox.Value;
+            activeState.Shift = shiftBox.Value;
+            activeState.Seek = seekBox.Value;
+            activeState.ByteSeek = byteSeekBox.Checked;
+            activeState.WriteNowPlayingXml = writeNowPlayingXmlBox.Checked;
+            activeState.PlayoutMode = playoutModeBox.Text;
+            activeState.AutoAdvance = autoAdvanceBox.Checked;
+            activeState.ScheduledStartEnabled = scheduledStartBox.Checked;
+            activeState.ScheduledStart = scheduledStartPicker.Value;
+            activeState.ScheduleType = scheduleTypeBox.Text;
+            activeState.ScheduleDateTime = scheduleDateTimePicker.Value;
+            activeState.ScheduleTime = scheduleTimePicker.Value;
+            activeState.ScheduleEndEnabled = scheduleEndBox.Checked;
+            activeState.ScheduleEnd = scheduleEndPicker.Value;
+            activeState.ScheduledTitle = scheduledTitleBox.Text;
+            activeState.ScheduledOptions = scheduledOptionsBox.Text;
+            activeState.ScheduleEndAction = scheduleEndActionBox.Text;
+            activeState.ScheduleStartAction = scheduleStartActionBox.Text;
+            activeState.WeekDays = GetSelectedWeekDays();
+            activeState.Playlist = playlist;
+            activeState.ScheduledPlaylist = scheduledPlaylist;
+            activeState.FavoriteInputs = favoriteInputs;
+            activeState.CurrentIndex = currentIndex;
+            activeState.CurrentScheduledIndex = currentScheduledIndex;
+            activeState.PlayoutRunning = playoutRunning;
+            activeState.PlayingScheduled = playingScheduled;
+            activeState.WaitingForScheduledStart = waitingForScheduledStart;
+            activeState.ScheduledSlotEndAt = scheduledSlotEndAt;
+            activeState.CurrentStartedAt = currentStartedAt;
+            activeState.CurrentPositionSeconds = currentPositionSeconds;
+            activeState.CurrentDurationSeconds = currentDurationSeconds;
+            activeState.CurrentSizeBytes = currentSizeBytes;
+            activeState.CurrentStatusState = currentStatusState;
+            activeState.CurrentStatusInput = currentStatusInput;
+            activeState.AdvancingPlayout = advancingPlayout;
+            activeState.LastAutoAdvanceAt = lastAutoAdvanceAt;
+            activeState.PendingSeekSeconds = pendingSeekSeconds;
+            activeState.PendingSeekUntil = pendingSeekUntil;
+            activeState.ProgressValue = progressBar.Value;
+            activeState.LogText = logBox.Text;
+            activeState.SelectedPlaylistIndices = GetSelectedIndices(playlistView);
+            activeState.SelectedScheduledPlaylistIndices = GetSelectedIndices(scheduledPlaylistView);
+            activeState.SelectedFavoriteInputIndices = GetSelectedIndices(favoriteInputView);
+            UpdateConnectionTabTitle(activeState);
+        }
+
+        private void LoadConnectionStateToControls(ConnectionTabState state)
+        {
+            controlsReady = false;
+            playlist = state.Playlist;
+            scheduledPlaylist = state.ScheduledPlaylist;
+            favoriteInputs = state.FavoriteInputs;
+            currentIndex = state.CurrentIndex;
+            currentScheduledIndex = state.CurrentScheduledIndex;
+            playoutRunning = state.PlayoutRunning;
+            playingScheduled = state.PlayingScheduled;
+            waitingForScheduledStart = state.WaitingForScheduledStart;
+            scheduledSlotEndAt = state.ScheduledSlotEndAt;
+            currentStartedAt = state.CurrentStartedAt;
+            currentPositionSeconds = state.CurrentPositionSeconds;
+            currentDurationSeconds = state.CurrentDurationSeconds;
+            currentSizeBytes = state.CurrentSizeBytes;
+            currentStatusState = state.CurrentStatusState;
+            currentStatusInput = state.CurrentStatusInput;
+            advancingPlayout = state.AdvancingPlayout;
+            lastAutoAdvanceAt = state.LastAutoAdvanceAt;
+            pendingSeekSeconds = state.PendingSeekSeconds;
+            pendingSeekUntil = state.PendingSeekUntil;
+
+            hostBox.Text = state.Host;
+            portBox.Value = Clamp(state.Port, portBox.Minimum, portBox.Maximum);
+            inputBox.Text = state.Input;
+            titleBox.Text = state.Title;
+            optionsBox.Text = state.Options;
+            hwDecodeBox.Text = state.HwDecode;
+            if (scaleModeBox.Items.Contains(state.ScaleMode)) scaleModeBox.Text = state.ScaleMode;
+            displayAspectBox.Text = state.DisplayAspect;
+            videoFilterBox.Text = state.VideoFilter;
+            audioFilterBox.Text = state.AudioFilter;
+            videoIndexBox.Value = Clamp(state.VideoIndex, videoIndexBox.Minimum, videoIndexBox.Maximum);
+            audioIndexBox.Value = Clamp(state.AudioIndex, audioIndexBox.Minimum, audioIndexBox.Maximum);
+            shiftBox.Value = Clamp(state.Shift, shiftBox.Minimum, shiftBox.Maximum);
+            seekBox.Value = Clamp(state.Seek, seekBox.Minimum, seekBox.Maximum);
+            byteSeekBox.Checked = state.ByteSeek;
+            writeNowPlayingXmlBox.Checked = state.WriteNowPlayingXml;
+            if (playoutModeBox.Items.Contains(state.PlayoutMode)) playoutModeBox.Text = state.PlayoutMode;
+            autoAdvanceBox.Checked = state.AutoAdvance;
+            scheduledStartBox.Checked = state.ScheduledStartEnabled;
+            scheduledStartPicker.Value = ClampDateTimePicker(scheduledStartPicker, state.ScheduledStart);
+            if (scheduleTypeBox.Items.Contains(state.ScheduleType)) scheduleTypeBox.Text = state.ScheduleType;
+            scheduleDateTimePicker.Value = ClampDateTimePicker(scheduleDateTimePicker, state.ScheduleDateTime);
+            scheduleTimePicker.Value = ClampDateTimePicker(scheduleTimePicker, state.ScheduleTime);
+            scheduleEndBox.Checked = state.ScheduleEndEnabled;
+            scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, state.ScheduleEnd);
+            scheduledTitleBox.Text = state.ScheduledTitle;
+            scheduledOptionsBox.Text = state.ScheduledOptions;
+            if (scheduleEndActionBox.Items.Contains(state.ScheduleEndAction)) scheduleEndActionBox.Text = state.ScheduleEndAction;
+            if (scheduleStartActionBox.Items.Contains(state.ScheduleStartAction)) scheduleStartActionBox.Text = state.ScheduleStartAction;
+            SetSelectedWeekDays(state.WeekDays);
+            logBox.Text = state.LogText;
+            positionLabel.Text = FormatSeconds(currentPositionSeconds) + " / " + (currentDurationSeconds > 0 ? FormatSeconds(currentDurationSeconds) : "--:--:--");
+            progressBar.Value = Math.Max(progressBar.Minimum, Math.Min(progressBar.Maximum, state.ProgressValue));
+            controlsReady = true;
+
+            RefreshPlaylistView();
+            RefreshScheduledPlaylistView();
+            RefreshFavoriteInputView();
+            RestoreSelectedIndices(playlistView, state.SelectedPlaylistIndices);
+            RestoreSelectedIndices(scheduledPlaylistView, state.SelectedScheduledPlaylistIndices);
+            RestoreSelectedIndices(favoriteInputView, state.SelectedFavoriteInputIndices);
+            inputBox.Text = state.Input;
+            titleBox.Text = state.Title;
+            optionsBox.Text = state.Options;
+            scheduledTitleBox.Text = state.ScheduledTitle;
+            scheduledOptionsBox.Text = state.ScheduledOptions;
+            UpdateScheduleEndControls();
+            UpdatePlayoutStatusLabel();
+            UpdatePlayoutTimerState();
+            UpdateConnectionTabTitle(state);
+        }
+
+        private static List<int> GetSelectedIndices(ListView view)
+        {
+            return view.SelectedIndices.Cast<int>().ToList();
+        }
+
+        private static void RestoreSelectedIndices(ListView view, List<int> indices)
+        {
+            foreach (ListViewItem item in view.Items) item.Selected = false;
+            if (indices == null) return;
+            foreach (int index in indices)
+            {
+                if (index >= 0 && index < view.Items.Count) view.Items[index].Selected = true;
+            }
+            if (indices.Count > 0 && indices[0] >= 0 && indices[0] < view.Items.Count) view.Items[indices[0]].EnsureVisible();
+        }
+
+        private string GetConnectionTabTitle(ConnectionTabState state)
+        {
+            string endpoint = state.Host + ":" + state.Port.ToString("0");
+            string baseName = string.IsNullOrWhiteSpace(state.Name) ? endpoint : state.Name;
+            int marker = baseName.IndexOf(" [", StringComparison.Ordinal);
+            if (marker >= 0) baseName = baseName.Substring(0, marker);
+            return baseName;
+        }
+
+        private void UpdateConnectionTabTitle(ConnectionTabState state)
+        {
+            TabPage page = connectionTabs.TabPages.Cast<TabPage>().FirstOrDefault(tab => ReferenceEquals(tab.Tag, state));
+            if (page == null) return;
+            string endpoint = state.Host + ":" + state.Port.ToString("0");
+            page.Text = GetConnectionTabTitle(state) + " [" + endpoint + "]";
+        }
+
+        private void UpdatePlayoutTimerState()
+        {
+            bool anyRunning = connectionStates.Any(state => state.PlayoutRunning) || playoutRunning;
+            if (anyRunning)
+            {
+                if (!playoutTimer.Enabled) playoutTimer.Start();
+            }
+            else if (playoutTimer.Enabled)
+            {
+                playoutTimer.Stop();
+            }
         }
 
         private void BuildManualPanel(Control parent)
@@ -105,6 +425,14 @@ namespace OmniVCamController
             root.Controls.Add(grid, 0, 0);
 
             AddRow(grid, "Host", hostBox, "Port", portBox);
+            hostBox.Leave += (_, __) =>
+            {
+                SaveActiveConnectionState();
+            };
+            portBox.ValueChanged += (_, __) =>
+            {
+                if (controlsReady) SaveActiveConnectionState();
+            };
             AddWideRow(grid, "Input", CreateInputPicker());
             AddWideRow(grid, "Title", titleBox);
             AddWideRow(grid, "Options", optionsBox);
@@ -749,6 +1077,7 @@ namespace OmniVCamController
 
         private void LoadSelectedFavoriteInputToInputs()
         {
+            if (switchingConnectionTab) return;
             if (favoriteInputView.SelectedIndices.Count != 1) return;
             int index = favoriteInputView.SelectedIndices[0];
             if (index < 0 || index >= favoriteInputs.Count) return;
@@ -941,6 +1270,7 @@ namespace OmniVCamController
 
         private void LoadSelectedScheduledItemToInputs()
         {
+            if (switchingConnectionTab) return;
             if (scheduledPlaylistView.SelectedIndices.Count != 1) return;
             int index = scheduledPlaylistView.SelectedIndices[0];
             if (index < 0 || index >= scheduledPlaylist.Count) return;
@@ -1051,6 +1381,7 @@ namespace OmniVCamController
 
         private void LoadSelectedPlaylistItemToInputs()
         {
+            if (switchingConnectionTab) return;
             if (playlistView.SelectedIndices.Count != 1) return;
             int index = playlistView.SelectedIndices[0];
             if (index < 0 || index >= playlist.Count) return;
@@ -1149,13 +1480,14 @@ namespace OmniVCamController
 
         private void SetPlayoutTimerRunning(bool running)
         {
+            if (activeState != null) activeState.PlayoutRunning = running;
             if (running)
             {
                 if (!playoutTimer.Enabled) playoutTimer.Start();
             }
-            else if (playoutTimer.Enabled)
+            else
             {
-                playoutTimer.Stop();
+                UpdatePlayoutTimerState();
             }
         }
 
@@ -1436,53 +1768,11 @@ namespace OmniVCamController
         {
             try
             {
+                SaveActiveConnectionState();
                 var document = new XDocument(
                     new XElement("OmniVCamController",
-                        new XElement("Settings",
-                            new XAttribute("host", hostBox.Text),
-                            new XAttribute("port", portBox.Value),
-                            new XAttribute("input", inputBox.Text),
-                            new XAttribute("title", titleBox.Text),
-                            new XAttribute("options", optionsBox.Text),
-                            new XAttribute("hwDecode", hwDecodeBox.Text),
-                            new XAttribute("scaleMode", scaleModeBox.Text),
-                            new XAttribute("displayAspect", displayAspectBox.Text),
-                            new XAttribute("videoFilter", videoFilterBox.Text),
-                            new XAttribute("audioFilter", audioFilterBox.Text),
-                            new XAttribute("videoIndex", videoIndexBox.Value),
-                            new XAttribute("audioIndex", audioIndexBox.Value),
-                            new XAttribute("shift", shiftBox.Value),
-                            new XAttribute("seek", seekBox.Value),
-                            new XAttribute("byteSeek", byteSeekBox.Checked ? "1" : "0"),
-                            new XAttribute("writeNowPlayingXml", writeNowPlayingXmlBox.Checked ? "1" : "0"),
-                            new XAttribute("playoutMode", playoutModeBox.Text),
-                            new XAttribute("scheduledStart", scheduledStartPicker.Value.ToString("HH:mm:ss"))),
-                        new XElement("Playlist",
-                            playlist.Select(item => new XElement("Item",
-                                new XAttribute("path", item.Path),
-                                new XAttribute("title", item.Title),
-                                new XAttribute("durationSeconds", item.DurationSeconds),
-                                new XAttribute("options", item.Options),
-                                new XAttribute("isBumper", item.IsBumper ? "1" : "0")))),
-                        new XElement("ScheduledPlaylist",
-                            scheduledPlaylist.Select(item => new XElement("Item",
-                                new XAttribute("path", item.Path),
-                                new XAttribute("title", item.Title),
-                                new XAttribute("durationSeconds", item.DurationSeconds),
-                                new XAttribute("options", item.Options),
-                                new XAttribute("scheduleKind", item.ScheduleKind),
-                                new XAttribute("startAt", item.StartAt.ToString("o")),
-                                new XAttribute("weeklyTime", item.WeeklyTime.ToString()),
-                                new XAttribute("weekDays", item.WeekDays),
-                                new XAttribute("hasEndTime", item.HasEndTime ? "1" : "0"),
-                                new XAttribute("endAt", item.EndAt.ToString("o")),
-                                new XAttribute("endAction", item.EndAction),
-                                new XAttribute("startAction", item.StartAction)))),
-                        new XElement("FavoriteInputs",
-                            favoriteInputs.Select(item => new XElement("Item",
-                                new XAttribute("input", item.Input),
-                                new XAttribute("title", item.Title),
-                                new XAttribute("options", item.Options))))));
+                        new XAttribute("selectedTab", Math.Max(0, connectionTabs.SelectedIndex)),
+                        new XElement("Tabs", connectionStates.Select(SaveConnectionTabElement))));
 
                 document.Save(GetAutoConfigPath());
             }
@@ -1492,6 +1782,69 @@ namespace OmniVCamController
             }
         }
 
+        private XElement SaveConnectionTabElement(ConnectionTabState state)
+        {
+            return new XElement("Tab",
+                new XAttribute("name", GetConnectionTabTitle(state)),
+                new XElement("Settings",
+                    new XAttribute("host", state.Host),
+                    new XAttribute("port", state.Port),
+                    new XAttribute("input", state.Input),
+                    new XAttribute("title", state.Title),
+                    new XAttribute("options", state.Options),
+                    new XAttribute("hwDecode", state.HwDecode),
+                    new XAttribute("scaleMode", state.ScaleMode),
+                    new XAttribute("displayAspect", state.DisplayAspect),
+                    new XAttribute("videoFilter", state.VideoFilter),
+                    new XAttribute("audioFilter", state.AudioFilter),
+                    new XAttribute("videoIndex", state.VideoIndex),
+                    new XAttribute("audioIndex", state.AudioIndex),
+                    new XAttribute("shift", state.Shift),
+                    new XAttribute("seek", state.Seek),
+                    new XAttribute("byteSeek", state.ByteSeek ? "1" : "0"),
+                    new XAttribute("writeNowPlayingXml", state.WriteNowPlayingXml ? "1" : "0"),
+                    new XAttribute("playoutMode", state.PlayoutMode),
+                    new XAttribute("autoAdvance", state.AutoAdvance ? "1" : "0"),
+                    new XAttribute("scheduledStartEnabled", state.ScheduledStartEnabled ? "1" : "0"),
+                    new XAttribute("scheduledStart", state.ScheduledStart.ToString("HH:mm:ss")),
+                    new XAttribute("scheduleType", state.ScheduleType),
+                    new XAttribute("scheduleDateTime", state.ScheduleDateTime.ToString("o")),
+                    new XAttribute("scheduleTime", state.ScheduleTime.ToString("HH:mm:ss")),
+                    new XAttribute("scheduleEndEnabled", state.ScheduleEndEnabled ? "1" : "0"),
+                    new XAttribute("scheduleEnd", state.ScheduleEnd.ToString("o")),
+                    new XAttribute("scheduledTitle", state.ScheduledTitle),
+                    new XAttribute("scheduledOptions", state.ScheduledOptions),
+                    new XAttribute("scheduleEndAction", state.ScheduleEndAction),
+                    new XAttribute("scheduleStartAction", state.ScheduleStartAction),
+                    new XAttribute("weekDays", state.WeekDays)),
+                new XElement("Playlist",
+                    state.Playlist.Select(item => new XElement("Item",
+                        new XAttribute("path", item.Path),
+                        new XAttribute("title", item.Title),
+                        new XAttribute("durationSeconds", item.DurationSeconds),
+                        new XAttribute("options", item.Options),
+                        new XAttribute("isBumper", item.IsBumper ? "1" : "0")))),
+                new XElement("ScheduledPlaylist",
+                    state.ScheduledPlaylist.Select(item => new XElement("Item",
+                        new XAttribute("path", item.Path),
+                        new XAttribute("title", item.Title),
+                        new XAttribute("durationSeconds", item.DurationSeconds),
+                        new XAttribute("options", item.Options),
+                        new XAttribute("scheduleKind", item.ScheduleKind),
+                        new XAttribute("startAt", item.StartAt.ToString("o")),
+                        new XAttribute("weeklyTime", item.WeeklyTime.ToString()),
+                        new XAttribute("weekDays", item.WeekDays),
+                        new XAttribute("hasEndTime", item.HasEndTime ? "1" : "0"),
+                        new XAttribute("endAt", item.EndAt.ToString("o")),
+                        new XAttribute("endAction", item.EndAction),
+                        new XAttribute("startAction", item.StartAction)))),
+                new XElement("FavoriteInputs",
+                    state.FavoriteInputs.Select(item => new XElement("Item",
+                        new XAttribute("input", item.Input),
+                        new XAttribute("title", item.Title),
+                        new XAttribute("options", item.Options)))));
+        }
+
         private void LoadAutoConfig()
         {
             string path = GetAutoConfigPath();
@@ -1499,42 +1852,115 @@ namespace OmniVCamController
 
             try
             {
-                playlist.Clear();
-                scheduledPlaylist.Clear();
                 XDocument document = XDocument.Load(path);
                 XElement root = document.Root;
                 if (root == null) return;
+                connectionStates.Clear();
+                connectionTabs.TabPages.Clear();
 
-                XElement settings = root.Element("Settings");
-                if (settings != null) LoadSettingsElement(settings);
-
-                XElement playlistElement = root.Element("Playlist");
-                if (playlistElement != null)
+                XElement tabsElement = root.Element("Tabs");
+                if (tabsElement != null)
                 {
-                    foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
+                    foreach (XElement tabElement in tabsElement.Elements("Tab")) AddConnectionTab(LoadConnectionTabElement(tabElement), false);
+                }
+                else
+                {
+                    AddConnectionTab(LoadLegacyConnectionState(root), false);
                 }
 
-                XElement scheduledPlaylistElement = root.Element("ScheduledPlaylist");
-                if (scheduledPlaylistElement != null)
-                {
-                    foreach (XElement itemElement in scheduledPlaylistElement.Elements("Item")) LoadScheduledPlaylistElement(itemElement);
-                }
+                if (connectionStates.Count == 0) AddConnectionTab(CreateDefaultConnectionState(), false);
 
-                XElement favoriteInputsElement = root.Element("FavoriteInputs");
-                if (favoriteInputsElement != null)
-                {
-                    favoriteInputs.Clear();
-                    foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
-                }
-
-                RefreshPlaylistView();
-                RefreshScheduledPlaylistView();
-                RefreshFavoriteInputView();
+                int selectedIndex = 0;
+                int.TryParse(GetAttribute(root, "selectedTab", "0"), out selectedIndex);
+                connectionTabs.SelectedIndex = Math.Max(0, Math.Min(selectedIndex, connectionTabs.TabPages.Count - 1));
+                activeState = connectionTabs.SelectedTab.Tag as ConnectionTabState;
+                if (activeState != null) LoadConnectionStateToControls(activeState);
             }
             catch (Exception ex)
             {
                 AppendLog("Load config failed: " + ex.Message);
             }
+        }
+
+        private ConnectionTabState LoadLegacyConnectionState(XElement root)
+        {
+            var state = CreateDefaultConnectionState();
+            playlist = state.Playlist;
+            scheduledPlaylist = state.ScheduledPlaylist;
+            favoriteInputs = state.FavoriteInputs;
+
+            XElement settings = root.Element("Settings");
+            if (settings != null) LoadSettingsElement(settings);
+
+            XElement playlistElement = root.Element("Playlist");
+            if (playlistElement != null)
+            {
+                playlist.Clear();
+                foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
+            }
+
+            XElement scheduledPlaylistElement = root.Element("ScheduledPlaylist");
+            if (scheduledPlaylistElement != null)
+            {
+                scheduledPlaylist.Clear();
+                foreach (XElement itemElement in scheduledPlaylistElement.Elements("Item")) LoadScheduledPlaylistElement(itemElement);
+            }
+
+            XElement favoriteInputsElement = root.Element("FavoriteInputs");
+            if (favoriteInputsElement != null)
+            {
+                favoriteInputs.Clear();
+                foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
+            }
+
+            SaveControlsToConnectionState(state);
+            state.Name = "OmniVCam";
+            return state;
+        }
+
+        private ConnectionTabState LoadConnectionTabElement(XElement tabElement)
+        {
+            var state = CreateDefaultConnectionState();
+            state.Name = GetAttribute(tabElement, "name", state.Name);
+            playlist = state.Playlist;
+            scheduledPlaylist = state.ScheduledPlaylist;
+            favoriteInputs = state.FavoriteInputs;
+
+            XElement settings = tabElement.Element("Settings");
+            if (settings != null) LoadSettingsElement(settings);
+
+            XElement playlistElement = tabElement.Element("Playlist");
+            playlist.Clear();
+            if (playlistElement != null)
+            {
+                foreach (XElement itemElement in playlistElement.Elements("Item")) LoadPlaylistElement(itemElement);
+            }
+
+            XElement scheduledPlaylistElement = tabElement.Element("ScheduledPlaylist");
+            scheduledPlaylist.Clear();
+            if (scheduledPlaylistElement != null)
+            {
+                foreach (XElement itemElement in scheduledPlaylistElement.Elements("Item")) LoadScheduledPlaylistElement(itemElement);
+            }
+
+            XElement favoriteInputsElement = tabElement.Element("FavoriteInputs");
+            favoriteInputs.Clear();
+            if (favoriteInputsElement != null)
+            {
+                foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
+            }
+
+            SaveControlsToConnectionState(state);
+            state.Name = GetAttribute(tabElement, "name", state.Name);
+            return state;
+        }
+
+        private void SaveControlsToConnectionState(ConnectionTabState state)
+        {
+            ConnectionTabState previous = activeState;
+            activeState = state;
+            SaveActiveConnectionState();
+            activeState = previous;
         }
 
         private void LoadSettingsElement(XElement settings)
@@ -1566,6 +1992,23 @@ namespace OmniVCamController
 
             DateTime scheduled;
             if (DateTime.TryParse(GetAttribute(settings, "scheduledStart", null), out scheduled)) scheduledStartPicker.Value = scheduled;
+            autoAdvanceBox.Checked = GetAttribute(settings, "autoAdvance", autoAdvanceBox.Checked ? "1" : "0") == "1";
+            scheduledStartBox.Checked = GetAttribute(settings, "scheduledStartEnabled", scheduledStartBox.Checked ? "1" : "0") == "1";
+            string scheduleType = GetAttribute(settings, "scheduleType", scheduleTypeBox.Text);
+            if (scheduleTypeBox.Items.Contains(scheduleType)) scheduleTypeBox.Text = scheduleType;
+            DateTime dateValue;
+            if (DateTime.TryParse(GetAttribute(settings, "scheduleDateTime", null), out dateValue)) scheduleDateTimePicker.Value = ClampDateTimePicker(scheduleDateTimePicker, dateValue);
+            if (DateTime.TryParse(GetAttribute(settings, "scheduleTime", null), out dateValue)) scheduleTimePicker.Value = ClampDateTimePicker(scheduleTimePicker, dateValue);
+            scheduleEndBox.Checked = GetAttribute(settings, "scheduleEndEnabled", scheduleEndBox.Checked ? "1" : "0") == "1";
+            if (DateTime.TryParse(GetAttribute(settings, "scheduleEnd", null), out dateValue)) scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, dateValue);
+            scheduledTitleBox.Text = GetAttribute(settings, "scheduledTitle", scheduledTitleBox.Text);
+            scheduledOptionsBox.Text = GetAttribute(settings, "scheduledOptions", scheduledOptionsBox.Text);
+            string endAction = GetAttribute(settings, "scheduleEndAction", scheduleEndActionBox.Text);
+            if (scheduleEndActionBox.Items.Contains(endAction)) scheduleEndActionBox.Text = endAction;
+            string startAction = GetAttribute(settings, "scheduleStartAction", scheduleStartActionBox.Text);
+            if (scheduleStartActionBox.Items.Contains(startAction)) scheduleStartActionBox.Text = startAction;
+            int weekDays;
+            if (int.TryParse(GetAttribute(settings, "weekDays", null), out weekDays)) SetSelectedWeekDays(weekDays);
         }
 
         private void LoadPlaylistElement(XElement itemElement)
@@ -1667,9 +2110,21 @@ namespace OmniVCamController
             return Path.Combine(Application.StartupPath, AutoConfigFileName);
         }
 
-        private static string GetNowPlayingPath()
+        private string GetNowPlayingPath()
         {
-            return Path.Combine(Application.StartupPath, NowPlayingFileName);
+            if (activeState == null || connectionStates.IndexOf(activeState) <= 0) return Path.Combine(Application.StartupPath, NowPlayingFileName);
+            string fileName = "OmniVCamNowPlaying-" + SanitizeFileName(activeState.Host + "-" + activeState.Port.ToString("0")) + ".xml";
+            return Path.Combine(Application.StartupPath, fileName);
+        }
+
+        private static string SanitizeFileName(string value)
+        {
+            var builder = new StringBuilder(value.Length);
+            foreach (char ch in value)
+            {
+                builder.Append(Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch);
+            }
+            return builder.ToString();
         }
 
         private void WriteNowPlayingXml()
@@ -2347,6 +2802,65 @@ namespace OmniVCamController
             public string Input { get; set; } = string.Empty;
             public string Title { get; set; } = string.Empty;
             public string Options { get; set; } = string.Empty;
+        }
+
+        private sealed class ConnectionTabState
+        {
+            public string Name { get; set; } = string.Empty;
+            public string Host { get; set; } = "127.0.0.1";
+            public decimal Port { get; set; } = 16999;
+            public string Input { get; set; } = string.Empty;
+            public string Title { get; set; } = string.Empty;
+            public string Options { get; set; } = string.Empty;
+            public string HwDecode { get; set; } = "none";
+            public string ScaleMode { get; set; } = "letterbox";
+            public string DisplayAspect { get; set; } = "auto";
+            public string VideoFilter { get; set; } = string.Empty;
+            public string AudioFilter { get; set; } = string.Empty;
+            public decimal VideoIndex { get; set; } = -1;
+            public decimal AudioIndex { get; set; } = -1;
+            public decimal Shift { get; set; }
+            public decimal Seek { get; set; }
+            public bool ByteSeek { get; set; }
+            public bool WriteNowPlayingXml { get; set; } = true;
+            public string PlayoutMode { get; set; } = "Sequential";
+            public bool AutoAdvance { get; set; } = true;
+            public bool ScheduledStartEnabled { get; set; }
+            public DateTime ScheduledStart { get; set; } = DateTime.Now;
+            public string ScheduleType { get; set; } = "One-time";
+            public DateTime ScheduleDateTime { get; set; } = DateTime.Now;
+            public DateTime ScheduleTime { get; set; } = DateTime.Now;
+            public bool ScheduleEndEnabled { get; set; }
+            public DateTime ScheduleEnd { get; set; } = DateTime.Now.AddMinutes(30);
+            public string ScheduledTitle { get; set; } = string.Empty;
+            public string ScheduledOptions { get; set; } = string.Empty;
+            public string ScheduleEndAction { get; set; } = "Wait until end";
+            public string ScheduleStartAction { get; set; } = "Start immediately";
+            public int WeekDays { get; set; }
+            public List<PlaylistItem> Playlist { get; set; } = new List<PlaylistItem>();
+            public List<ScheduledPlaylistItem> ScheduledPlaylist { get; set; } = new List<ScheduledPlaylistItem>();
+            public List<FavoriteInputItem> FavoriteInputs { get; set; } = new List<FavoriteInputItem>();
+            public int CurrentIndex { get; set; } = -1;
+            public int CurrentScheduledIndex { get; set; } = -1;
+            public bool PlayoutRunning { get; set; }
+            public bool PlayingScheduled { get; set; }
+            public bool WaitingForScheduledStart { get; set; }
+            public DateTime ScheduledSlotEndAt { get; set; } = DateTime.MinValue;
+            public DateTime CurrentStartedAt { get; set; }
+            public long CurrentPositionSeconds { get; set; }
+            public long CurrentDurationSeconds { get; set; }
+            public long CurrentSizeBytes { get; set; }
+            public string CurrentStatusState { get; set; } = "stopped";
+            public string CurrentStatusInput { get; set; } = string.Empty;
+            public bool AdvancingPlayout { get; set; }
+            public DateTime LastAutoAdvanceAt { get; set; } = DateTime.MinValue;
+            public long PendingSeekSeconds { get; set; } = -1;
+            public DateTime PendingSeekUntil { get; set; } = DateTime.MinValue;
+            public int ProgressValue { get; set; }
+            public string LogText { get; set; } = string.Empty;
+            public List<int> SelectedPlaylistIndices { get; set; } = new List<int>();
+            public List<int> SelectedScheduledPlaylistIndices { get; set; } = new List<int>();
+            public List<int> SelectedFavoriteInputIndices { get; set; } = new List<int>();
         }
     }
 }

@@ -1513,7 +1513,7 @@ static int fill_black_rect(AVFrame* frame, int x, int y, int width, int height)
 		return av_image_fill_color(rect.data, linesizes, rect.format,
 			transparent_black, width, height, 0);
 	}
-
+	
 	return av_image_fill_black(rect.data, linesizes, rect.format,
 		desc->flags & AV_PIX_FMT_FLAG_RGB ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG,
 		width, height);

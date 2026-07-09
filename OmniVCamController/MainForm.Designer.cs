@@ -48,7 +48,10 @@ namespace OmniVCamController
         private CheckBox autoAdvanceBox;
         private CheckBox scheduledStartBox;
         private DateTimePicker scheduledStartPicker;
-        private SplitContainer rootSplitContainer;
+        private Panel mainContentPanel;
+        private TabControl connectionTabs;
+        private Button addTabButton;
+        private Button removeTabButton;
 
         private void InitializeComponent()
         {
@@ -99,7 +102,10 @@ namespace OmniVCamController
             statusTimer = new Timer();
             playoutTimer = new Timer();
 
-            rootSplitContainer = new SplitContainer();
+            mainContentPanel = new Panel();
+            connectionTabs = new TabControl();
+            addTabButton = new Button();
+            removeTabButton = new Button();
 
             ((System.ComponentModel.ISupportInitialize)(portBox)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(videoIndexBox)).BeginInit();
@@ -107,8 +113,6 @@ namespace OmniVCamController
             ((System.ComponentModel.ISupportInitialize)(shiftBox)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(seekBox)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(progressBar)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(rootSplitContainer)).BeginInit();
-            rootSplitContainer.SuspendLayout();
             SuspendLayout();
 
             Text = "OmniVCam Controller";
@@ -221,11 +225,19 @@ namespace OmniVCamController
             statusTimer.Interval = 1000;
             playoutTimer.Interval = 1000;
 
-            rootSplitContainer.Dock = DockStyle.Fill;
-            rootSplitContainer.Orientation = Orientation.Vertical;
-            rootSplitContainer.SplitterDistance = 980;
-            rootSplitContainer.Name = "rootSplitContainer";
-            Controls.Add(rootSplitContainer);
+            mainContentPanel.Dock = DockStyle.Fill;
+            mainContentPanel.Name = "mainContentPanel";
+            connectionTabs.Dock = DockStyle.Top;
+            connectionTabs.Height = 30;
+            connectionTabs.Name = "connectionTabs";
+            addTabButton.Text = "+";
+            addTabButton.Width = 28;
+            addTabButton.Height = 24;
+            removeTabButton.Text = "-";
+            removeTabButton.Width = 28;
+            removeTabButton.Height = 24;
+            Controls.Add(mainContentPanel);
+            Controls.Add(connectionTabs);
 
             ((System.ComponentModel.ISupportInitialize)(portBox)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(videoIndexBox)).EndInit();
@@ -233,8 +245,6 @@ namespace OmniVCamController
             ((System.ComponentModel.ISupportInitialize)(shiftBox)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(seekBox)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(progressBar)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(rootSplitContainer)).EndInit();
-            rootSplitContainer.ResumeLayout(false);
             ResumeLayout(false);
         }
     }
