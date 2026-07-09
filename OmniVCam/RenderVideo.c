@@ -55,7 +55,23 @@ static int inout_ctx_frame_queues_empty(inout_context* ctx)
 	return 1;
 }
 
-int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit) {
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit);
+
+static void enqueue_config_status_frame(inout_context* ctx, const char* text)
+{
+	if (!ctx || !text || !ctx->frame_queues[0]) return;
+	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
+	if (!card) return;
+	AVFrame* frame = test_card_draw_text(card, (char*)text);
+	if (frame) {
+		int exit = 0;
+		if (ctx->input_frame_id == 0) ctx->input_frame_id = av_gettime_relative();
+		frame_enqueue(ctx->frame_queues[0], frame, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &exit);
+		av_frame_free(&frame);
+	}
+	test_card_free(card);
+}
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit) {
 	int64_t start_time = av_gettime_relative();
 	int ret = 0;
 	EnterCriticalSection(&q->mutex);
@@ -2460,13 +2476,13 @@ HRESULT WINAPI output_thread(LPVOID p)
 	final_video_frame->height = ctx->output_frame_height;
 	final_video_frame->format = ctx->output_frame_format;
 
-	//TODO ÃÓ≥‰≤ Ãı
 	if (get_video_buffer(final_video_frame) < 0)
 	{
 		printf("get_video_buffer failed!\n");
 		ret = -1;
 		goto end;
 	}
+	fill_black_rect(final_video_frame, 0, 0, final_video_frame->width, final_video_frame->height);
 
 	av_channel_layout_copy(&fifo_out_audio_frame->ch_layout, &ctx->output_audio_layout);
 	fifo_out_audio_frame->format = ctx->output_audio_format;
@@ -3297,12 +3313,12 @@ DWORD main_thread(LPVOID p) {
 
 	paremeter_table_context* table = paremeter_table_alloc(48);
 	inout_options* opts = (inout_options*)p;
-	int use_fixed_frame_interval = 0;
-	int output_ajust_start_if_delay_over = 0;
+	int use_fixed_frame_interval = 1;
+	int output_ajust_start_if_delay_over = 10;
 	int output_scale_mode = OUTPUT_SCALE_MODE_LETTERBOX;
 	AVRational output_display_aspect = { 0, 0 };
-	int av_max_offset_time = 3 * 1000000;
-	int video_frame_buffer = 10, audio_frame_buffer = 50, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000;
+	int av_max_offset_time = 5 * 1000000;
+	int video_frame_buffer = 10, audio_frame_buffer = 100, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
 	int tcp_port = opts->tcp_port;
@@ -3311,12 +3327,14 @@ DWORD main_thread(LPVOID p) {
 	char* buf = NULL;
 	char time_str[20] = { 0 };
 	char str2[1024] = { 0 };
+	char config_status_text[4096] = { 0 };
 	char hw_decode[32] = "";
 	char* current_input = NULL;
 	char* global_video_filter = av_strdup("");
 	char* global_audio_filter = av_strdup("");
 	tcp_control_server control_server = { 0 };
 	inout_context* ctx = NULL;
+	int config_loaded = 0;
 
 	if (!table) return -1;
 	if (config_path) {
@@ -3325,7 +3343,7 @@ DWORD main_thread(LPVOID p) {
 	}
 
 	config_file_name = join_path(pathvar, "config.ini");
-	update_config_from_file(config_file_name, table);
+	config_loaded = update_config_from_file(config_file_name, table) >= 0;
 	paremeter_table_print(table);
 
 	if (buf = get_paremeter_table_content(table, "config", "hw_decode", FALSE)) strcpy_s(hw_decode, sizeof(hw_decode), buf);
@@ -3340,6 +3358,45 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "av_max_offset_time", FALSE)) av_max_offset_time = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "scale_mode", FALSE)) output_scale_mode = parse_output_scale_mode(buf, output_scale_mode);
 	if (buf = get_paremeter_table_content(table, "config", "display_aspect", FALSE)) output_display_aspect = parse_display_aspect(buf, output_display_aspect);
+
+	snprintf(config_status_text, sizeof(config_status_text),
+		"Open the OmniVCam Controller to control the playback\n\n"
+		"%s\n"
+		"config env: %s\n"
+		"env value: %s\n"
+		"config file: %s\n\n"
+		"Effective config values:\n"
+		"tcp_port=%d\n"
+		"hw_decode=%s\n"
+		"log_level=%d\n"
+		"video_frame_buffer=%d\n"
+		"audio_frame_buffer=%d\n"
+		"packet_queue_size=%d\n"
+		"timeout=%d\n"
+		"use_fixed_frame_interval=%d\n"
+		"ajust_start_time_if_delay_over=%d\n"
+		"av_max_offset_time=%d\n"
+		"scale_mode=%s\n"
+		"display_aspect=%s\n\n"
+		"To load config.ini, set the environment variable to the directory that contains config.ini.\n"
+		"Example: setx %s D:\\OmniVCam",
+		config_loaded ? "config.ini loaded" : "config.ini not found, using default config value",
+		config_path ? config_path : "(none)",
+		pathvar ? pathvar : "(not set)",
+		config_file_name ? config_file_name : "config.ini",
+		tcp_port,
+		hw_decode[0] ? hw_decode : "none",
+		av_log_get_level(),
+		video_frame_buffer,
+		audio_frame_buffer,
+		packet_queue_size,
+		timeout,
+		use_fixed_frame_interval,
+		output_ajust_start_if_delay_over,
+		av_max_offset_time,
+		output_scale_mode == OUTPUT_SCALE_MODE_FILL ? "fill" : "letterbox",
+		output_display_aspect.num > 0 && output_display_aspect.den > 0 ? "custom" : "auto",
+		config_path ? config_path : "OMNI_VCAM_CONFIG");
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
 	video_frame_buffer = video_frame_buffer <= 0 ? (frame_rate.num / frame_rate.den) : video_frame_buffer;
@@ -3362,6 +3419,7 @@ DWORD main_thread(LPVOID p) {
 	}
 
 	start_output(ctx);
+	enqueue_config_status_frame(ctx, config_status_text);
 	while (1) {
 		tcp_control_command command;
 		int should_open = 0;

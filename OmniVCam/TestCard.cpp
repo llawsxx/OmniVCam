@@ -508,6 +508,68 @@ public:
         DeleteObject(hBrush);
     }
 
+    AVFrame* DrawTextOnly(char* text) {
+        if (!frameBuffer || !frameBufferAligned || !swsCtx) return NULL;
+        HDC hdc = hMemDC;
+        memset(frameBuffer, 0, rowSize * height);
+
+        HFONT hFont = CreateFont(
+            28, 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Arial"
+        );
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        SetBkMode(hdc, TRANSPARENT);
+
+        if (text) {
+            std::string text2 = std::string(text);
+            std::istringstream iss(text2);
+            std::string line;
+            int lineNum = 0;
+            int lineHeight = 30;
+
+            while (std::getline(iss, line, '\n')) {
+                TextOutA(hdc, 10, 10 + lineNum * lineHeight, line.c_str(), (int)line.length());
+                lineNum++;
+            }
+        }
+
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFont);
+        memcpy(frameBufferAligned, frameBuffer, rowSize * height);
+
+        const uint8_t* srcSlice[4] = { frameBufferAligned };
+        int srcStride[4] = { rowSize };
+
+        if (outPixelFormat == AV_PIX_FMT_BGR24 || outPixelFormat == AV_PIX_FMT_0RGB32 || outPixelFormat == AV_PIX_FMT_RGB32) {
+            srcSlice[0] += rowSize * (height - 1);
+            srcStride[0] *= -1;
+        }
+
+        AVFrame* outFrame = av_frame_alloc();
+        if (outFrame) {
+            outFrame->width = width;
+            outFrame->height = height;
+            outFrame->format = outPixelFormat;
+            if (get_video_buffer(outFrame) < 0) {
+                av_frame_free(&outFrame);
+            }
+            else {
+                sws_scale(swsCtx, srcSlice, srcStride, 0, height,
+                    outFrame->data, outFrame->linesize);
+                outFrame->pts = av_rescale_q(frameCount,
+                    { fps.den, fps.num }, UNIVERSAL_TB);
+                frameCount++;
+                return outFrame;
+            }
+        }
+
+        return NULL;
+    }
     AVFrame* Draw(char* infoText) {
         if (!frameBuffer || !frameBufferAligned || !swsCtx) return NULL;
         HDC hdc = hMemDC;
@@ -635,6 +697,10 @@ void test_card_free(void* p) {
 AVFrame* test_card_draw(void* p,char* infoText) {
     TestCard* card = (TestCard*)p;
     return card->Draw(infoText);
+}
+AVFrame* test_card_draw_text(void* p, char* text) {
+    TestCard* card = (TestCard*)p;
+    return card->DrawTextOnly(text);
 }
 
 int main20() {
