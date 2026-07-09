@@ -2595,7 +2595,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 				}
 				if (ret >= 0)
 				{
-					if (audio_frame->pts != AV_NOPTS_VALUE && (ctx->output_status_time == AV_NOPTS_VALUE || audio_frame->pts >= ctx->output_status_time)) {
+					if (audio_frame->pts != AV_NOPTS_VALUE && (ctx->output_status_time == AV_NOPTS_VALUE || ctx->output_current_audio_frame_id > ctx->output_current_video_frame_id ||audio_frame->pts >= ctx->output_status_time)) {
 						ctx->output_status_time = audio_frame->pts;
 					}
 					last_audio_sync_diff = get_sync_diff(ctx, audio_frame->pts);
