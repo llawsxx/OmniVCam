@@ -49,6 +49,7 @@ namespace OmniVCamController
         private bool draggingProgress;
         private bool suppressSeekValueEvent;
         private bool controlsReady;
+        private bool syncingInitialCameraSettings;
         private Form playoutForm;
         private bool closingMainForm;
 
@@ -967,6 +968,20 @@ namespace OmniVCamController
         private async Task SendIndexesAsync()
         {
             await SendCommandAsync($"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}");
+        }
+
+        private Task SendInitialCameraSettingsAsync()
+        {
+            return SendCommandsAsync(new[]
+            {
+                "SET_FILTER " + videoFilterBox.Text.Trim(),
+                "SET_AUDIO_FILTER " + audioFilterBox.Text.Trim(),
+                $"SET_HW_DECODE {hwDecodeBox.Text.Trim()}",
+                $"SET_SCALE_MODE {scaleModeBox.Text.Trim()}",
+                $"SET_DISPLAY_ASPECT {displayAspectBox.Text.Trim()}",
+                $"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}",
+                $"SET_SHIFT {(long)shiftBox.Value}"
+            });
         }
 
         private async Task PlayInputAsync(string input, string options)
@@ -2313,6 +2328,40 @@ namespace OmniVCamController
             AppendLog($"> {command}\r\n< {reply}");
         }
 
+        private async Task SendCommandsAsync(IEnumerable<string> commands)
+        {
+            var commandList = commands.Where(command => command != null).ToList();
+            if (commandList.Count == 0) return;
+
+            var log = new StringBuilder();
+            try
+            {
+                using (var client = new TcpClient())
+                {
+                    await client.ConnectAsync(hostBox.Text.Trim(), (int)portBox.Value);
+                    using (NetworkStream stream = client.GetStream())
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        string payload = string.Join("\n", commandList) + "\n";
+                        byte[] data = Encoding.UTF8.GetBytes(payload);
+                        await stream.WriteAsync(data, 0, data.Length);
+                        foreach (string command in commandList)
+                        {
+                            string reply = await reader.ReadLineAsync();
+                            log.Append("> ").Append(command).Append("\r\n< ").Append(reply ?? "ERR no reply").Append("\r\n");
+                            if (reply == null || !reply.StartsWith("OK", StringComparison.OrdinalIgnoreCase)) break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Append("< ERR ").Append(ex.Message).Append("\r\n");
+            }
+
+            AppendLog(log.ToString().TrimEnd());
+        }
+
         private async Task<string> SendRawCommandAsync(string command)
         {
             try
@@ -2361,6 +2410,18 @@ namespace OmniVCamController
                 currentSizeBytes = ParseStatusLong(reply, "size=");
                 currentStatusState = ParseStatusString(reply, "state=");
                 currentStatusInput = ParseStatusString(reply, "input=");
+                if (!syncingInitialCameraSettings && ParseStatusLong(reply, "controller_connected=") == 0)
+                {
+                    syncingInitialCameraSettings = true;
+                    try
+                    {
+                        await SendInitialCameraSettingsAsync();
+                    }
+                    finally
+                    {
+                        syncingInitialCameraSettings = false;
+                    }
+                }
                 UpdatePlayoutStatusLabel();
                 UpdatePlaylistStatusView();
                 string durationText = currentDurationSeconds > 0 ? TimeSpan.FromSeconds(currentDurationSeconds).ToString(@"hh\:mm\:ss") : "--:--:--";

@@ -3016,6 +3016,7 @@ typedef struct tcp_control_server {
 	int port;
 	int exit;
 	int started;
+	int controller_connected;
 	int64_t status_time;
 	int64_t status_duration;
 	int64_t status_size;
@@ -3128,7 +3129,7 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
 		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->status_input);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
@@ -3253,9 +3254,23 @@ static DWORD tcp_control_thread(LPVOID p)
 			n = recv(client, buffer, TCP_CONTROL_BUFFER_SIZE - 1, 0);
 			if (n <= 0) break;
 			buffer[n] = '\0';
-			tcp_control_parse_line(server, buffer, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
-			if (cmd.type != TCP_CONTROL_NONE) tcp_control_push(server, &cmd);
-			send(client, reply, (int)strlen(reply), 0);
+			char* line = buffer;
+			while (line && *line) {
+				char* next = strpbrk(line, "\r\n");
+				if (next) {
+					*next++ = '\0';
+					while (*next == '\r' || *next == '\n') next++;
+				}
+				tcp_control_parse_line(server, line, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
+				if (cmd.type != TCP_CONTROL_NONE) {
+					EnterCriticalSection(&server->mutex);
+					server->controller_connected = 1;
+					LeaveCriticalSection(&server->mutex);
+					tcp_control_push(server, &cmd);
+				}
+				send(client, reply, (int)strlen(reply), 0);
+				line = next;
+			}
 		}
 		av_free(buffer);
 		av_free(reply);
@@ -3362,7 +3377,7 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "display_aspect", FALSE)) output_display_aspect = parse_display_aspect(buf, output_display_aspect);
 
 	snprintf(config_status_text, sizeof(config_status_text),
-		"Open the OmniVCam Controller to control the playback\n\n"
+		"Open the OmniVCam Controller to control the playback.\n\n"
 		"%s\n"
 		"config env: %s\n"
 		"env value: %s\n"
@@ -3423,266 +3438,273 @@ DWORD main_thread(LPVOID p) {
 	start_output(ctx);
 	enqueue_config_status_frame(ctx, config_status_text);
 	while (1) {
-		tcp_control_command command;
-		int should_open = 0;
-		char* play_filename = NULL;
-		AVDictionary* play_dict = NULL;
-		AVDictionary* temp_dict = NULL;
-		char* format = NULL;
-		char* video_filter = NULL;
-		char* audio_filter = NULL;
-		char* video_index = NULL;
-		char* audio_index = NULL;
-		char* seek_time = NULL;
-		char* analyze_duration = NULL;
-		char* probesize = NULL;
-		char* queue_left = NULL;
-		char* queue_right = NULL;
-		char* queue_center = NULL;
-		char* vcodec_str = NULL;
-		char* acodec_str = NULL;
-		char* scodec_str = NULL;
-		char* dcodec_str = NULL;
-		int video_index_int = selected_video_index;
-		int audio_index_int = selected_audio_index;
-		int analyze_duration_int = 0;
-		int probesize_int = 0;
-		int queue_left_int = -1;
-		int queue_right_int = -1;
-		int queue_center_int = -1;
+		int processed_command = 0;
+		int should_exit_main = 0;
+		while (1) {
+			tcp_control_command command;
+			int should_open = 0;
+			char* play_filename = NULL;
+			AVDictionary* play_dict = NULL;
+			AVDictionary* temp_dict = NULL;
+			char* format = NULL;
+			char* video_filter = NULL;
+			char* audio_filter = NULL;
+			char* video_index = NULL;
+			char* audio_index = NULL;
+			char* seek_time = NULL;
+			char* analyze_duration = NULL;
+			char* probesize = NULL;
+			char* queue_left = NULL;
+			char* queue_right = NULL;
+			char* queue_center = NULL;
+			char* vcodec_str = NULL;
+			char* acodec_str = NULL;
+			char* scodec_str = NULL;
+			char* dcodec_str = NULL;
+			int video_index_int = selected_video_index;
+			int audio_index_int = selected_audio_index;
+			int analyze_duration_int = 0;
+			int probesize_int = 0;
+			int queue_left_int = -1;
+			int queue_right_int = -1;
+			int queue_center_int = -1;
 
-		if (opts->send_exit) {
-			ctx->output_exit = opts->send_exit;
-			ctx->force_exit = opts->send_exit;
-			break;
-		}
-		if (is_output_exit(ctx)) break;
+			if (opts->send_exit) {
+				ctx->output_exit = opts->send_exit;
+				ctx->force_exit = opts->send_exit;
+				should_exit_main = 1;
+				break;
+			}
+			if (is_output_exit(ctx)) {
+				should_exit_main = 1;
+				break;
+			}
 
-		EnterCriticalSection(&control_server.mutex);
-		control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
-		control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
-		control_server.status_size = (ctx->fmt_ctx && ctx->fmt_ctx->pb) ? avio_size(ctx->fmt_ctx->pb) : 0;
-		control_server.scale_mode = ctx->output_scale_mode;
-		control_server.display_aspect = ctx->output_display_aspect;
-		strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
-		if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
-		else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
-		LeaveCriticalSection(&control_server.mutex);
-
-		memset(&command, 0, sizeof(command));
-		if (!tcp_control_pop(&control_server, &command)) {
-			av_usleep(100000);
-			continue;
-		}
-
-		switch (command.type) {
-		case TCP_CONTROL_PLAY:
-			av_freep(&current_input);
-			current_input = av_strdup(command.text);
 			EnterCriticalSection(&control_server.mutex);
-			strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
+			control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
+			control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
+			control_server.status_size = (ctx->fmt_ctx && ctx->fmt_ctx->pb) ? avio_size(ctx->fmt_ctx->pb) : 0;
+			control_server.scale_mode = ctx->output_scale_mode;
+			control_server.display_aspect = ctx->output_display_aspect;
 			strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+			if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
+			else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
 			LeaveCriticalSection(&control_server.mutex);
-			play_filename = command.text ? av_strdup(command.text) : NULL;
-			should_open = play_filename != NULL;
-			break;
-		case TCP_CONTROL_SET_FILTER:
-			if (strcmp(global_video_filter ? global_video_filter : "", command.text ? command.text : "") != 0) {
-				av_freep(&global_video_filter);
-				global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
-				set_input_filter(ctx, global_video_filter);
-				printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
-			}
-			break;
-		case TCP_CONTROL_SET_AUDIO_FILTER:
-			if (strcmp(global_audio_filter ? global_audio_filter : "", command.text ? command.text : "") != 0) {
-				av_freep(&global_audio_filter);
-				global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
-				set_input_audio_filter(ctx, global_audio_filter);
-				printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
-			}
-			break;
-		case TCP_CONTROL_SET_SCALE_MODE:
-			if (ctx->output_scale_mode != (int)command.number) {
-				ctx->output_scale_mode = (int)command.number;
-				printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
-			}
-			break;
-		case TCP_CONTROL_SET_DISPLAY_ASPECT:
-			if (ctx->output_display_aspect.num != command.aspect.num || ctx->output_display_aspect.den != command.aspect.den) {
-				ctx->output_display_aspect = command.aspect;
-				{
-					char aspect_text[32];
-					format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
-					printf("output display aspect: %s\n", aspect_text);
+			memset(&command, 0, sizeof(command));
+			if (!tcp_control_pop(&control_server, &command)) break;
+			processed_command = 1;
+
+			switch (command.type) {
+			case TCP_CONTROL_PLAY:
+				av_freep(&current_input);
+				current_input = av_strdup(command.text);
+				EnterCriticalSection(&control_server.mutex);
+				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
+				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+				LeaveCriticalSection(&control_server.mutex);
+				play_filename = command.text ? av_strdup(command.text) : NULL;
+				should_open = play_filename != NULL;
+				break;
+			case TCP_CONTROL_SET_FILTER:
+				if (strcmp(global_video_filter ? global_video_filter : "", command.text ? command.text : "") != 0) {
+					av_freep(&global_video_filter);
+					global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
+					set_input_filter(ctx, global_video_filter);
+					printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
 				}
-			}
-			break;
-		case TCP_CONTROL_SET_INDEX:
-			if (command.video_index != selected_video_index) {
-				selected_video_index = command.video_index;
-				if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
-			}
-			if (command.audio_index != selected_audio_index) {
-				selected_audio_index = command.audio_index;
-				if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
-			}
-			break;
-		case TCP_CONTROL_SET_SHIFT:
-			if (ctx->output_start_shift_time != command.number * 1000LL) {
-				ctx->output_start_shift_time = command.number * 1000LL;
-				printf("output start time shift: %I64d\n", command.number);
-			}
-			break;
-		case TCP_CONTROL_SEEK:
-			if (ctx->fmt_ctx) {
-				int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
-				int64_t seek_time_int64 = av_rescale_q(command.number, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
-				stop_read(ctx, 1);
-				reset_after_seek(ctx);
-				if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
-					start_read(ctx);
-					printf("seek seconds: %I64d\n", command.number);
+				break;
+			case TCP_CONTROL_SET_AUDIO_FILTER:
+				if (strcmp(global_audio_filter ? global_audio_filter : "", command.text ? command.text : "") != 0) {
+					av_freep(&global_audio_filter);
+					global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
+					set_input_audio_filter(ctx, global_audio_filter);
+					printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
 				}
-				else {
-					start_read(ctx);
-					printf("seek seconds: %I64d failed\n", command.number);
+				break;
+			case TCP_CONTROL_SET_SCALE_MODE:
+				if (ctx->output_scale_mode != (int)command.number) {
+					ctx->output_scale_mode = (int)command.number;
+					printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
 				}
-			}
-			break;
-		case TCP_CONTROL_SEEK_BYTE_PERCENT:
-			if (ctx->fmt_ctx && ctx->fmt_ctx->pb) {
-				int64_t size = avio_size(ctx->fmt_ctx->pb);
-				if (size > 0) {
-					int64_t percent = command.number;
-					if (percent < 0) percent = 0;
-					if (percent > 10000) percent = 10000;
-					int64_t target = size * percent / 10000;
+				break;
+			case TCP_CONTROL_SET_DISPLAY_ASPECT:
+				if (ctx->output_display_aspect.num != command.aspect.num || ctx->output_display_aspect.den != command.aspect.den) {
+					ctx->output_display_aspect = command.aspect;
+					{
+						char aspect_text[32];
+						format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
+						printf("output display aspect: %s\n", aspect_text);
+					}
+				}
+				break;
+			case TCP_CONTROL_SET_INDEX:
+				if (command.video_index != selected_video_index) {
+					selected_video_index = command.video_index;
+					if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
+				}
+				if (command.audio_index != selected_audio_index) {
+					selected_audio_index = command.audio_index;
+					if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
+				}
+				break;
+			case TCP_CONTROL_SET_SHIFT:
+				if (ctx->output_start_shift_time != command.number * 1000LL) {
+					ctx->output_start_shift_time = command.number * 1000LL;
+					printf("output start time shift: %I64d\n", command.number);
+				}
+				break;
+			case TCP_CONTROL_SEEK:
+				if (ctx->fmt_ctx) {
+					int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
+					int64_t seek_time_int64 = av_rescale_q(command.number, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
 					stop_read(ctx, 1);
 					reset_after_seek(ctx);
-					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, target, target, AVSEEK_FLAG_BYTE) >= 0) {
+					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
 						start_read(ctx);
-						printf("seek byte percent: %I64d\n", percent);
+						printf("seek seconds: %I64d\n", command.number);
 					}
 					else {
 						start_read(ctx);
-						printf("seek byte percent: %I64d failed\n", percent);
+						printf("seek seconds: %I64d failed\n", command.number);
 					}
 				}
-			}
-			break;
-		case TCP_CONTROL_SET_HW_DECODE:
-			if (strcmp(hw_decode, command.text ? command.text : "") != 0) {
-				strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
-				printf("hw_decode:\"%s\"\n", hw_decode);
+				break;
+			case TCP_CONTROL_SEEK_BYTE_PERCENT:
+				if (ctx->fmt_ctx && ctx->fmt_ctx->pb) {
+					int64_t size = avio_size(ctx->fmt_ctx->pb);
+					if (size > 0) {
+						int64_t percent = command.number;
+						if (percent < 0) percent = 0;
+						if (percent > 10000) percent = 10000;
+						int64_t target = size * percent / 10000;
+						stop_read(ctx, 1);
+						reset_after_seek(ctx);
+						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, target, target, AVSEEK_FLAG_BYTE) >= 0) {
+							start_read(ctx);
+							printf("seek byte percent: %I64d\n", percent);
+						}
+						else {
+							start_read(ctx);
+							printf("seek byte percent: %I64d failed\n", percent);
+						}
+					}
+				}
+				break;
+			case TCP_CONTROL_SET_HW_DECODE:
+				if (strcmp(hw_decode, command.text ? command.text : "") != 0) {
+					strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
+					printf("hw_decode:\"%s\"\n", hw_decode);
+					if (current_input) {
+						play_filename = av_strdup(current_input);
+						should_open = 1;
+					}
+				}
+				break;
+			case TCP_CONTROL_STOP:
+				stop_read(ctx, 1);
+				inout_context_reset_input(ctx);
+				av_freep(&current_input);
+				EnterCriticalSection(&control_server.mutex);
+				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
+				control_server.status_input[0] = '\0';
+				LeaveCriticalSection(&control_server.mutex);
+				break;
+			case TCP_CONTROL_REOPEN:
 				if (current_input) {
 					play_filename = av_strdup(current_input);
 					should_open = 1;
 				}
-			}
-			break;
-		case TCP_CONTROL_STOP:
-			stop_read(ctx, 1);
-			inout_context_reset_input(ctx);
-			av_freep(&current_input);
-			EnterCriticalSection(&control_server.mutex);
-			strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
-			control_server.status_input[0] = '\0';
-			LeaveCriticalSection(&control_server.mutex);
-			break;
-		case TCP_CONTROL_REOPEN:
-			if (current_input) {
-				play_filename = av_strdup(current_input);
-				should_open = 1;
-			}
-			break;
-		default:
-			break;
-		}
-
-		if (should_open && play_filename) {
-			char* tab_pos = strchr(play_filename, '\t');
-			if (tab_pos) {
-				*tab_pos = '\0';
-				av_dict_parse_string(&play_dict, tab_pos + 1, "=", ",", 0);
+				break;
+			default:
+				break;
 			}
 
-			stop_read(ctx, 1);
-			inout_context_reset_input(ctx);
-
-			if (play_dict && av_dict_copy(&temp_dict, play_dict, 0) >= 0) {
-				format = av_dict_pop_value(&temp_dict, "format");
-				video_filter = av_dict_pop_value(&temp_dict, "video_filter");
-				audio_filter = av_dict_pop_value(&temp_dict, "audio_filter");
-				video_index = av_dict_pop_value(&temp_dict, "video_index");
-				audio_index = av_dict_pop_value(&temp_dict, "audio_index");
-				seek_time = av_dict_pop_value(&temp_dict, "seek_time");
-				probesize = av_dict_pop_value(&temp_dict, "probesize");
-				analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
-				queue_left = av_dict_pop_value(&temp_dict, "queue_left");
-				queue_right = av_dict_pop_value(&temp_dict, "queue_right");
-				queue_center = av_dict_pop_value(&temp_dict, "queue_center");
-				vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
-				acodec_str = av_dict_pop_value(&temp_dict, "acodec");
-				scodec_str = av_dict_pop_value(&temp_dict, "scodec");
-				dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
-			}
-
-			if (video_index) video_index_int = atoi(video_index);
-			if (audio_index) audio_index_int = atoi(audio_index);
-			if (probesize) probesize_int = atoi(probesize);
-			if (analyze_duration) analyze_duration_int = atoi(analyze_duration);
-			if (queue_left) queue_left_int = atoi(queue_left);
-			if (queue_right) queue_right_int = atoi(queue_right);
-			if (queue_center) queue_center_int = atoi(queue_center);
-
-			if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
-				set_input_filter(ctx, video_filter ? video_filter : global_video_filter);
-				set_input_audio_filter(ctx, audio_filter ? audio_filter : global_audio_filter);
-				if (seek_time && ctx->fmt_ctx) {
-					int seek_time_int = atoi(seek_time);
-					int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
-					int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
-					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
-						printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
-					}
+			if (should_open && play_filename) {
+				char* tab_pos = strchr(play_filename, '\t');
+				if (tab_pos) {
+					*tab_pos = '\0';
+					av_dict_parse_string(&play_dict, tab_pos + 1, "=", ",", 0);
 				}
-				start_read(ctx);
-				EnterCriticalSection(&control_server.mutex);
-				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
-				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
-				LeaveCriticalSection(&control_server.mutex);
-				sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
-				printf(str2);
-			}
-			else {
-				EnterCriticalSection(&control_server.mutex);
-				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
-				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
-				LeaveCriticalSection(&control_server.mutex);
-				printf("[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
-			}
-		}
 
-		av_dict_free(&play_dict);
-		av_dict_free(&temp_dict);
-		if (format) av_free(format);
-		if (video_filter) av_free(video_filter);
-		if (audio_filter) av_free(audio_filter);
-		if (video_index) av_free(video_index);
-		if (audio_index) av_free(audio_index);
-		if (seek_time) av_free(seek_time);
-		if (analyze_duration) av_free(analyze_duration);
-		if (probesize) av_free(probesize);
-		if (queue_left) av_free(queue_left);
-		if (queue_right) av_free(queue_right);
-		if (queue_center) av_free(queue_center);
-		if (vcodec_str) av_free(vcodec_str);
-		if (acodec_str) av_free(acodec_str);
-		if (scodec_str) av_free(scodec_str);
-		if (dcodec_str) av_free(dcodec_str);
-		if (play_filename) av_free(play_filename);
-		tcp_control_command_free(&command);
+				stop_read(ctx, 1);
+				inout_context_reset_input(ctx);
+
+				if (play_dict && av_dict_copy(&temp_dict, play_dict, 0) >= 0) {
+					format = av_dict_pop_value(&temp_dict, "format");
+					video_filter = av_dict_pop_value(&temp_dict, "video_filter");
+					audio_filter = av_dict_pop_value(&temp_dict, "audio_filter");
+					video_index = av_dict_pop_value(&temp_dict, "video_index");
+					audio_index = av_dict_pop_value(&temp_dict, "audio_index");
+					seek_time = av_dict_pop_value(&temp_dict, "seek_time");
+					probesize = av_dict_pop_value(&temp_dict, "probesize");
+					analyze_duration = av_dict_pop_value(&temp_dict, "analyzeduration");
+					queue_left = av_dict_pop_value(&temp_dict, "queue_left");
+					queue_right = av_dict_pop_value(&temp_dict, "queue_right");
+					queue_center = av_dict_pop_value(&temp_dict, "queue_center");
+					vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
+					acodec_str = av_dict_pop_value(&temp_dict, "acodec");
+					scodec_str = av_dict_pop_value(&temp_dict, "scodec");
+					dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
+				}
+
+				if (video_index) video_index_int = atoi(video_index);
+				if (audio_index) audio_index_int = atoi(audio_index);
+				if (probesize) probesize_int = atoi(probesize);
+				if (analyze_duration) analyze_duration_int = atoi(analyze_duration);
+				if (queue_left) queue_left_int = atoi(queue_left);
+				if (queue_right) queue_right_int = atoi(queue_right);
+				if (queue_center) queue_center_int = atoi(queue_center);
+
+				if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
+					set_input_filter(ctx, video_filter ? video_filter : global_video_filter);
+					set_input_audio_filter(ctx, audio_filter ? audio_filter : global_audio_filter);
+					if (seek_time && ctx->fmt_ctx) {
+						int seek_time_int = atoi(seek_time);
+						int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
+						int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
+						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
+							printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
+						}
+					}
+					start_read(ctx);
+					EnterCriticalSection(&control_server.mutex);
+					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
+					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+					LeaveCriticalSection(&control_server.mutex);
+					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
+					printf(str2);
+				}
+				else {
+					EnterCriticalSection(&control_server.mutex);
+					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
+					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+					LeaveCriticalSection(&control_server.mutex);
+					printf("[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
+				}
+			}
+
+			av_dict_free(&play_dict);
+			av_dict_free(&temp_dict);
+			if (format) av_free(format);
+			if (video_filter) av_free(video_filter);
+			if (audio_filter) av_free(audio_filter);
+			if (video_index) av_free(video_index);
+			if (audio_index) av_free(audio_index);
+			if (seek_time) av_free(seek_time);
+			if (analyze_duration) av_free(analyze_duration);
+			if (probesize) av_free(probesize);
+			if (queue_left) av_free(queue_left);
+			if (queue_right) av_free(queue_right);
+			if (queue_center) av_free(queue_center);
+			if (vcodec_str) av_free(vcodec_str);
+			if (acodec_str) av_free(acodec_str);
+			if (scodec_str) av_free(scodec_str);
+			if (dcodec_str) av_free(dcodec_str);
+			if (play_filename) av_free(play_filename);
+			tcp_control_command_free(&command);
+		}
+		if (should_exit_main) break;
+		if (!processed_command) av_usleep(100000);
 	}
 end:
 	if (ctx) {
