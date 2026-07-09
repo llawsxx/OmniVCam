@@ -483,6 +483,7 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton("Set audio index", async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Stop", async (_, __) => await StopAllAsync()));
+            buttons.Controls.Add(MakeButton("Save XML", (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton("Open playout", (_, __) => OpenPlayoutWindow()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
             grid.SetColumnSpan(buttons, 4);
