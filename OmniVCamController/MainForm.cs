@@ -42,7 +42,9 @@ namespace OmniVCamController
         private long currentPositionSeconds;
         private long currentDurationSeconds;
         private long currentSizeBytes;
-        private string currentStatusState = "stopped";
+		private long currentDeliverNs;
+		private long currentDeliverAvgNs;
+		private string currentStatusState = "stopped";
         private string currentStatusInput = string.Empty;
         private bool advancingPlayout;
         private DateTime lastAutoAdvanceAt = DateTime.MinValue;
@@ -456,7 +458,7 @@ namespace OmniVCamController
             AddRow(grid, "Display AR", CreateDisplayAspectControl(), "Shift us", CreateShiftControl());
             AddRow(grid, "Video filter", CreateVideoFilterControl(), "Audio filter", CreateAudioFilterControl());
             AddRow(grid, "Video index", videoIndexBox, "Audio index", audioIndexBox);
-            AddRow(grid, "Position", positionLabel, "Seek seconds", seekBox);
+            AddRow(grid, "Position", CreatePositionControl(), "Seek seconds", seekBox);
             AddProgressRow(grid);
             progressBar.MouseDown += ProgressBar_MouseDown;
             progressBar.MouseMove += ProgressBar_MouseMove;
@@ -510,7 +512,15 @@ namespace OmniVCamController
             root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 1);
         }
 
-        private Control CreateLogAndFavoriteInputsPanel()
+        private Control CreatePositionControl()
+		{
+			var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+			panel.Controls.Add(positionLabel);
+			panel.Controls.Add(deliverLabel);
+			return panel;
+		}
+
+		private Control CreateLogAndFavoriteInputsPanel()
         {
             var split = new SplitContainer
             {
@@ -2414,6 +2424,8 @@ namespace OmniVCamController
                 currentPositionSeconds = seconds;
                 currentDurationSeconds = ParseStatusLong(reply, "duration=");
                 currentSizeBytes = ParseStatusLong(reply, "size=");
+                currentDeliverNs = ParseStatusLong(reply, "deliver_ns=");
+                currentDeliverAvgNs = ParseStatusLong(reply, "deliver_avg_ns=");
                 currentStatusState = ParseStatusString(reply, "state=");
                 currentStatusInput = ParseStatusString(reply, "input=");
                 UpdateManualPlayButtonText();
@@ -2434,6 +2446,7 @@ namespace OmniVCamController
                 string durationText = currentDurationSeconds > 0 ? TimeSpan.FromSeconds(currentDurationSeconds).ToString(@"hh\:mm\:ss") : "--:--:--";
                 long displaySeconds = ignoreStaleSeekStatus ? pendingSeekSeconds : seconds;
                 positionLabel.Text = TimeSpan.FromSeconds(displaySeconds).ToString(@"hh\:mm\:ss") + " / " + durationText;
+                deliverLabel.Text = string.Format("Frame deliver block time: {0:0.###} / {1:0.###} ms", currentDeliverNs / 1000000.0, currentDeliverAvgNs / 1000000.0);
                 if (!ignoreStaleSeekStatus && !updatingProgress && !draggingProgress && currentDurationSeconds > 0)
                 {
                     int progress = (int)Math.Max(0, Math.Min(progressBar.Maximum, seconds * progressBar.Maximum / currentDurationSeconds));

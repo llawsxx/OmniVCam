@@ -535,7 +535,6 @@ inout_context* inout_context_alloc(
 	ctx->av_max_offset_time = FFMAX(universal_from_av_time_base(AV_TIME_BASE), universal_from_av_time_base(av_max_offset_time));
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
-	ctx->last_packet_time = AV_NOPTS_VALUE;
 	ctx->input_start_time = AV_NOPTS_VALUE;
 	return ctx;
 
@@ -680,7 +679,6 @@ void inout_context_reset_input(inout_context* ctx)
 	av_channel_layout_uninit(&ctx->last_filtered_audio_layout);
 
 	ctx->last_sar = (AVRational){0,0};
-	ctx->last_packet_time = AV_NOPTS_VALUE;
 	av_freep(&ctx->input_name);
 	ctx->special_source_running = 0;
 	ctx->force_exit = 0;
@@ -2476,7 +2474,8 @@ int output_video(inout_context* ctx, AVFrame* frame)
 		uint64_t start_time = os_gettime_ns();
 		ctx->video_callback(ctx->callback_private, frame);
 		uint64_t end_time = os_gettime_ns();
-		ctx->output_video_avg_block_time = ctx->output_video_avg_block_time * 0.99 + (end_time - start_time) * 0.01;
+		ctx->output_video_last_block_time = (int64_t)(end_time - start_time);
+		ctx->output_video_avg_block_time = ctx->output_video_avg_block_time * 0.99 + ctx->output_video_last_block_time * 0.01;
 	}
 	//printf("output video: %lld", ctx->output_video_pts_time);
 	ctx->output_frame_count += 1;
@@ -3108,6 +3107,8 @@ typedef struct tcp_control_server {
 	int64_t status_time;
 	int64_t status_duration;
 	int64_t status_size;
+	int64_t deliver_ns;
+	int64_t deliver_avg_ns;
 	char status_input[1024];
 	char status_state[32];
 	int scale_mode;
@@ -3302,7 +3303,7 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
 		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d deliver_ns=%I64d deliver_avg_ns=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->deliver_ns, server->deliver_avg_ns, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
@@ -3697,6 +3698,8 @@ DWORD main_thread(LPVOID p) {
 			control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
 			control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
 			control_server.status_size = (ctx->fmt_ctx && ctx->fmt_ctx->pb) ? avio_size(ctx->fmt_ctx->pb) : 0;
+			control_server.deliver_ns = ctx->output_video_last_block_time;
+			control_server.deliver_avg_ns = (int64_t)ctx->output_video_avg_block_time;
 			control_server.scale_mode = ctx->output_scale_mode;
 			control_server.display_aspect = ctx->output_display_aspect;
 			strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");

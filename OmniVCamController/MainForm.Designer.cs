@@ -20,6 +20,7 @@ namespace OmniVCamController
         private NumericUpDown shiftBox;
         private NumericUpDown seekBox;
         private Label positionLabel;
+        private Label deliverLabel;
         private TrackBar progressBar;
         private CheckBox byteSeekBox;
         private TextBox logBox;
@@ -70,6 +71,7 @@ namespace OmniVCamController
             shiftBox = new NumericUpDown();
             seekBox = new NumericUpDown();
             positionLabel = new Label();
+            deliverLabel = new Label();
             progressBar = new TrackBar();
             byteSeekBox = new CheckBox();
             logBox = new TextBox();
@@ -148,6 +150,10 @@ namespace OmniVCamController
             positionLabel.AutoSize = true;
             positionLabel.Anchor = AnchorStyles.Left;
             positionLabel.Padding = new Padding(0, 4, 0, 0);
+            deliverLabel.Text = "Frame deliver block time: -- / -- ms";
+            deliverLabel.AutoSize = true;
+            deliverLabel.Anchor = AnchorStyles.Left;
+            deliverLabel.Padding = new Padding(12, 4, 0, 0);
             progressBar.Minimum = 0;
             progressBar.Maximum = 10000;
             progressBar.TickFrequency = 1000;
