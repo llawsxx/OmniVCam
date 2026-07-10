@@ -83,7 +83,14 @@ void obs_virtual_cam_reader_get_obs_frame(OBSVirtualCamReader* reader, AVFrame**
                 dst->height = reader->obs_cy;
                 dst->format = AV_PIX_FMT_NV12;
                 if (get_video_buffer(dst) >= 0) {
-                    memcpy(dst->data[0], ptr, reader->obs_cx * reader->obs_cy * 3 / 2);
+                    uint8_t* src_y = ptr;
+                    uint8_t* src_uv = ptr + reader->obs_cx * reader->obs_cy;
+                    for (int y = 0; y < reader->obs_cy; y++) {
+                        memcpy(dst->data[0] + y * dst->linesize[0], src_y + y * reader->obs_cx, reader->obs_cx);
+                    }
+                    for (int y = 0; y < reader->obs_cy / 2; y++) {
+                        memcpy(dst->data[1] + y * dst->linesize[1], src_uv + y * reader->obs_cx, reader->obs_cx);
+                    }
                     dst->pts = timestamp;
                 }
                 *frame = dst;

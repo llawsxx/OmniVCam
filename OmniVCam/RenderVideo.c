@@ -1588,6 +1588,76 @@ static void fill_letterbox_black(AVFrame* frame, int x, int y, int width, int he
 		fill_black_rect(frame, right, 0, frame->width - right, frame->height);
 }
 
+static int copy_yuv420p_to_nv12(AVFrame* dst, const AVFrame* src)
+{
+	int chroma_width;
+	int chroma_height;
+	if (!dst || !src || dst->format != AV_PIX_FMT_NV12 || src->format != AV_PIX_FMT_YUV420P ||
+		dst->width != src->width || dst->height != src->height || !dst->data[0] || !dst->data[1] ||
+		!src->data[0] || !src->data[1] || !src->data[2]) {
+		return AVERROR(EINVAL);
+	}
+
+	for (int y = 0; y < src->height; y++) {
+		memcpy(dst->data[0] + y * dst->linesize[0], src->data[0] + y * src->linesize[0], src->width);
+	}
+
+	chroma_width = (src->width + 1) / 2;
+	chroma_height = (src->height + 1) / 2;
+	for (int y = 0; y < chroma_height; y++) {
+		uint8_t* dst_uv = dst->data[1] + y * dst->linesize[1];
+		const uint8_t* src_u = src->data[1] + y * src->linesize[1];
+		const uint8_t* src_v = src->data[2] + y * src->linesize[2];
+		for (int x = 0; x < chroma_width; x++) {
+			dst_uv[x * 2] = src_u[x];
+			dst_uv[x * 2 + 1] = src_v[x];
+		}
+	}
+	return 0;
+}
+
+static int copy_nv12_to_yuv420p(AVFrame* dst, const AVFrame* src)
+{
+	int chroma_width;
+	int chroma_height;
+	if (!dst || !src || dst->format != AV_PIX_FMT_YUV420P || src->format != AV_PIX_FMT_NV12 ||
+		dst->width != src->width || dst->height != src->height || !dst->data[0] || !dst->data[1] || !dst->data[2] ||
+		!src->data[0] || !src->data[1]) {
+		return AVERROR(EINVAL);
+	}
+
+	for (int y = 0; y < src->height; y++) {
+		memcpy(dst->data[0] + y * dst->linesize[0], src->data[0] + y * src->linesize[0], src->width);
+	}
+
+	chroma_width = (src->width + 1) / 2;
+	chroma_height = (src->height + 1) / 2;
+	for (int y = 0; y < chroma_height; y++) {
+		uint8_t* dst_u = dst->data[1] + y * dst->linesize[1];
+		uint8_t* dst_v = dst->data[2] + y * dst->linesize[2];
+		const uint8_t* src_uv = src->data[1] + y * src->linesize[1];
+		for (int x = 0; x < chroma_width; x++) {
+			dst_u[x] = src_uv[x * 2];
+			dst_v[x] = src_uv[x * 2 + 1];
+		}
+	}
+	return 0;
+}
+
+static int can_direct_pixel_format_copy(enum AVPixelFormat src_format, enum AVPixelFormat dst_format)
+{
+	return (src_format == AV_PIX_FMT_YUV420P && dst_format == AV_PIX_FMT_NV12) ||
+		(src_format == AV_PIX_FMT_NV12 && dst_format == AV_PIX_FMT_YUV420P);
+}
+
+static int copy_direct_pixel_format(AVFrame* dst, const AVFrame* src)
+{
+	if (!dst || !src || dst->width != src->width || dst->height != src->height) return AVERROR(EINVAL);
+	if (src->format == AV_PIX_FMT_YUV420P && dst->format == AV_PIX_FMT_NV12) return copy_yuv420p_to_nv12(dst, src);
+	if (src->format == AV_PIX_FMT_NV12 && dst->format == AV_PIX_FMT_YUV420P) return copy_nv12_to_yuv420p(dst, src);
+	return AVERROR(ENOSYS);
+}
+
 int fill_output_video(inout_context* ctx, AVFrame* frame)
 {
 	int ret = 0, filp = 0;
@@ -1611,6 +1681,22 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		scale_height = f->height;
 	}
 	need_letterbox = ctx->output_scale_mode == OUTPUT_SCALE_MODE_LETTERBOX && (scale_x != 0 || scale_y != 0 || scale_width != f->width || scale_height != f->height);
+
+	if (frame->width == f->width && frame->height == f->height && can_direct_pixel_format_copy((enum AVPixelFormat)frame->format, (enum AVPixelFormat)f->format) && !need_letterbox)
+	{
+		if ((ret = get_video_buffer(f)) < 0) {
+			goto end;
+		}
+		av_frame_copy_props(f, frame);
+		if ((ret = copy_direct_pixel_format(f, frame)) < 0) {
+			goto end;
+		}
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+			ret = -1;
+			goto end;
+		}
+		goto end;
+	}
 
 	if (frame->width == f->width && frame->height == f->height &&
 		frame->format == f->format && !need_letterbox)
