@@ -13,6 +13,14 @@
 #include "video_frame.h"
 #include "global.h"
 
+#define FRAME_QUEUE_MAX_COUNT_LIMIT 256
+
+static int clamp_frame_queue_max_count(int64_t max_count)
+{
+	if (max_count < 0) return 0;
+	return max_count > FRAME_QUEUE_MAX_COUNT_LIMIT ? FRAME_QUEUE_MAX_COUNT_LIMIT : (int)max_count;
+}
+
 void frame_queue_wait_empty(frame_queue* q,int64_t timeout,int *exit) {
 	int64_t start_time = av_gettime_relative();
 	EnterCriticalSection(&q->mutex);
@@ -217,7 +225,7 @@ frame_queue* frame_queue_alloc(int max_count)
 	if (!q) return NULL;
 	InitializeCriticalSection(&q->mutex);
 	InitializeConditionVariable(&q->cond);
-	q->max_count = max_count >= 0 ? max_count : 0;
+	q->max_count = clamp_frame_queue_max_count(max_count);
 	q->reached_center = 0;
 	q->left_count = -1;
 	q->center_count = -1;
@@ -274,6 +282,7 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 			q->left_count = 0;
 			q->right_count = INT32_MAX;
 			q->center_count = center_count;
+			q->max_count = clamp_frame_queue_max_count((int64_t)center_count * 2);
 		}
 		else {
 			q->center_count = -1;
@@ -286,6 +295,9 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 	if (left_count < 0) left_count = 0;
 
 	if (right_count - left_count < 2) right_count = left_count + 2;
+	if (right_count > FRAME_QUEUE_MAX_COUNT_LIMIT) right_count = FRAME_QUEUE_MAX_COUNT_LIMIT;
+	if (left_count > right_count - 2) left_count = right_count - 2;
+	if (left_count < 0) left_count = 0;
 
 	if (center_count > left_count && center_count < right_count)
 		q->center_count = center_count;
@@ -293,6 +305,7 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 		q->center_count = (right_count + left_count) / 2;
 	q->left_count = left_count;
 	q->right_count = right_count;
+	q->max_count = clamp_frame_queue_max_count(right_count);
 end:
 	LeaveCriticalSection(&q->mutex);
 }
