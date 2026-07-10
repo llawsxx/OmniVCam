@@ -4,6 +4,7 @@
 #endif
 #include <WinSock2.h>
 #include <Objbase.h>
+#include <stdarg.h>
 #include "RenderVideo.h"
 #include "ParseConfig.h"
 #include "TestCard.h"
@@ -82,6 +83,7 @@ static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit, int *pause) {
 	int64_t start_time = av_gettime_relative();
 	int ret = 0;
+	int wake = 0;
 	EnterCriticalSection(&q->mutex);
 
 	while (q->count >= q->max_count)
@@ -147,6 +149,7 @@ static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t
 	}
 
 	q->count += 1;
+	wake = 1;
 
 	if (q->right_count != -1 && q->center_count != -1 && q->count >= q->right_count && q->front) {
 		while (1) {
@@ -179,24 +182,32 @@ static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t
 	}
 end:
 	LeaveCriticalSection(&q->mutex);
+	if (wake) WakeAllConditionVariable(&q->cond);
 	return ret;
 }
 
 
-int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int*reset) {
+int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int wait, int*reset) {
 	av_frame_unref(frame);
 	int ret = -1;
 	EnterCriticalSection(&q->mutex);
 	*reset = 0;
 
-	if (q->left_count != -1 && q->center_count != -1 && q->count <= q->left_count && q->reached_center == 1) {
-		q->reached_center = 0;
-	}
+	while (1) {
+		if (q->left_count != -1 && q->center_count != -1 && q->count <= q->left_count && q->reached_center == 1) {
+			q->reached_center = 0;
+		}
 
-	if (!q->front || (q->center_count != -1 && !q->reached_center))
-	{
-		LeaveCriticalSection(&q->mutex);
-		return -1;
+		if (q->front && (q->center_count == -1 || q->reached_center)) break;
+		if (!wait) {
+			LeaveCriticalSection(&q->mutex);
+			return -1;
+		}
+		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
+		if (!q->front || (q->center_count != -1 && !q->reached_center)) {
+			LeaveCriticalSection(&q->mutex);
+			return -1;
+		}
 	}
 
 	avframe_node* temp = q->front->next;
@@ -648,6 +659,8 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->last_frame_width = 0;
 	ctx->last_frame_height = 0;
 	ctx->last_frame_format = 0;
+	ctx->last_frame_colorspace = AVCOL_SPC_UNSPECIFIED;
+	ctx->last_frame_color_range = AVCOL_RANGE_UNSPECIFIED;
 	ctx->last_audio_sample_rate = 0;
 	ctx->last_audio_format = 0;
 	av_channel_layout_uninit(&ctx->last_audio_layout);
@@ -1164,7 +1177,7 @@ end:
 	return ret;
 }
 
-int need_reinit_filter(inout_context* ctx, int width, int height, int format, AVRational sar)
+int need_reinit_filter(inout_context* ctx, int width, int height, int format, AVRational sar, enum AVColorSpace colorspace, enum AVColorRange color_range)
 {
 	if (ctx->needs_reinit_filter == 1) {
 		ctx->needs_reinit_filter = 0;
@@ -1172,11 +1185,14 @@ int need_reinit_filter(inout_context* ctx, int width, int height, int format, AV
 	}
 
 	if (ctx->last_frame_width != width || ctx->last_frame_height != height ||
-		ctx->last_frame_format != format || ctx->last_sar.num != sar.num || ctx->last_sar.den != sar.den)
+		ctx->last_frame_format != format || ctx->last_sar.num != sar.num || ctx->last_sar.den != sar.den ||
+		ctx->last_frame_colorspace != colorspace || ctx->last_frame_color_range != color_range)
 	{
 		ctx->last_frame_width = width;
 		ctx->last_frame_height = height;
 		ctx->last_frame_format = format;
+		ctx->last_frame_colorspace = colorspace;
+		ctx->last_frame_color_range = color_range;
 		ctx->last_sar.num = sar.num;
 		ctx->last_sar.den = sar.den;
 		return 1;
@@ -1204,7 +1220,7 @@ int need_reinit_audio_filter(inout_context* ctx, AVChannelLayout *ch_layout, int
 	return 0;
 }
 
-int init_video_filter(inout_context* ctx, int width, int height, enum AVPixelFormat pix_fmt, AVRational tb, AVRational sar)
+int init_video_filter(inout_context* ctx, int width, int height, enum AVPixelFormat pix_fmt, AVRational tb, AVRational sar, enum AVColorSpace colorspace, enum AVColorRange color_range)
 {
 	filter_context* fctx = &ctx->filter_contexts[0];
 	avfilter_graph_free(&fctx->filter_graph);
@@ -1232,9 +1248,9 @@ int init_video_filter(inout_context* ctx, int width, int height, enum AVPixelFor
 	if (!video_filter_graph || !input || !output) goto failed;
 
 	snprintf(args, sizeof(args),
-		"video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+		"video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d:colorspace=%d:range=%d",
 		width, height, pix_fmt,
-		tb.num, tb.den, sar.num, sar.den);
+		tb.num, tb.den, sar.num, sar.den, colorspace, color_range);
 	const AVFilter* buffersrc_filter = avfilter_get_by_name("buffer");
 	const AVFilter* buffersink_filter = avfilter_get_by_name("buffersink");
 	ret = avfilter_graph_create_filter(&buffer_src, buffersrc_filter, "in",
@@ -1858,10 +1874,10 @@ end:
 
 static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFrame* filtered_frame, int* filter_sent_eof)
 {
-	if (!(*filter_sent_eof) && need_reinit_filter(ctx, frame->width, frame->height, frame->format, frame->sample_aspect_ratio))
+	if (!(*filter_sent_eof) && need_reinit_filter(ctx, frame->width, frame->height, frame->format, frame->sample_aspect_ratio, frame->colorspace, frame->color_range))
 	{
 		init_video_filter(ctx, frame->width, frame->height, frame->format,
-			ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, frame->sample_aspect_ratio);
+			ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, frame->sample_aspect_ratio, frame->colorspace, frame->color_range);
 	}
 
 	if (ctx->filter_contexts[0].filter_graph)
@@ -1921,7 +1937,7 @@ DWORD WINAPI process_video_thread(LPVOID p) {
 
 	while (1)
 	{
-		if (frame_dequeue(ctx->decoded_video_frame_queue, frame, &frame_id, &reset) >= 0)
+		if (frame_dequeue(ctx->decoded_video_frame_queue, frame, &frame_id, 1, &reset) >= 0)
 		{
 			if (process_decoded_video_frame(ctx, frame, filtered_frame, &filter_sent_eof) < 0) goto end;
 		}
@@ -2597,7 +2613,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 					goto sync_end;
 				}
 					
-				ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, &reset);
+				ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, 0, &reset);
 
 				if (reset) {
 					ctx->output_time_offset = AV_NOPTS_VALUE;
@@ -2655,7 +2671,7 @@ HRESULT WINAPI output_thread(LPVOID p)
 		{
 			in_sync_result = is_in_sync(ctx, video_frame->pts);
 			if (in_sync_result != 0) break;
-			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id, &reset);
+			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id, 0, &reset);
 
 			if (reset) {
 				ctx->output_time_offset = AV_NOPTS_VALUE;
@@ -2753,6 +2769,21 @@ int get_loglevel_from_str(char* log_level_str)
 
 not_found:
 	return av_log_get_level();
+}
+
+const char* get_av_log_level_string(int level) {
+	switch (level) {
+	case AV_LOG_QUIET:   return "QUIET";
+	case AV_LOG_PANIC:   return "PANIC";
+	case AV_LOG_FATAL:   return "FATAL";
+	case AV_LOG_ERROR:   return "ERROR";
+	case AV_LOG_WARNING: return "WARNING";
+	case AV_LOG_INFO:    return "INFO";
+	case AV_LOG_VERBOSE: return "VERBOSE";
+	case AV_LOG_DEBUG:   return "DEBUG";
+	case AV_LOG_TRACE:   return "TRACE";
+	default:             return "UNKNOWN";
+	}
 }
 
 int is_output_exit(inout_context *ctx)
@@ -3050,9 +3081,13 @@ end:
 
 #define TCP_CONTROL_QUEUE_SIZE 32
 #define TCP_CONTROL_BUFFER_SIZE 8192
+#define TCP_CONTROL_SEND_TIMEOUT_MS 500
+#define TCP_CONTROL_RECV_TIMEOUT_MS 500
+#define TCP_CONTROL_RECV_IDLE_TIMEOUT_MS 5000
 
 typedef struct tcp_control_server {
 	CRITICAL_SECTION mutex;
+	CRITICAL_SECTION send_mutex;
 	HANDLE thread;
 	SOCKET listen_socket;
 	SOCKET client_socket;
@@ -3071,6 +3106,91 @@ typedef struct tcp_control_server {
 	int queue_head;
 	int queue_count;
 } tcp_control_server;
+
+static tcp_control_server* g_tcp_log_server = NULL;
+
+static void tcp_trim_right(char* s);
+
+static void tcp_control_sanitize_log_line(char* s)
+{
+	if (!s) return;
+	for (; *s; s++) {
+		if (*s == '\r' || *s == '\n') *s = ' ';
+	}
+}
+
+static void tcp_control_disconnect_client_locked(tcp_control_server* server)
+{
+	SOCKET client;
+	if (!server || server->client_socket == INVALID_SOCKET) return;
+	client = server->client_socket;
+	server->client_socket = INVALID_SOCKET;
+	shutdown(client, SD_BOTH);
+	closesocket(client);
+}
+
+static int tcp_control_send_line(tcp_control_server* server, const char* line)
+{
+	SOCKET client;
+	fd_set writefds;
+	struct timeval tv;
+	int ret = SOCKET_ERROR;
+	int len;
+	if (!server || !line) return SOCKET_ERROR;
+	len = (int)strlen(line);
+	EnterCriticalSection(&server->send_mutex);
+	client = server->client_socket;
+	if (client == INVALID_SOCKET) goto end;
+
+	FD_ZERO(&writefds);
+	FD_SET(client, &writefds);
+	tv.tv_sec = 0;
+	tv.tv_usec = TCP_CONTROL_SEND_TIMEOUT_MS * 1000;
+	if (select(0, NULL, &writefds, NULL, &tv) <= 0) {
+		tcp_control_disconnect_client_locked(server);
+		goto end;
+	}
+
+	ret = send(client, line, len, 0);
+	if (ret != len) {
+		tcp_control_disconnect_client_locked(server);
+		ret = SOCKET_ERROR;
+	}
+end:
+	LeaveCriticalSection(&server->send_mutex);
+	return ret;
+}
+
+static void tcp_control_configure_client_socket(SOCKET client)
+{
+	DWORD send_timeout = TCP_CONTROL_SEND_TIMEOUT_MS;
+	DWORD recv_timeout = TCP_CONTROL_RECV_TIMEOUT_MS;
+	setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (const char*)&send_timeout, sizeof(send_timeout));
+	setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&recv_timeout, sizeof(recv_timeout));
+}
+
+static void tcp_control_av_log_callback(void* ptr, int level, const char* fmt, va_list vl)
+{
+	char message[2048];
+	char line[2300];
+	tcp_control_server* server = g_tcp_log_server;
+	if (level > av_log_get_level()) return;
+	vsnprintf(message, sizeof(message), fmt, vl);
+	tcp_trim_right(message);
+	tcp_control_sanitize_log_line(message);
+	if (message[0] == '\0') return;
+	snprintf(line, sizeof(line), "LOG level=%d message=%s\n", level, message);
+	tcp_control_send_line(server, line);
+}
+
+static void tcp_control_log(tcp_control_server* server, int level, const char* fmt, ...)
+{
+	va_list args;
+	if (level > av_log_get_level()) return;
+	va_start(args, fmt);
+	av_vlog(NULL, level, fmt, args);
+	va_end(args);
+}
 
 static void tcp_control_command_free(tcp_control_command* cmd)
 {
@@ -3259,6 +3379,7 @@ static DWORD tcp_control_thread(LPVOID p)
 	listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (listen_socket == INVALID_SOCKET) return 1;
 	server->listen_socket = listen_socket;
+	server->client_socket = INVALID_SOCKET;
 	setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
 
 	memset(&addr, 0, sizeof(addr));
@@ -3267,7 +3388,7 @@ static DWORD tcp_control_thread(LPVOID p)
 	addr.sin_port = htons((u_short)server->port);
 	if (bind(listen_socket, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) goto end;
 	if (listen(listen_socket, 4) == SOCKET_ERROR) goto end;
-	printf("OmniVCam TCP control listening on 0.0.0.0:%d\n", server->port);
+	tcp_control_log(server, AV_LOG_INFO, "OmniVCam TCP control listening on 0.0.0.0:%d\n", server->port);
 
 	while (!server->exit) {
 		fd_set readfds;
@@ -3280,53 +3401,74 @@ static DWORD tcp_control_thread(LPVOID p)
 		if (select(0, &readfds, NULL, NULL, &tv) <= 0) continue;
 		client = accept(listen_socket, NULL, NULL);
 		if (client == INVALID_SOCKET) continue;
+		tcp_control_configure_client_socket(client);
+		EnterCriticalSection(&server->send_mutex);
 		server->client_socket = client;
+		LeaveCriticalSection(&server->send_mutex);
 
 		char* buffer = (char*)av_malloc(TCP_CONTROL_BUFFER_SIZE);
+		char* line_buffer = (char*)av_malloc(TCP_CONTROL_BUFFER_SIZE);
 		char* reply = (char*)av_malloc(TCP_CONTROL_BUFFER_SIZE);
-		if (!buffer || !reply) {
+		int line_len = 0;
+		ULONGLONG last_recv_tick = GetTickCount64();
+		if (!buffer || !line_buffer || !reply) {
 			av_free(buffer);
+			av_free(line_buffer);
 			av_free(reply);
-			closesocket(client);
-			server->client_socket = INVALID_SOCKET;
+			EnterCriticalSection(&server->send_mutex);
+			if (server->client_socket == client) tcp_control_disconnect_client_locked(server);
+			LeaveCriticalSection(&server->send_mutex);
 			continue;
 		}
+		line_buffer[0] = '\0';
 
 		while (!server->exit) {
-			tcp_control_command cmd;
-			fd_set clientfds;
-			struct timeval client_tv;
 			int n;
-			FD_ZERO(&clientfds);
-			FD_SET(client, &clientfds);
-			client_tv.tv_sec = 0;
-			client_tv.tv_usec = 200000;
-			if (select(0, &clientfds, NULL, NULL, &client_tv) <= 0) continue;
 			n = recv(client, buffer, TCP_CONTROL_BUFFER_SIZE - 1, 0);
+			if (n == SOCKET_ERROR) {
+				int err = WSAGetLastError();
+				if (err == WSAETIMEDOUT) {
+					if (GetTickCount64() - last_recv_tick < TCP_CONTROL_RECV_IDLE_TIMEOUT_MS) continue;
+				}
+				break;
+			}
 			if (n <= 0) break;
-			buffer[n] = '\0';
-			char* line = buffer;
-			while (line && *line) {
-				char* next = strpbrk(line, "\r\n");
-				if (next) {
-					*next++ = '\0';
-					while (*next == '\r' || *next == '\n') next++;
+			last_recv_tick = GetTickCount64();
+
+			for (int i = 0; i < n; i++) {
+				char ch = buffer[i];
+				if (ch == '\r' || ch == '\n') {
+					tcp_control_command cmd;
+					if (line_len == 0) continue;
+					line_buffer[line_len] = '\0';
+					tcp_control_parse_line(server, line_buffer, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
+					if (cmd.type != TCP_CONTROL_NONE) {
+						EnterCriticalSection(&server->mutex);
+						server->controller_connected = 1;
+						LeaveCriticalSection(&server->mutex);
+						tcp_control_push(server, &cmd);
+					}
+					tcp_control_send_line(server, reply);
+					line_len = 0;
+					line_buffer[0] = '\0';
+					continue;
 				}
-				tcp_control_parse_line(server, line, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
-				if (cmd.type != TCP_CONTROL_NONE) {
-					EnterCriticalSection(&server->mutex);
-					server->controller_connected = 1;
-					LeaveCriticalSection(&server->mutex);
-					tcp_control_push(server, &cmd);
+
+				if (line_len >= TCP_CONTROL_BUFFER_SIZE - 1) {
+					strcpy_s(reply, TCP_CONTROL_BUFFER_SIZE, "ERR line too long\n");
+					tcp_control_send_line(server, reply);
+					goto client_end;
 				}
-				send(client, reply, (int)strlen(reply), 0);
-				line = next;
+				line_buffer[line_len++] = ch;
 			}
 		}
+client_end:
 		av_free(buffer);
+		av_free(line_buffer);
 		av_free(reply);
-		closesocket(client);
-		server->client_socket = INVALID_SOCKET;
+		EnterCriticalSection(&server->send_mutex);
+		if (server->client_socket == client) tcp_control_disconnect_client_locked(server);
+		LeaveCriticalSection(&server->send_mutex);
 	}
 end:
 	if (listen_socket != INVALID_SOCKET) closesocket(listen_socket);
@@ -3341,7 +3483,11 @@ static int tcp_control_start(tcp_control_server* server, int port)
 	server->listen_socket = INVALID_SOCKET;
 	server->port = port > 0 ? port : 16999;
 	InitializeCriticalSection(&server->mutex);
+	InitializeCriticalSection(&server->send_mutex);
+	server->client_socket = INVALID_SOCKET;
 	server->started = 1;
+	g_tcp_log_server = server;
+	av_log_set_callback(tcp_control_av_log_callback);
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
 	return open_thread(&server->thread, tcp_control_thread, server);
 }
@@ -3350,16 +3496,17 @@ static void tcp_control_stop(tcp_control_server* server)
 {
 	if (!server || !server->started) return;
 	server->exit = 1;
-	if (server->client_socket != INVALID_SOCKET) shutdown(server->client_socket, SD_BOTH);
+	EnterCriticalSection(&server->send_mutex);
+	tcp_control_disconnect_client_locked(server);
+	LeaveCriticalSection(&server->send_mutex);
 	if (server->listen_socket != INVALID_SOCKET) shutdown(server->listen_socket, SD_BOTH);
 	if (server->thread) {
 		DWORD wait_result = WaitForSingleObject(server->thread, 2000);
 		if (wait_result == WAIT_TIMEOUT) {
-			printf("OmniVCam TCP control thread stop timed out\n");
-			if (server->client_socket != INVALID_SOCKET) {
-				closesocket(server->client_socket);
-				server->client_socket = INVALID_SOCKET;
-			}
+			tcp_control_log(server, AV_LOG_WARNING, "OmniVCam TCP control thread stop timed out\n");
+			EnterCriticalSection(&server->send_mutex);
+			tcp_control_disconnect_client_locked(server);
+			LeaveCriticalSection(&server->send_mutex);
 			if (server->listen_socket != INVALID_SOCKET) {
 				closesocket(server->listen_socket);
 				server->listen_socket = INVALID_SOCKET;
@@ -3369,7 +3516,12 @@ static void tcp_control_stop(tcp_control_server* server)
 		CloseHandle(server->thread);
 		server->thread = NULL;
 	}
+	if (g_tcp_log_server == server) {
+		av_log_set_callback(av_log_default_callback);
+		g_tcp_log_server = NULL;
+	}
 	for (int i = 0; i < TCP_CONTROL_QUEUE_SIZE; i++) tcp_control_command_free(&server->queue[i]);
+	DeleteCriticalSection(&server->send_mutex);
 	DeleteCriticalSection(&server->mutex);
 	WSACleanup();
 }
@@ -3436,7 +3588,7 @@ DWORD main_thread(LPVOID p) {
 		"Effective config values:\n"
 		"tcp_port=%d\n"
 		"hw_decode=%s\n"
-		"log_level=%d\n"
+		"log_level=%s\n"
 		"video_frame_buffer=%d\n"
 		"audio_frame_buffer=%d\n"
 		"packet_queue_size=%d\n"
@@ -3454,7 +3606,7 @@ DWORD main_thread(LPVOID p) {
 		config_file_name ? config_file_name : "config.ini",
 		tcp_port,
 		hw_decode[0] ? hw_decode : "none",
-		av_log_get_level(),
+		get_av_log_level_string(av_log_get_level()),
 		video_frame_buffer,
 		audio_frame_buffer,
 		packet_queue_size,
@@ -3482,7 +3634,7 @@ DWORD main_thread(LPVOID p) {
 	ctx->output_display_aspect = output_display_aspect;
 
 	if (tcp_control_start(&control_server, tcp_port) < 0) {
-		printf("OmniVCam TCP control start failed on port %d\n", tcp_port);
+		av_log(NULL, AV_LOG_ERROR, "OmniVCam TCP control start failed on port %d\n", tcp_port);
 		goto end;
 	}
 
@@ -3562,7 +3714,7 @@ DWORD main_thread(LPVOID p) {
 					av_freep(&global_video_filter);
 					global_video_filter = command.text ? av_strdup(command.text) : av_strdup("");
 					set_input_filter(ctx, global_video_filter);
-					printf("filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
+					av_log(NULL, AV_LOG_INFO, "filter:\"%s\"\n", global_video_filter ? global_video_filter : "");
 				}
 				break;
 			case TCP_CONTROL_SET_AUDIO_FILTER:
@@ -3570,13 +3722,13 @@ DWORD main_thread(LPVOID p) {
 					av_freep(&global_audio_filter);
 					global_audio_filter = command.text ? av_strdup(command.text) : av_strdup("");
 					set_input_audio_filter(ctx, global_audio_filter);
-					printf("audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
+					av_log(NULL, AV_LOG_INFO, "audio filter:\"%s\"\n", global_audio_filter ? global_audio_filter : "");
 				}
 				break;
 			case TCP_CONTROL_SET_SCALE_MODE:
 				if (ctx->output_scale_mode != (int)command.number) {
 					ctx->output_scale_mode = (int)command.number;
-					printf("output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
+					av_log(NULL, AV_LOG_INFO, "output scale mode: %s\n", output_scale_mode_name(ctx->output_scale_mode));
 				}
 				break;
 			case TCP_CONTROL_SET_DISPLAY_ASPECT:
@@ -3585,24 +3737,24 @@ DWORD main_thread(LPVOID p) {
 					{
 						char aspect_text[32];
 						format_display_aspect(ctx->output_display_aspect, aspect_text, sizeof(aspect_text));
-						printf("output display aspect: %s\n", aspect_text);
+						av_log(NULL, AV_LOG_INFO, "output display aspect: %s\n", aspect_text);
 					}
 				}
 				break;
 			case TCP_CONTROL_SET_INDEX:
 				if (command.video_index != selected_video_index) {
 					selected_video_index = command.video_index;
-					if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) printf("video_index=%d\n", command.video_index);
+					if (command.video_index >= 0 && set_input_stream_index(ctx, command.video_index, AVMEDIA_TYPE_VIDEO) >= 0) av_log(NULL, AV_LOG_INFO, "video_index=%d\n", command.video_index);
 				}
 				if (command.audio_index != selected_audio_index) {
 					selected_audio_index = command.audio_index;
-					if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) printf("audio_index=%d\n", command.audio_index);
+					if (command.audio_index >= 0 && set_input_stream_index(ctx, command.audio_index, AVMEDIA_TYPE_AUDIO) >= 0) av_log(NULL, AV_LOG_INFO, "audio_index=%d\n", command.audio_index);
 				}
 				break;
 			case TCP_CONTROL_SET_SHIFT:
 				if (ctx->output_start_shift_time != command.number * 1000LL) {
 					ctx->output_start_shift_time = command.number * 1000LL;
-					printf("output start time shift: %I64d\n", command.number);
+					av_log(NULL, AV_LOG_INFO, "output start time shift: %I64d\n", command.number);
 				}
 				break;
 			case TCP_CONTROL_SEEK:
@@ -3613,11 +3765,11 @@ DWORD main_thread(LPVOID p) {
 					reset_after_seek(ctx);
 					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
 						start_read(ctx);
-						printf("seek seconds: %I64d\n", command.number);
+						av_log(NULL, AV_LOG_INFO, "seek seconds: %I64d\n", command.number);
 					}
 					else {
 						start_read(ctx);
-						printf("seek seconds: %I64d failed\n", command.number);
+						av_log(NULL, AV_LOG_WARNING, "seek seconds: %I64d failed\n", command.number);
 					}
 				}
 				break;
@@ -3633,11 +3785,11 @@ DWORD main_thread(LPVOID p) {
 						reset_after_seek(ctx);
 						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, target, target, AVSEEK_FLAG_BYTE) >= 0) {
 							start_read(ctx);
-							printf("seek byte percent: %I64d\n", percent);
+							av_log(NULL, AV_LOG_INFO, "seek byte percent: %I64d\n", percent);
 						}
 						else {
 							start_read(ctx);
-							printf("seek byte percent: %I64d failed\n", percent);
+							av_log(NULL, AV_LOG_WARNING, "seek byte percent: %I64d failed\n", percent);
 						}
 					}
 				}
@@ -3645,7 +3797,7 @@ DWORD main_thread(LPVOID p) {
 			case TCP_CONTROL_SET_HW_DECODE:
 				if (strcmp(hw_decode, command.text ? command.text : "") != 0) {
 					strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
-					printf("hw_decode:\"%s\"\n", hw_decode);
+					av_log(NULL, AV_LOG_INFO, "hw_decode:\"%s\"\n", hw_decode);
 					if (current_input) {
 						play_filename = av_strdup(current_input);
 						should_open = 1;
@@ -3730,7 +3882,7 @@ DWORD main_thread(LPVOID p) {
 						int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
 						int64_t seek_time_int64 = av_rescale_q(seek_time_int, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
 						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
-							printf("[%s] seek: %I64d\n", play_filename, seek_time_int64);
+							av_log(NULL, AV_LOG_INFO, "[%s] seek: %I64d\n", play_filename, seek_time_int64);
 						}
 					}
 					start_read(ctx);
@@ -3740,14 +3892,14 @@ DWORD main_thread(LPVOID p) {
 					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
 					LeaveCriticalSection(&control_server.mutex);
 					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
-					printf(str2);
+					av_log(NULL, AV_LOG_INFO, "%s", str2);
 				}
 				else {
 					EnterCriticalSection(&control_server.mutex);
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
 					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
 					LeaveCriticalSection(&control_server.mutex);
-					printf("[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
+					av_log(NULL, AV_LOG_ERROR, "[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 				}
 			}
 

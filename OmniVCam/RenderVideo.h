@@ -119,6 +119,8 @@ typedef struct inout_context {
 	int last_frame_width;
 	int last_frame_height;
 	int last_frame_format;
+	int last_frame_colorspace;
+	int last_frame_color_range;
 
 	int last_audio_sample_rate;
 	int last_audio_format;

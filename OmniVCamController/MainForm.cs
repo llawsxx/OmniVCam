@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -6,6 +7,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
@@ -18,8 +20,9 @@ namespace OmniVCamController
         private const string AutoConfigFileName = "OmniVCamController.xml";
         private const string NowPlayingFileName = "OmniVCamNowPlaying.xml";
 
-        private Timer statusTimer;
-        private Timer playoutTimer;
+        private System.Windows.Forms.Timer statusTimer;
+        private System.Windows.Forms.Timer playoutTimer;
+        private System.Windows.Forms.Timer logFlushTimer;
 
         private readonly List<ConnectionTabState> connectionStates = new List<ConnectionTabState>();
         private ConnectionTabState activeState;
@@ -53,11 +56,15 @@ namespace OmniVCamController
         private Button manualPlayButton;
         private Form playoutForm;
         private bool closingMainForm;
-
+        private readonly TcpCommandClient commandClient;
+        private readonly StringBuilder pendingLogText = new StringBuilder();
+        private readonly int LOG_MAX_LINES = 1000;
+        private DateTime lastLogFlushAt = DateTime.UtcNow;
 
         public MainForm()
         {
             InitializeComponent();
+            commandClient = new TcpCommandClient(AppendRemoteLog);
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
@@ -87,12 +94,17 @@ namespace OmniVCamController
 
             statusTimer.Tick += async (_, __) => await RefreshStatusAsync();
             statusTimer.Start();
+            logFlushTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            logFlushTimer.Tick += (_, __) => FlushPendingLog();
+            logFlushTimer.Start();
             playoutTimer.Tick += async (_, __) => await PlayoutTickAsync();
             FormClosing += (_, __) =>
             {
                 closingMainForm = true;
                 if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
+                FlushPendingLog();
                 SaveActiveConnectionState();
+                commandClient.Dispose();
                 SaveAutoConfig();
             };
         }
@@ -221,6 +233,7 @@ namespace OmniVCamController
             try
             {
                 if (activeState != null) SaveActiveConnectionState();
+                commandClient.Reset();
                 activeState = connectionTabs.SelectedTab.Tag as ConnectionTabState;
                 if (activeState == null) return;
                 LoadConnectionStateToControls(activeState);
@@ -284,6 +297,7 @@ namespace OmniVCamController
             activeState.PendingSeekSeconds = pendingSeekSeconds;
             activeState.PendingSeekUntil = pendingSeekUntil;
             activeState.ProgressValue = progressBar.Value;
+            FlushPendingLog();
             activeState.LogText = logBox.Text;
             activeState.SelectedPlaylistIndices = GetSelectedIndices(playlistView);
             activeState.SelectedScheduledPlaylistIndices = GetSelectedIndices(scheduledPlaylistView);
@@ -2361,54 +2375,19 @@ namespace OmniVCamController
             if (commandList.Count == 0) return;
 
             var log = new StringBuilder();
-            try
+            foreach (string command in commandList)
             {
-                using (var client = new TcpClient())
-                {
-                    await client.ConnectAsync(hostBox.Text.Trim(), (int)portBox.Value);
-                    using (NetworkStream stream = client.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        string payload = string.Join("\n", commandList) + "\n";
-                        byte[] data = Encoding.UTF8.GetBytes(payload);
-                        await stream.WriteAsync(data, 0, data.Length);
-                        foreach (string command in commandList)
-                        {
-                            string reply = await reader.ReadLineAsync();
-                            log.Append("> ").Append(command).Append("\r\n< ").Append(reply ?? "ERR no reply").Append("\r\n");
-                            if (reply == null || !reply.StartsWith("OK", StringComparison.OrdinalIgnoreCase)) break;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                log.Append("< ERR ").Append(ex.Message).Append("\r\n");
+                string reply = await SendRawCommandAsync(command);
+                log.Append("> ").Append(command).Append("\r\n< ").Append(reply ?? "ERR no reply").Append("\r\n");
+                if (reply == null || !reply.StartsWith("OK", StringComparison.OrdinalIgnoreCase)) break;
             }
 
             AppendLog(log.ToString().TrimEnd());
         }
 
-        private async Task<string> SendRawCommandAsync(string command)
+        private Task<string> SendRawCommandAsync(string command)
         {
-            try
-            {
-                using (var client = new TcpClient())
-                {
-                    await client.ConnectAsync(hostBox.Text.Trim(), (int)portBox.Value);
-                    using (NetworkStream stream = client.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        byte[] data = Encoding.UTF8.GetBytes(command + "\n");
-                        await stream.WriteAsync(data, 0, data.Length);
-                        return await reader.ReadLineAsync();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                return "ERR " + ex.Message;
-            }
+            return commandClient.SendAsync(hostBox.Text.Trim(), (int)portBox.Value, command);
         }
 
         private async Task RefreshStatusAsync()
@@ -2820,11 +2799,199 @@ namespace OmniVCamController
             public int Bottom;
         }
 
-        private void AppendLog(string text)
+        private void AppendRemoteLog(string text, int generation)
         {
-            logBox.AppendText(DateTime.Now.ToString("HH:mm:ss") + " " + text + Environment.NewLine);
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<string, int>(AppendRemoteLog), text, generation);
+                return;
+            }
+            if (generation == commandClient.Generation) AppendLog("[vcam] " + text);
         }
 
+        private void AppendLog(string text)
+        {
+            pendingLogText.Append(DateTime.Now.ToString("HH:mm:ss")).Append(" ").Append(text).Append(Environment.NewLine);
+            if ((DateTime.UtcNow - lastLogFlushAt).TotalMilliseconds >= 500) FlushPendingLog();
+        }
+
+        private void FlushPendingLog()
+        {
+            if (pendingLogText.Length == 0) return;
+            logBox.AppendText(pendingLogText.ToString());
+            pendingLogText.Clear();
+            lastLogFlushAt = DateTime.UtcNow;
+            if (logBox.Lines.Length > LOG_MAX_LINES)
+            {
+                int linesToRemove = logBox.Lines.Length - LOG_MAX_LINES;
+                var allLines = logBox.Lines;
+                var keepLines = allLines.Skip(linesToRemove).ToArray();
+
+                logBox.Lines = keepLines;
+
+                logBox.SelectionStart = logBox.Text.Length;
+                logBox.ScrollToCaret();
+            }
+        }
+
+        private sealed class TcpCommandClient : IDisposable
+        {
+            private const int CommandTimeoutMs = 5000;
+            private readonly Action<string, int> logCallback;
+            private readonly SemaphoreSlim writeLock = new SemaphoreSlim(1, 1);
+            private readonly ConcurrentQueue<TaskCompletionSource<string>> pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
+            private readonly object sync = new object();
+            private TcpClient client;
+            private NetworkStream stream;
+            private CancellationTokenSource cts = new CancellationTokenSource();
+            private Task readTask;
+            private string host;
+            private int port;
+            private bool disposed;
+            private int generation;
+
+            public TcpCommandClient(Action<string, int> logCallback)
+            {
+                this.logCallback = logCallback;
+            }
+
+            public int Generation { get { return generation; } }
+
+            public void Reset()
+            {
+                generation++;
+                Disconnect();
+            }
+
+            public async Task<string> SendAsync(string host, int port, string command)
+            {
+                if (disposed) return "ERR client disposed";
+                try
+                {
+                    await EnsureConnectedAsync(host, port);
+                    var tcs = new TaskCompletionSource<string>();
+                    pendingReplies.Enqueue(tcs);
+                    await writeLock.WaitAsync();
+                    try
+                    {
+                        byte[] data = Encoding.UTF8.GetBytes(command + "\n");
+                        await stream.WriteAsync(data, 0, data.Length, cts.Token);
+                        await stream.FlushAsync(cts.Token);
+                    }
+                    finally
+                    {
+                        writeLock.Release();
+                    }
+                    Task finished = await Task.WhenAny(tcs.Task, Task.Delay(CommandTimeoutMs));
+                    if (finished != tcs.Task)
+                    {
+                        tcs.TrySetResult("ERR command timeout");
+                        Disconnect();
+                    }
+                    return await tcs.Task;
+                }
+                catch (Exception ex)
+                {
+                    Disconnect();
+                    return "ERR " + ex.Message;
+                }
+            }
+
+            private async Task EnsureConnectedAsync(string host, int port)
+            {
+                lock (sync)
+                {
+                    if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return;
+                }
+
+                await writeLock.WaitAsync();
+                try
+                {
+                    lock (sync)
+                    {
+                        if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return;
+                    }
+                    Disconnect();
+                    cts = new CancellationTokenSource();
+                    var newClient = new TcpClient();
+                    await newClient.ConnectAsync(host, port);
+                    lock (sync)
+                    {
+                        client = newClient;
+                        stream = client.GetStream();
+                        this.host = host;
+                        this.port = port;
+                        int readGeneration = generation;
+                        readTask = Task.Run(() => ReadLoopAsync(cts.Token, readGeneration));
+                    }
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+            }
+
+            private async Task ReadLoopAsync(CancellationToken token, int readGeneration)
+            {
+                try
+                {
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        while (!token.IsCancellationRequested)
+                        {
+                            string line = await reader.ReadLineAsync();
+                            if (line == null) break;
+                            if (line.StartsWith("LOG ", StringComparison.OrdinalIgnoreCase))
+                            {
+                                logCallback(ParseLogLine(line), readGeneration);
+                                continue;
+                            }
+                            if (pendingReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult(line);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (!token.IsCancellationRequested) logCallback("connection closed: " + ex.Message, readGeneration);
+                }
+                finally
+                {
+                    while (pendingReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult("ERR connection closed");
+                    if (readGeneration == generation) Disconnect();
+                }
+            }
+
+            private static string ParseLogLine(string line)
+            {
+                const string marker = " message=";
+                int index = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                return index >= 0 ? line.Substring(index + marker.Length) : line.Substring(4).TrimStart();
+            }
+
+            private void Disconnect()
+            {
+                TcpClient oldClient = null;
+                lock (sync)
+                {
+                    if (cts != null && !cts.IsCancellationRequested) cts.Cancel();
+                    oldClient = client;
+                    client = null;
+                    stream = null;
+                    host = null;
+                    port = 0;
+                }
+                try { oldClient?.Close(); } catch { }
+            }
+
+            public void Dispose()
+            {
+                disposed = true;
+                Disconnect();
+                cts.Dispose();
+                writeLock.Dispose();
+            }
+        }
         private sealed class PlaylistItem
         {
             public string Path { get; set; } = string.Empty;
