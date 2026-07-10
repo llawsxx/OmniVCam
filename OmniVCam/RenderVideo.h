@@ -145,7 +145,6 @@ typedef struct inout_context {
 	int64_t last_clock_time;
 
 	int64_t input_start_time;
-	int64_t last_packet_time; //AV_TIME_BASE
 	int64_t output_status_time; //UNIVERSAL_TB, source pts of the video frame currently sent to output
 	int64_t timeout;
 	int special_source_running;

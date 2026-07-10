@@ -22,6 +22,16 @@ static int clamp_frame_queue_max_count(int64_t max_count)
 	return max_count > FRAME_QUEUE_MAX_COUNT_LIMIT ? FRAME_QUEUE_MAX_COUNT_LIMIT : (int)max_count;
 }
 
+static int64_t universal_from_av_time_base(int64_t value)
+{
+	return av_rescale_q(value, (AVRational) { 1, AV_TIME_BASE }, UNIVERSAL_TB);
+}
+
+static int64_t universal_to_seconds(int64_t value)
+{
+	return av_rescale_q_rnd(value, UNIVERSAL_TB, (AVRational) { 1, 1 }, AV_ROUND_DOWN);
+}
+
 void frame_queue_wait_empty(frame_queue* q,int64_t timeout,int *exit) {
 	int64_t start_time = av_gettime_relative();
 	EnterCriticalSection(&q->mutex);
@@ -522,7 +532,7 @@ inout_context* inout_context_alloc(
 	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
-	ctx->av_max_offset_time = FFMAX(1000000, av_max_offset_time);
+	ctx->av_max_offset_time = FFMAX(universal_from_av_time_base(AV_TIME_BASE), universal_from_av_time_base(av_max_offset_time));
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
 	ctx->last_packet_time = AV_NOPTS_VALUE;
@@ -1027,12 +1037,6 @@ end:
 	return ret;
 }
 
-void set_last_packet_time(AVPacket *pkt, inout_context* ctx) {
-	if (pkt->pts == AV_NOPTS_VALUE) return;
-	int64_t start_time = ctx->fmt_ctx->streams[pkt->stream_index]->start_time;
-	if (start_time == AV_NOPTS_VALUE) start_time = 0;
-	ctx->last_packet_time = av_rescale_q(pkt->pts - start_time, ctx->fmt_ctx->streams[pkt->stream_index]->time_base, UNIVERSAL_TB);
-}
 
 DWORD WINAPI reading_input(LPVOID p)
 {
@@ -1060,14 +1064,11 @@ DWORD WINAPI reading_input(LPVOID p)
 			pkt->pts = pkt->dts;
 		}
 
-		set_last_packet_time(pkt, ctx);
-
 
 		if (pkt->stream_index == ctx->decoders[0].index)
 		{
 			if (packet_enqueue(&ctx->queues[0], pkt, &ctx->force_exit) < 0)
 			{
-				printf("packet_enqueue() failed!\n");
 				break;
 			}
 		}
@@ -1075,7 +1076,6 @@ DWORD WINAPI reading_input(LPVOID p)
 		{
 			if (packet_enqueue(&ctx->queues[1], pkt, &ctx->force_exit) < 0)
 			{
-				printf("packet_enqueue() failed!\n");
 				break;
 			}
 		}
@@ -2173,7 +2173,6 @@ void reset_after_seek(inout_context* ctx)
 	if (!ctx) return;
 	ctx->force_exit = 0;
 	ctx->eof = 0;
-	ctx->last_packet_time = AV_NOPTS_VALUE;
 	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
 		ctx->decoders[i].exit = 0;
 		ctx->decoders[i].sent_eof = 0;
@@ -2227,7 +2226,7 @@ void control_output_speed(inout_context* ctx)
 				ctx->output_start_clock_time = ctx->output_first_start_clock_time + av_rescale_q(count, (AVRational) { ctx->output_fps.den, ctx->output_fps.num }, NS_TB);
 		}
 		if(count > ctx->output_adjust_start_time_if_delay_count_over)
-			printf("reset output_start_clock_time %I64d\n",ctx->output_start_clock_time);
+			av_log(NULL, AV_LOG_INFO,"reset output_start_clock_time %I64d (output_next_target_clock_time_ns %I64d)\n", ctx->output_start_clock_time, ctx->output_next_target_clock_time_ns);
 	}
 }
 
@@ -2393,7 +2392,7 @@ int is_in_sync(inout_context* ctx, int64_t timestamp)//1:¸ÕºÃ£¬2:¿ìÁË£¬0£ºÂýÁË(»
 
 
 
-#define AUDIO_SYNC_TOLERATE 5000
+#define AUDIO_SYNC_TOLERATE_US 5000
 int is_audio_in_sync(inout_context* ctx,int *shift_samples)//1:¸ÕºÃ£¬2:¿ìÁË£¬0£ºÂýÁË(»òÕß±ØÐëÈ¡ÐÂÖ¡)
 {
 	int64_t fifo_pts;
@@ -2411,11 +2410,12 @@ int is_audio_in_sync(inout_context* ctx,int *shift_samples)//1:¸ÕºÃ£¬2:¿ìÁË£¬0£º
 
 	int64_t diff = fifo_pts + ctx->output_time_offset - output_pts_time;
 	int64_t diff_end = fifo_end_pts + ctx->output_time_offset - output_pts_time;
-	if (diff >= -AUDIO_SYNC_TOLERATE && diff < AUDIO_SYNC_TOLERATE) {
+	int64_t audio_sync_tolerate = universal_from_av_time_base(AUDIO_SYNC_TOLERATE_US);
+	if (diff >= -audio_sync_tolerate && diff < audio_sync_tolerate) {
 		ctx->output_last_audio_in_sync_time = output_pts_time;
 		return 1;
 	}
-	else if (ctx->output_last_audio_in_sync_time != AV_NOPTS_VALUE && output_pts_time - ctx->output_last_audio_in_sync_time <= 200 * 1000) { //ÔÊÐíÒôÆµÊ±¼ä´Á²»ÎÈ¶¨
+	else if (ctx->output_last_audio_in_sync_time != AV_NOPTS_VALUE && output_pts_time - ctx->output_last_audio_in_sync_time <= universal_from_av_time_base(200 * 1000)) { //ÔÊÐíÒôÆµÊ±¼ä´Á²»ÎÈ¶¨
 		return 1;
 	}
 	else if (diff < output_next_pts_time - output_pts_time && diff_end > 0) {
@@ -2585,7 +2585,10 @@ HRESULT WINAPI output_thread(LPVOID p)
 			ctx->last_video_decode_time = now;
 			ctx->last_audio_decode_time = now;
 			ctx->output_time_offset = AV_NOPTS_VALUE;
-			if (av_frame_ref(final_audio_frame, empty_audio_frame) < 0) break;
+			if (av_frame_ref(final_audio_frame, empty_audio_frame) < 0) {
+				ret = -1;
+				goto unlock_end;
+			}
 			while (ctx->output_audio_pts_time <= ctx->output_video_pts_time) {
 				output_audio(ctx, final_audio_frame);
 			}
@@ -2654,12 +2657,14 @@ HRESULT WINAPI output_thread(LPVOID p)
 			if (audio_in_sync) {
 				fifo_out_audio_frame->pts = AV_NOPTS_VALUE;
 				if (av_frame_ref(final_audio_frame, fifo_out_audio_frame) < 0) {
-					continue;
+					ret = -1;
+					goto unlock_end;
 				}
 			}
 			else {
 				if (av_frame_ref(final_audio_frame, empty_audio_frame) < 0) {
-					continue;
+					ret = -1;
+					goto unlock_end;
 				}
 			}
 			output_audio(ctx, final_audio_frame);
@@ -2713,6 +2718,11 @@ HRESULT WINAPI output_thread(LPVOID p)
 
 	unlock:
 		LeaveCriticalSection(&ctx->input_change_mutex);
+		continue;
+
+	unlock_end:
+		LeaveCriticalSection(&ctx->input_change_mutex);
+		break;
 	}
 
 end:
@@ -3292,7 +3302,7 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
 		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", server->status_time / 1000000LL, server->status_duration / 1000000LL, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
