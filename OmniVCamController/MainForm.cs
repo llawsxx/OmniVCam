@@ -53,6 +53,7 @@ namespace OmniVCamController
         private bool updatingProgress;
         private bool draggingProgress;
         private bool suppressSeekValueEvent;
+        private bool suppressInputTitleUpdate;
         private bool controlsReady;
         private bool syncingInitialCameraSettings;
         private Button manualPlayButton;
@@ -332,9 +333,7 @@ namespace OmniVCamController
 
             hostBox.Text = state.Host;
             portBox.Value = Clamp(state.Port, portBox.Minimum, portBox.Maximum);
-            inputBox.Text = state.Input;
-            titleBox.Text = state.Title;
-            optionsBox.Text = state.Options;
+            SetInputFields(state.Input, state.Title, state.Options);
             hwDecodeBox.Text = state.HwDecode;
             if (scaleModeBox.Items.Contains(state.ScaleMode)) scaleModeBox.Text = state.ScaleMode;
             displayAspectBox.Text = state.DisplayAspect;
@@ -355,8 +354,7 @@ namespace OmniVCamController
             scheduleTimePicker.Value = ClampDateTimePicker(scheduleTimePicker, state.ScheduleTime);
             scheduleEndBox.Checked = state.ScheduleEndEnabled;
             scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, state.ScheduleEnd);
-            scheduledTitleBox.Text = state.ScheduledTitle;
-            scheduledOptionsBox.Text = state.ScheduledOptions;
+            SetScheduledInputFields(state.ScheduledTitle, state.ScheduledOptions);
             if (scheduleEndActionBox.Items.Contains(state.ScheduleEndAction)) scheduleEndActionBox.Text = state.ScheduleEndAction;
             if (scheduleStartActionBox.Items.Contains(state.ScheduleStartAction)) scheduleStartActionBox.Text = state.ScheduleStartAction;
             SetSelectedWeekDays(state.WeekDays);
@@ -371,11 +369,8 @@ namespace OmniVCamController
             RestoreSelectedIndices(playlistView, state.SelectedPlaylistIndices);
             RestoreSelectedIndices(scheduledPlaylistView, state.SelectedScheduledPlaylistIndices);
             RestoreSelectedIndices(favoriteInputView, state.SelectedFavoriteInputIndices);
-            inputBox.Text = state.Input;
-            titleBox.Text = state.Title;
-            optionsBox.Text = state.Options;
-            scheduledTitleBox.Text = state.ScheduledTitle;
-            scheduledOptionsBox.Text = state.ScheduledOptions;
+            SetInputFields(state.Input, state.Title, state.Options);
+            SetScheduledInputFields(state.ScheduledTitle, state.ScheduledOptions);
             UpdateScheduleEndControls();
             UpdatePlayoutStatusLabel();
             UpdatePlayoutTimerState();
@@ -479,6 +474,7 @@ namespace OmniVCamController
             {
                 if (controlsReady && !suppressSeekValueEvent) await SeekBySecondsAsync((long)seekBox.Value);
             };
+            inputBox.TextChanged += (_, __) => UpdateTitleFromManualInput();
             ConfigureFileDrop(inputBox, async files => await DropFilesToInputAsync(files));
             ConfigureFileDrop(playlistView, async files => await DropFilesToPlaylistAsync(files));
             scaleModeBox.SelectedIndexChanged += async (_, __) =>
@@ -953,6 +949,34 @@ namespace OmniVCamController
             }
         }
 
+        private void UpdateTitleFromManualInput()
+        {
+            if (suppressInputTitleUpdate) return;
+            string title = GetInputTitle(inputBox.Text.Trim());
+            titleBox.Text = title;
+        }
+
+        private void SetInputFields(string input, string title, string options)
+        {
+            suppressInputTitleUpdate = true;
+            try
+            {
+                inputBox.Text = input;
+                titleBox.Text = title;
+                optionsBox.Text = options;
+            }
+            finally
+            {
+                suppressInputTitleUpdate = false;
+            }
+        }
+
+        private void SetScheduledInputFields(string title, string options)
+        {
+            scheduledTitleBox.Text = title;
+            scheduledOptionsBox.Text = options;
+        }
+
         private async Task PlayManualAsync()
         {
             await PlayInputAsync(inputBox.Text.Trim(), optionsBox.Text.Trim());
@@ -1065,9 +1089,7 @@ namespace OmniVCamController
         {
             string file = files.FirstOrDefault(File.Exists);
             if (string.IsNullOrWhiteSpace(file)) return Task.CompletedTask;
-            inputBox.Text = file;
-            titleBox.Text = GetInputTitle(file);
-            scheduledTitleBox.Text = titleBox.Text;
+            SetInputFields(file, GetInputTitle(file), optionsBox.Text);
             return Task.CompletedTask;
         }
 
@@ -1148,11 +1170,7 @@ namespace OmniVCamController
             if (favoriteInputView.SelectedIndices.Count != 1) return;
             int index = favoriteInputView.SelectedIndices[0];
             if (index < 0 || index >= favoriteInputs.Count) return;
-            inputBox.Text = favoriteInputs[index].Input;
-            titleBox.Text = favoriteInputs[index].Title;
-            scheduledTitleBox.Text = favoriteInputs[index].Title;
-            optionsBox.Text = favoriteInputs[index].Options;
-            scheduledOptionsBox.Text = favoriteInputs[index].Options;
+            SetInputFields(favoriteInputs[index].Input, favoriteInputs[index].Title, favoriteInputs[index].Options);
         }
 
         private async Task PlaySelectedFavoriteInputAsync()
@@ -1161,11 +1179,7 @@ namespace OmniVCamController
             int index = favoriteInputView.SelectedIndices[0];
             if (index < 0 || index >= favoriteInputs.Count) return;
             FavoriteInputItem item = favoriteInputs[index];
-            inputBox.Text = item.Input;
-            titleBox.Text = item.Title;
-            scheduledTitleBox.Text = item.Title;
-            optionsBox.Text = item.Options;
-            scheduledOptionsBox.Text = item.Options;
+            SetInputFields(item.Input, item.Title, item.Options);
             await PlayInputAsync(item.Input, item.Options);
         }
 
@@ -1259,7 +1273,9 @@ namespace OmniVCamController
             string input = inputBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(input)) return Task.CompletedTask;
 
-            scheduledPlaylist.Add(CreateScheduledItem(input, true));
+            ScheduledPlaylistItem item = CreateScheduledItem(input, true);
+            if (!ValidateScheduledItemForUser(item)) return Task.CompletedTask;
+            scheduledPlaylist.Add(item);
             RefreshScheduledPlaylistView();
             return Task.CompletedTask;
         }
@@ -1269,7 +1285,12 @@ namespace OmniVCamController
             using (var dialog = new OpenFileDialog { Multiselect = true, Filter = MediaFileFilter })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
-                foreach (string file in dialog.FileNames) scheduledPlaylist.Add(CreateScheduledItem(file, false));
+                foreach (string file in dialog.FileNames)
+                {
+                    ScheduledPlaylistItem item = CreateScheduledItem(file, false);
+                    if (!ValidateScheduledItemForUser(item)) return Task.CompletedTask;
+                    scheduledPlaylist.Add(item);
+                }
             }
             RefreshScheduledPlaylistView();
             return Task.CompletedTask;
@@ -1282,7 +1303,9 @@ namespace OmniVCamController
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
                 foreach (string file in Directory.GetFiles(dialog.SelectedPath, "*.*", SearchOption.AllDirectories).Where(IsMediaFile))
                 {
-                    scheduledPlaylist.Add(CreateScheduledItem(file, false));
+                    ScheduledPlaylistItem item = CreateScheduledItem(file, false);
+                    if (!ValidateScheduledItemForUser(item)) return Task.CompletedTask;
+                    scheduledPlaylist.Add(item);
                 }
             }
             RefreshScheduledPlaylistView();
@@ -1342,11 +1365,8 @@ namespace OmniVCamController
             int index = scheduledPlaylistView.SelectedIndices[0];
             if (index < 0 || index >= scheduledPlaylist.Count) return;
             ScheduledPlaylistItem item = scheduledPlaylist[index];
-            inputBox.Text = item.Path;
-            titleBox.Text = item.Title;
-            scheduledTitleBox.Text = item.Title;
-            optionsBox.Text = item.Options;
-            scheduledOptionsBox.Text = item.Options;
+            SetInputFields(item.Path, item.Title, item.Options);
+            SetScheduledInputFields(item.Title, item.Options);
             scheduleTypeBox.Text = item.ScheduleKind == ScheduleKind.Weekly ? "Weekly" : "One-time";
             scheduleDateTimePicker.Value = ClampDateTimePicker(scheduleDateTimePicker, item.StartAt);
             scheduleTimePicker.Value = DateTime.Today.Add(item.WeeklyTime);
@@ -1364,20 +1384,22 @@ namespace OmniVCamController
             int index = scheduledPlaylistView.SelectedIndices[0];
             if (index < 0 || index >= scheduledPlaylist.Count) return;
             ScheduledPlaylistItem item = scheduledPlaylist[index];
+            ScheduledPlaylistItem updated = CreateScheduledItem(inputBox.Text.Trim(), true);
+            updated.DurationSeconds = item.DurationSeconds;
+            updated.LastTriggeredAt = item.LastTriggeredAt;
+            if (!ValidateScheduledItemForUser(updated)) return;
             item.Path = inputBox.Text.Trim();
-            item.Title = GetScheduledTitleInputOrDefault(item.Path);
-            titleBox.Text = item.Title;
-            item.Options = scheduledOptionsBox.Text.Trim();
-            optionsBox.Text = item.Options;
-            item.ScheduleKind = scheduleTypeBox.Text == "Weekly" ? ScheduleKind.Weekly : ScheduleKind.OneTime;
-            item.StartAt = scheduleDateTimePicker.Value;
-            item.WeeklyTime = scheduleTimePicker.Value.TimeOfDay;
-            item.WeekDays = GetSelectedWeekDays();
-            if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) item.WeekDays = WeekDayMaskFromDay(DateTime.Now.DayOfWeek);
-            item.HasEndTime = scheduleEndBox.Checked;
-            item.EndAt = scheduleEndPicker.Value;
-            item.EndAction = GetSelectedEndAction();
-            item.StartAction = GetSelectedStartAction();
+            item.Title = updated.Title;
+            item.Options = updated.Options;
+            SetScheduledInputFields(item.Title, item.Options);
+            item.ScheduleKind = updated.ScheduleKind;
+            item.StartAt = updated.StartAt;
+            item.WeeklyTime = updated.WeeklyTime;
+            item.WeekDays = updated.WeekDays;
+            item.HasEndTime = updated.HasEndTime;
+            item.EndAt = updated.EndAt;
+            item.EndAction = updated.EndAction;
+            item.StartAction = updated.StartAction;
             if (playingScheduled && index == currentScheduledIndex)
             {
                 scheduledSlotEndAt = GetScheduleWindow(index, DateTime.Now).End;
@@ -1393,16 +1415,56 @@ namespace OmniVCamController
             scheduleEndActionBox.Enabled = enabled;
         }
 
+        private bool ValidateScheduledItemForUser(ScheduledPlaylistItem item)
+        {
+            string error = GetScheduledItemValidationError(item);
+            if (string.IsNullOrEmpty(error)) return true;
+
+            AppendLog("Invalid scheduled item: " + error);
+            MessageBox.Show(this, error, "Invalid scheduled item", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        private bool ValidateScheduledPlaylistForUser()
+        {
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                string error = GetScheduledItemValidationError(scheduledPlaylist[i]);
+                if (string.IsNullOrEmpty(error)) continue;
+
+                string message = "Scheduled item #" + (i + 1) + " is invalid: " + error;
+                AppendLog(message);
+                MessageBox.Show(this, message, "Invalid scheduled playlist", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                RefreshScheduledPlaylistView();
+                return false;
+            }
+
+            return true;
+        }
+
+        private static string GetScheduledItemValidationError(ScheduledPlaylistItem item)
+        {
+            if (string.IsNullOrWhiteSpace(item.Path)) return "Input path is empty.";
+            if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) return "At least one weekday must be selected.";
+            if (!item.HasEndTime) return string.Empty;
+
+            if (item.ScheduleKind == ScheduleKind.OneTime && item.EndAt <= item.StartAt)
+            {
+                return "End time must be later than start time.";
+            }
+
+            return string.Empty;
+        }
+
         private string GetScheduledOptionsInput()
         {
-            string scheduledOptions = scheduledOptionsBox.Text.Trim();
-            return string.IsNullOrWhiteSpace(scheduledOptions) ? optionsBox.Text.Trim() : scheduledOptions;
+            return scheduledOptionsBox.Text.Trim();
         }
 
         private string GetScheduledTitleInputOrDefault(string input)
         {
             string title = scheduledTitleBox.Text.Trim();
-            return string.IsNullOrWhiteSpace(title) ? GetTitleInputOrDefault(input) : title;
+            return string.IsNullOrWhiteSpace(title) ? GetInputTitle(input) : title;
         }
 
         private async Task PlaySelectedScheduledAsync()
@@ -1452,18 +1514,13 @@ namespace OmniVCamController
             if (playlistView.SelectedIndices.Count != 1) return;
             int index = playlistView.SelectedIndices[0];
             if (index < 0 || index >= playlist.Count) return;
-            inputBox.Text = playlist[index].Path;
-            titleBox.Text = playlist[index].Title;
-            scheduledTitleBox.Text = playlist[index].Title;
-            optionsBox.Text = playlist[index].Options;
-            scheduledOptionsBox.Text = playlist[index].Options;
+            SetInputFields(playlist[index].Path, playlist[index].Title, playlist[index].Options);
         }
 
         private void SetSelectedOptions()
         {
             if (playlistView.SelectedIndices.Count == 0) return;
             string options = scheduledOptionsBox.Text.Trim();
-            optionsBox.Text = options;
             foreach (int index in playlistView.SelectedIndices.Cast<int>())
             {
                 if (index < 0 || index >= playlist.Count) continue;
@@ -1493,6 +1550,7 @@ namespace OmniVCamController
         private async Task StartPlayoutAsync()
         {
             if (playlist.Count == 0 && scheduledPlaylist.Count == 0) return;
+            if (!ValidateScheduledPlaylistForUser()) return;
             playoutRunning = true;
             SetPlayoutTimerRunning(true);
             waitingForScheduledStart = scheduledStartBox.Checked;
@@ -1662,11 +1720,6 @@ namespace OmniVCamController
             currentStatusState = "playing";
             currentStatusInput = item.Path;
             SelectCurrentRow();
-            inputBox.Text = item.Path;
-            titleBox.Text = item.Title;
-            scheduledTitleBox.Text = item.Title;
-            optionsBox.Text = item.Options;
-            scheduledOptionsBox.Text = item.Options;
             await PlayInputAsync(item.Path, item.Options);
             UpdatePlayoutStatusLabel();
         }
@@ -1685,11 +1738,7 @@ namespace OmniVCamController
             scheduledSlotEndAt = window.End;
             SelectCurrentRow();
             SelectCurrentScheduledRow();
-            inputBox.Text = item.Path;
-            titleBox.Text = item.Title;
-            scheduledTitleBox.Text = item.Title;
-            optionsBox.Text = item.Options;
-            scheduledOptionsBox.Text = item.Options;
+            SetInputFields(item.Path, item.Title, item.Options);
             item.LastTriggeredAt = window.Start;
             await PlayInputAsync(item.Path, item.Options);
             UpdatePlayoutStatusLabel();
@@ -2539,6 +2588,7 @@ namespace OmniVCamController
 
         private string FormatScheduledIdleStatus(ScheduledPlaylistItem item, ScheduleWindow window)
         {
+            if (!string.IsNullOrEmpty(GetScheduledItemValidationError(item))) return "Invalid";
             if (!window.IsActive) return "Waiting";
             if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) return "Blocked";
             return "In window";
@@ -2550,6 +2600,7 @@ namespace OmniVCamController
             ScheduledPlaylistItem item = scheduledPlaylist[index];
             DateTime start = GetCurrentScheduleStart(item, now);
             if (start == DateTime.MinValue) return ScheduleWindow.Empty;
+            if (!string.IsNullOrEmpty(GetScheduledItemValidationError(item))) return ScheduleWindow.Empty;
 
             DateTime end = item.HasEndTime ? GetExplicitScheduleEnd(item, start) : GetNextScheduleStart(start);
             if (end <= start) end = DateTime.MaxValue;
