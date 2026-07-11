@@ -14,10 +14,16 @@ The project contains two main parts:
 - Read OBS virtual camera shared-memory input with `<OBSVCAM>`.
 - Built-in test cards: `<TESTCARD>` and `<TESTCARD2>`.
 - Per-input options such as `seek_time`, stream indexes, filters, queue settings, and input format.
-- Manual playback controls: play, stop, reopen, seek, byte seek, progress drag, filters, display aspect, scale mode, and output time shift.
+- Manual playback controls: play/pause toggle, stop, reopen, seek, byte seek, progress drag, filters, display aspect, scale mode, and output time shift.
+- Runtime changes for scale mode and display aspect during playback.
 - Favorite inputs list for reusable input/options pairs.
+- Multiple connection tabs, each with independent host/port, input settings, playlists, and favorites.
 - Playout window with separate scheduled and normal playlists.
 - One-time and weekly scheduled playlist items with editable title, options, start/end behavior, and live Apply.
+- Bumper items in normal playlist for interstitial content.
+- Drag-and-drop support: drop files onto the input field or playlist.
+- Built-in log viewer displaying FFmpeg log messages forwarded via TCP.
+- Frame deliver block-time stats displayed in the position area.
 - Optional now-playing XML output for vMix and other external tools.
 - Automatic saving of UI settings, playlists, scheduled playlist, and favorite inputs to `OmniVCamController.xml`.
 
@@ -40,18 +46,35 @@ cd /d D:\OmniVCam
 regsvr32 /u OmniVCam.dll
 ```
 
+## Multiple Instances
+
+OmniVCam supports up to 4 simultaneous virtual camera instances. Each instance has its own CLSID and reads its own `config.ini` via an environment variable:
+
+| Instance | Environment Variable | Config Path Example |
+| --- | --- | --- |
+| OmniVCam | `OMNI_VCAM_CONFIG` | `D:\OmniVCam\config.ini` |
+| OmniVCam2 | `OMNI_VCAM_CONFIG2` | `D:\OmniVCam2\config.ini` |
+| OmniVCam3 | `OMNI_VCAM_CONFIG3` | `D:\OmniVCam3\config.ini` |
+| OmniVCam4 | `OMNI_VCAM_CONFIG4` | `D:\OmniVCam4\config.ini` |
+
+To run multiple instances, copy the DLL and config files into separate directories, set each environment variable to point to the corresponding `config.ini`, and register each DLL instance. Each instance exposes a distinct camera device name (e.g. `OmniVCam Virtual Camera`, `OmniVCam2 Virtual Camera`, etc.).
+
 ## Controller Basics
 
 Run `OmniVCamController.exe`. The default target is `127.0.0.1:16999`; the port must match `tcp_port` in `OmniVCam/config.ini`.
 
+### Connection Tabs
+
+The controller supports **multiple connection tabs**. Each tab maintains its own host, port, input settings, playlists, favorites, and log text. Use the `+` button to add a tab and the `-` button to remove one. Tab titles display the connection endpoint.
+
 Main controls:
 
 - `Host` / `Port`: TCP control endpoint.
-- `Input`: the input to play. It can be a file path, URL, DirectShow input, or a special input such as `<TESTCARD>`, `<TESTCARD2>`, or `<OBSVCAM>`.
+- `Input`: the input to play. It can be a file path, URL, DirectShow input, or a special input such as `<TESTCARD>`, `<TESTCARD2>`, or `<OBSVCAM>`. A quick-select dropdown provides quick access to special inputs.
 - `Title`: display title used by playlists and now-playing XML. If blank, the controller derives a title from the input.
 - `Options`: FFmpeg/open-input options for the current input, for example `seek_time=14,video_filter='bwdif=1'`.
 - `Browse`: select a local media file.
-- `Play`: play the current `Input` with current `Options`.
+- `Play`: play the current `Input` with current `Options`. During playback the button toggles to **Pause/Resume**.
 - `Stop`: stop playback and stop playout.
 - `Reopen`: reopen the current input.
 - `Ping`: test the TCP connection.
@@ -59,9 +82,20 @@ Main controls:
 - `HW decode`: set hardware decode mode: `none`, `dxva2`, `d3d11va`, `cuda`, or `qsv`.
 - `Video index` / `Audio index`: select input stream indexes. `-1` means auto.
 - `Seek seconds`: seek by absolute seconds.
-- `Progress`: drag to seek. With `Byte seek` enabled, the progress bar seeks by file byte percentage.
+- `Progress`: drag to seek. With `Byte seek` enabled, the progress bar seeks by file byte percentage. Quick `-5s` / `+5s` buttons are available beside the progress bar.
 - `Shift us`: output frame timing shift in microseconds.
+- `Scale mode`: output scaling mode (`letterbox`, `fill`). Can be changed at runtime.
+- `Display AR`: display aspect ratio (`auto`, `16:9`, `4:3`, `1:1`). Can be changed at runtime.
 - `Open playout`: open the separate playout window.
+
+### Log Viewer
+
+The main window includes a **log viewer** panel on the left side that displays FFmpeg log messages forwarded from the virtual camera instance over TCP. Log output is auto-scrolling and capped at a maximum line count. Each connection tab preserves its own log text independently.
+
+### Drag and Drop
+
+- Drag files onto the **Input** field to load them for playback.
+- Drag files onto the **Normal playlist** or **Scheduled playlist** to add them as items.
 
 ## Favorite Inputs
 
@@ -145,7 +179,7 @@ Normal playlist controls:
 - `Add current`: add current main `Input` to the normal playlist. This supports arbitrary input, not only files.
 - `Add files`: add media files.
 - `Add folder`: recursively add media files from a folder.
-- `Add bumper`: add a file marked as `Bumper`.
+- `Add bumper`: add a file marked as `Bumper`. Bumpers serve as interstitial content between normal playlist items during playout.
 - `Remove`, `Up`, `Down`: edit list order.
 - `Set title`: apply the main `Title` field to selected normal items.
 - `Set options`: apply the playout `Input options` field to selected normal items.
@@ -161,11 +195,19 @@ When scheduled playback finishes, the controller returns to the normal playlist 
 
 ## Now-Playing XML
 
-When `Write now playing XML` is checked, the controller writes this file beside the controller executable:
+When `Write now playing XML` is checked, the controller writes an XML file beside the controller executable. With a single connection tab the file is:
 
 ```text
 OmniVCamNowPlaying.xml
 ```
+
+With multiple connection tabs, each tab writes its own file named by host and port:
+
+```text
+OmniVCamNowPlaying-{host}-{port}.xml
+```
+
+For example `OmniVCamNowPlaying-127.0.0.1-16999.xml`.
 
 The file is updated from `STATUS` polling and on stop. It can be imported by tools such as vMix.
 
@@ -231,6 +273,12 @@ Example screenshot:
 
 ![TESTCARD2](assets/images/TESTCARD2.png)
 
+## Controller
+
+![Controller_1](assets/images/Controller_main.png)
+
+![Controller_2](assets/images/Controller_playout.png)
+
 ## Configuration Files
 
 Controller state is saved to:
@@ -262,14 +310,18 @@ The virtual camera accepts line-based TCP commands. Default port: `16999`.
 Supported commands include:
 
 - `PING`: returns `OK PONG`.
-- `STATUS`: returns seconds, duration, size, state, scale mode, display aspect, and input.
+- `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`.
 - `DURATION <input>[\toptions]`: probe input duration.
 - `PLAY <input>[\toptions]`: play input.
+- `PAUSE`: pause output without closing the input.
+- `RESUME`: resume paused output.
 - `STOP`: stop playback.
 - `REOPEN`: reopen current input.
 - `SET_FILTER <filter>`: set/cancel global video filter.
 - `SET_AUDIO_FILTER <filter>`: set/cancel global audio filter.
 - `SET_HW_DECODE <none|dxva2|d3d11va|cuda|qsv>`: set hardware decode.
+- `SET_SCALE_MODE <letterbox|fill|stretch|fit|keep_aspect|fullscreen>`: set output scale mode at runtime.
+- `SET_DISPLAY_ASPECT <auto|num:den>`: set display aspect ratio at runtime.
 - `SET_INDEX video=<n> audio=<n>`: set stream indexes.
 - `SET_SHIFT <microseconds>`: set output timing shift.
 - `SEEK <seconds>`: seek by seconds.
