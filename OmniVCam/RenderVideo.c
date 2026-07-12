@@ -90,6 +90,255 @@ static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 	}
 	test_card_free(card);
 }
+typedef struct frame_diagnostics_state {
+	CRITICAL_SECTION mutex;
+	int initialized;
+	int64_t last_input_video_us;
+	double input_video_fps;
+	int64_t last_filtered_video_us;
+	double filtered_video_fps;
+	int64_t last_output_video_us;
+	double output_video_fps;
+	int64_t last_input_audio_us;
+	double input_audio_fps;
+	int64_t last_filtered_audio_us;
+	double filtered_audio_fps;
+	int64_t last_output_audio_us;
+	double output_audio_fps;
+	char input_video[768];
+	char filtered_video[768];
+	char output_video[768];
+	char input_audio[768];
+	char filtered_audio[768];
+	char output_audio[768];
+	char video_logic[512];
+	char audio_logic[512];
+} frame_diagnostics_state;
+
+static frame_diagnostics_state g_frame_diagnostics;
+
+static void diagnostics_init_once(void)
+{
+	if (g_frame_diagnostics.initialized) return;
+	InitializeCriticalSection(&g_frame_diagnostics.mutex);
+	g_frame_diagnostics.initialized = 1;
+}
+
+static const char* diagnostics_color_range_name(enum AVColorRange value)
+{
+	const char* name = av_color_range_name(value);
+	return name ? name : "unspecified";
+}
+
+static const char* diagnostics_color_primaries_name(enum AVColorPrimaries value)
+{
+	const char* name = av_color_primaries_name(value);
+	return name ? name : "unspecified";
+}
+
+static const char* diagnostics_color_trc_name(enum AVColorTransferCharacteristic value)
+{
+	const char* name = av_color_transfer_name(value);
+	return name ? name : "unspecified";
+}
+
+static const char* diagnostics_color_space_name(enum AVColorSpace value)
+{
+	const char* name = av_color_space_name(value);
+	return name ? name : "unspecified";
+}
+
+static const char* diagnostics_pixel_format_name(int format)
+{
+	const char* name = av_get_pix_fmt_name((enum AVPixelFormat)format);
+	return name ? name : "unknown";
+}
+
+static const char* diagnostics_sample_format_name(int format)
+{
+	const char* name = av_get_sample_fmt_name((enum AVSampleFormat)format);
+	return name ? name : "unknown";
+}
+
+static int diagnostics_sample_bits(int format)
+{
+	int bytes = av_get_bytes_per_sample((enum AVSampleFormat)format);
+	return bytes > 0 ? bytes * 8 : 0;
+}
+
+static double diagnostics_update_fps(int64_t* last_us, double* avg_fps)
+{
+	int64_t now = av_gettime_relative();
+	double fps = *avg_fps;
+	if (*last_us > 0 && now > *last_us) {
+		double instant = 1000000.0 / (double)(now - *last_us);
+		fps = fps <= 0.0 ? instant : fps * 0.90 + instant * 0.10;
+		*avg_fps = fps;
+	}
+	*last_us = now;
+	return fps;
+}
+
+static const char* diagnostics_field_order_name(const AVFrame* frame)
+{
+	if (!frame || !(frame->flags & AV_FRAME_FLAG_INTERLACED)) return "progressive";
+	return (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? "tff" : "bff";
+}
+
+static void diagnostics_format_video(char* dst, size_t dst_size, const char* label, const AVFrame* frame, double fps)
+{
+	if (!frame) {
+		sprintf_s(dst, dst_size, "%s available=no", label);
+		return;
+	}
+	sprintf_s(dst, dst_size,
+		"%s available=yes fps=%.3f width=%d height=%d pix_fmt=%s range=%s color_primary=%s color_trc=%s color_matrix=%s interlaced=%s field_order=%s sar=%d/%d pts=%I64d",
+		label,
+		fps,
+		frame->width,
+		frame->height,
+		diagnostics_pixel_format_name(frame->format),
+		diagnostics_color_range_name(frame->color_range),
+		diagnostics_color_primaries_name(frame->color_primaries),
+		diagnostics_color_trc_name(frame->color_trc),
+		diagnostics_color_space_name(frame->colorspace),
+		(frame->flags & AV_FRAME_FLAG_INTERLACED) ? "yes" : "no",
+		diagnostics_field_order_name(frame),
+		frame->sample_aspect_ratio.num,
+		frame->sample_aspect_ratio.den,
+		frame->pts);
+}
+static void diagnostics_format_audio(char* dst, size_t dst_size, const char* label, const AVFrame* frame, double fps)
+{
+	char layout[128] = { 0 };
+	double frame_rate;
+	if (!frame) {
+		sprintf_s(dst, dst_size, "%s available=no", label);
+		return;
+	}
+	frame_rate = frame->sample_rate > 0 && frame->nb_samples > 0 ? (double)frame->sample_rate / (double)frame->nb_samples : fps;
+	av_channel_layout_describe(&frame->ch_layout, layout, sizeof(layout));
+	sprintf_s(dst, dst_size,
+		"%s available=yes fps=%.3f sample_rate=%d sample_fmt=%s bit_depth=%d channels=%d layout=%s nb_samples=%d pts=%I64d",
+		label,
+		frame_rate,
+		frame->sample_rate,
+		diagnostics_sample_format_name(frame->format),
+		diagnostics_sample_bits(frame->format),
+		frame->ch_layout.nb_channels,
+		layout[0] ? layout : "unknown",
+		frame->nb_samples,
+		frame->pts);
+}
+static void diagnostics_record_video_frame(int stage, const AVFrame* frame)
+{
+	double fps;
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	if (stage == 0) {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_input_video_us, &g_frame_diagnostics.input_video_fps);
+		diagnostics_format_video(g_frame_diagnostics.input_video, sizeof(g_frame_diagnostics.input_video), "video.input", frame, fps);
+	}
+	else if (stage == 1) {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_filtered_video_us, &g_frame_diagnostics.filtered_video_fps);
+		diagnostics_format_video(g_frame_diagnostics.filtered_video, sizeof(g_frame_diagnostics.filtered_video), "video.filtered", frame, fps);
+	}
+	else {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_output_video_us, &g_frame_diagnostics.output_video_fps);
+		diagnostics_format_video(g_frame_diagnostics.output_video, sizeof(g_frame_diagnostics.output_video), "video.output", frame, fps);
+	}
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+
+static void diagnostics_record_audio_frame(int stage, const AVFrame* frame)
+{
+	double fps;
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	if (stage == 0) {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_input_audio_us, &g_frame_diagnostics.input_audio_fps);
+		diagnostics_format_audio(g_frame_diagnostics.input_audio, sizeof(g_frame_diagnostics.input_audio), "audio.input", frame, fps);
+	}
+	else if (stage == 1) {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_filtered_audio_us, &g_frame_diagnostics.filtered_audio_fps);
+		diagnostics_format_audio(g_frame_diagnostics.filtered_audio, sizeof(g_frame_diagnostics.filtered_audio), "audio.filtered", frame, fps);
+	}
+	else {
+		fps = diagnostics_update_fps(&g_frame_diagnostics.last_output_audio_us, &g_frame_diagnostics.output_audio_fps);
+		diagnostics_format_audio(g_frame_diagnostics.output_audio, sizeof(g_frame_diagnostics.output_audio), "audio.output", frame, fps);
+	}
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+
+static void diagnostics_record_video_logic(const char* method, int letterbox, int x, int y, int width, int height, int flip)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	sprintf_s(g_frame_diagnostics.video_logic, sizeof(g_frame_diagnostics.video_logic),
+		"video.output_logic method=%s letterbox=%s rect=%d,%d,%d,%d flip=%s",
+		method ? method : "unknown",
+		letterbox ? "yes" : "no",
+		x,
+		y,
+		width,
+		height,
+		flip ? "yes" : "no");
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+
+static void diagnostics_record_audio_logic(const char* method, const AVFrame* input, const AVFrame* output)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	sprintf_s(g_frame_diagnostics.audio_logic, sizeof(g_frame_diagnostics.audio_logic),
+		"audio.output_logic method=%s input_samples=%d output_samples=%d",
+		method ? method : "unknown",
+		input ? input->nb_samples : 0,
+		output ? output->nb_samples : 0);
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+
+static void diagnostics_reset(void)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	memset(&g_frame_diagnostics.last_input_video_us, 0, sizeof(g_frame_diagnostics) - offsetof(frame_diagnostics_state, last_input_video_us));
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+static void diagnostics_reset_filtered_video(void)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	g_frame_diagnostics.last_filtered_video_us = 0;
+	g_frame_diagnostics.filtered_video_fps = 0.0;
+	g_frame_diagnostics.filtered_video[0] = '\0';
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+
+static void diagnostics_reset_filtered_audio(void)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	g_frame_diagnostics.last_filtered_audio_us = 0;
+	g_frame_diagnostics.filtered_audio_fps = 0.0;
+	g_frame_diagnostics.filtered_audio[0] = '\0';
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
+static void diagnostics_get_text(char* dst, size_t dst_size)
+{
+	diagnostics_init_once();
+	EnterCriticalSection(&g_frame_diagnostics.mutex);
+	sprintf_s(dst, dst_size, "OK %s;%s;%s;%s;%s;%s;%s;%s\n",
+		g_frame_diagnostics.input_video[0] ? g_frame_diagnostics.input_video : "video.input available=no",
+		g_frame_diagnostics.filtered_video[0] ? g_frame_diagnostics.filtered_video : "video.filtered available=no",
+		g_frame_diagnostics.output_video[0] ? g_frame_diagnostics.output_video : "video.output available=no",
+		g_frame_diagnostics.video_logic[0] ? g_frame_diagnostics.video_logic : "video.output_logic method=unknown",
+		g_frame_diagnostics.input_audio[0] ? g_frame_diagnostics.input_audio : "audio.input available=no",
+		g_frame_diagnostics.filtered_audio[0] ? g_frame_diagnostics.filtered_audio : "audio.filtered available=no",
+		g_frame_diagnostics.output_audio[0] ? g_frame_diagnostics.output_audio : "audio.output available=no",
+		g_frame_diagnostics.audio_logic[0] ? g_frame_diagnostics.audio_logic : "audio.output_logic method=unknown");
+	LeaveCriticalSection(&g_frame_diagnostics.mutex);
+}
 static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit, int *pause) {
 	int64_t start_time = av_gettime_relative();
 	int ret = 0;
@@ -1222,6 +1471,7 @@ int init_video_filter(inout_context* ctx, int width, int height, enum AVPixelFor
 {
 	filter_context* fctx = &ctx->filter_contexts[0];
 	avfilter_graph_free(&fctx->filter_graph);
+	diagnostics_reset_filtered_video();
 	avfilter_inout_free(&fctx->input);
 	avfilter_inout_free(&fctx->output);
 	fctx->buffer_src = NULL, fctx->buffer_sink = NULL;
@@ -1301,6 +1551,7 @@ static int init_audio_filter(inout_context* ctx, AVChannelLayout *ch_layout, int
 {
 	filter_context* fctx = &ctx->filter_contexts[1];
 	avfilter_graph_free(&fctx->filter_graph);
+	diagnostics_reset_filtered_audio();
 	avfilter_inout_free(&fctx->input);
 	avfilter_inout_free(&fctx->output);
 	fctx->buffer_src = NULL, fctx->buffer_sink = NULL;
@@ -1691,6 +1942,8 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		if ((ret = copy_direct_pixel_format(f, frame)) < 0) {
 			goto end;
 		}
+		diagnostics_record_video_logic("direct_pixel_copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
+		diagnostics_record_video_frame(2, f);
 		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
 			ret = -1;
 			goto end;
@@ -1721,6 +1974,8 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		}
 
 		av_frame_copy_props(f, frame);
+		diagnostics_record_video_logic(!filp && avframe_is_data_continuous(frame) ? "ref" : "copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
+		diagnostics_record_video_frame(2, f);
 		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
 			ret = -1;
 			goto end;
@@ -1775,6 +2030,8 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		fill_letterbox_black(f, scale_x, scale_y, scale_width, scale_height);
 	}
 
+	diagnostics_record_video_logic("sws_scale", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
+	diagnostics_record_video_frame(2, f);
 	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
 		ret = -1;
 	}
@@ -1852,6 +2109,8 @@ int fill_output_audio(inout_context* ctx, AVFrame* frame)
 	}
 	av_frame_copy_props(f, frame);
 	f->sample_rate = ctx->output_audio_sample_rate;
+	diagnostics_record_audio_logic(ctx->swr_ctx ? "swr_convert" : "copy", frame, f);
+	diagnostics_record_audio_frame(2, f);
 
 	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
 		ret = -1;
@@ -1958,6 +2217,7 @@ end:
 
 static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFrame* filtered_frame, int* filter_sent_eof)
 {
+	diagnostics_record_video_frame(0, frame);
 	if (!(*filter_sent_eof) && need_reinit_filter(ctx, frame->width, frame->height, frame->format, frame->sample_aspect_ratio, frame->colorspace, frame->color_range))
 	{
 		init_video_filter(ctx, frame->width, frame->height, frame->format,
@@ -1975,6 +2235,7 @@ static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFra
 		while (av_buffersink_get_frame(ctx->filter_contexts[0].buffer_sink, filtered_frame) >= 0)
 		{
 			filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[0].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+			diagnostics_record_video_frame(1, filtered_frame);
 			if (fill_output_video(ctx, filtered_frame) < 0) return -1;
 		}
 	}
@@ -2001,6 +2262,7 @@ static int flush_video_filter(inout_context* ctx, AVFrame* filtered_frame, int* 
 		while (av_buffersink_get_frame(ctx->filter_contexts[0].buffer_sink, filtered_frame) >= 0)
 		{
 			filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[0].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+			diagnostics_record_video_frame(1, filtered_frame);
 			if (fill_output_video(ctx, filtered_frame) < 0) return -1;
 		}
 	}
@@ -2105,6 +2367,7 @@ DWORD WINAPI decode_audio_thread(LPVOID p) {
 			while (av_buffersink_get_frame(ctx->filter_contexts[1].buffer_sink, filtered_frame) >= 0)
 			{
 				filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[1].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+				diagnostics_record_audio_frame(1, filtered_frame);
 				if (fill_output_audio(ctx, filtered_frame) < 0) goto end;
 			}
 		}
@@ -2112,6 +2375,7 @@ DWORD WINAPI decode_audio_thread(LPVOID p) {
 		if (decode_frame(ctx, frame, pkt, decoded, AVMEDIA_TYPE_AUDIO) >= 0)
 		{
 			ctx->last_audio_decode_time = av_gettime_relative();
+			diagnostics_record_audio_frame(0, frame);
 
 			if (!filter_sent_eof && need_reinit_audio_filter(ctx, &frame->ch_layout, frame->sample_rate, frame->format))
 			{
@@ -3393,6 +3657,10 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
+	if (starts_with_command(line, "FRAME_INFO")) {
+		diagnostics_get_text(reply, reply_size);
+		return;
+	}
 	if (starts_with_command(line, "DURATION")) {
 		int64_t duration = probe_input_duration_seconds(tcp_trim_left(line + 8));
 		if (duration < 0) sprintf_s(reply, reply_size, "ERR duration unavailable\n");
@@ -3907,6 +4175,7 @@ DWORD main_thread(LPVOID p) {
 				ctx->output_paused = 1;
 				stop_read(ctx, 1);
 				inout_context_reset_input(ctx);
+				diagnostics_reset();
 				ctx->output_paused = 0;
 				av_freep(&current_input);
 				EnterCriticalSection(&control_server.mutex);
@@ -3946,6 +4215,7 @@ DWORD main_thread(LPVOID p) {
 
 				stop_read(ctx, 1);
 				inout_context_reset_input(ctx);
+				diagnostics_reset();
 
 				if (play_dict && av_dict_copy(&temp_dict, play_dict, 0) >= 0) {
 					format = av_dict_pop_value(&temp_dict, "format");

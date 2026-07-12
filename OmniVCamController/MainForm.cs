@@ -499,6 +499,7 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton("Reopen", async (_, __) => await SendCommandAsync("REOPEN")));
             buttons.Controls.Add(MakeButton("Set video index", async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton("Set audio index", async (_, __) => await SendIndexesAsync()));
+            buttons.Controls.Add(MakeButton("Frame info", async (_, __) => await ShowFrameInfoAsync()));
             buttons.Controls.Add(MakeButton("Save XML", (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton("Open playout", (_, __) => OpenPlayoutWindow()));
             grid.Controls.Add(buttons, 0, grid.RowCount);
@@ -2447,6 +2448,61 @@ namespace OmniVCamController
         private Task<string> SendRawCommandAsync(string command)
         {
             return commandClient.SendAsync(hostBox.Text.Trim(), (int)portBox.Value, command);
+        }
+
+        private async Task ShowFrameInfoAsync()
+        {
+            string reply = await SendRawCommandAsync("FRAME_INFO");
+            AppendLog($"> FRAME_INFO\r\n< {reply}");
+            if (reply == null || !reply.StartsWith("OK ", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this, reply ?? "ERR no reply", "Frame info", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using (var dialog = new Form
+            {
+                Text = "Current Frame Info",
+                Size = new Size(760, 560),
+                MinimumSize = new Size(560, 360),
+                StartPosition = FormStartPosition.CenterParent,
+                Font = Font,
+                Icon = Icon
+            })
+            using (var text = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                Font = new Font(FontFamily.GenericMonospace, 9.0f),
+                Text = FormatFrameInfoReply(reply.Substring(3).Trim())
+            })
+            {
+                dialog.Controls.Add(text);
+                dialog.ShowDialog(this);
+            }
+        }
+
+        private static string FormatFrameInfoReply(string payload)
+        {
+            var builder = new StringBuilder();
+            foreach (string section in payload.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = section.Trim();
+                if (trimmed.Length == 0) continue;
+                int firstSpace = trimmed.IndexOf(' ');
+                string title = firstSpace > 0 ? trimmed.Substring(0, firstSpace) : trimmed;
+                string fields = firstSpace > 0 ? trimmed.Substring(firstSpace + 1) : string.Empty;
+                builder.AppendLine(title);
+                foreach (string part in fields.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    builder.Append("  ").AppendLine(part);
+                }
+                builder.AppendLine();
+            }
+            return builder.ToString().TrimEnd();
         }
 
         private async Task RefreshStatusAsync()
