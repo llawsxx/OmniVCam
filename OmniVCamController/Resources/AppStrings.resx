@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="AddBumper" xml:space="preserve"><value>Add bumper</value></data>
+  <data name="AddCurrent" xml:space="preserve"><value>Add current</value></data>
+  <data name="AddFiles" xml:space="preserve"><value>Add files</value></data>
+  <data name="AddFolder" xml:space="preserve"><value>Add folder</value></data>
+  <data name="Apply" xml:space="preserve"><value>Apply</value></data>
+  <data name="AtScheduledTime" xml:space="preserve"><value>At scheduled time</value></data>
+  <data name="AudioFilter" xml:space="preserve"><value>Audio filter</value></data>
+  <data name="AudioIndex" xml:space="preserve"><value>Audio index</value></data>
+  <data name="Blocked" xml:space="preserve"><value>Blocked</value></data>
+  <data name="Browse" xml:space="preserve"><value>Browse</value></data>
+  <data name="Bumper" xml:space="preserve"><value>Bumper</value></data>
+  <data name="ButtonOpen" xml:space="preserve"><value>Open</value></data>
+  <data name="ByteSeek" xml:space="preserve"><value>Byte seek</value></data>
+  <data name="Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="ColumnDuration" xml:space="preserve"><value>Duration</value></data>
+  <data name="ColumnEnd" xml:space="preserve"><value>End</value></data>
+  <data name="ColumnEndAction" xml:space="preserve"><value>End action</value></data>
+  <data name="ColumnInput" xml:space="preserve"><value>Input</value></data>
+  <data name="ColumnLastTriggered" xml:space="preserve"><value>Last triggered</value></data>
+  <data name="ColumnOptions" xml:space="preserve"><value>Options</value></data>
+  <data name="ColumnPath" xml:space="preserve"><value>Path</value></data>
+  <data name="ColumnSchedule" xml:space="preserve"><value>Schedule</value></data>
+  <data name="ColumnStart" xml:space="preserve"><value>Start</value></data>
+  <data name="ColumnStatus" xml:space="preserve"><value>Status</value></data>
+  <data name="ColumnTitle" xml:space="preserve"><value>Title</value></data>
+  <data name="ColumnType" xml:space="preserve"><value>Type</value></data>
+  <data name="ContinueImmediately" xml:space="preserve"><value>Continue immediately</value></data>
+  <data name="CurrentFrameInfoTitle" xml:space="preserve"><value>Current Frame Info</value></data>
+  <data name="Days" xml:space="preserve"><value>Days</value></data>
+  <data name="DisplayAR" xml:space="preserve"><value>Display AR</value></data>
+  <data name="Down" xml:space="preserve"><value>Down</value></data>
+  <data name="DurationUnknownByteSeek" xml:space="preserve"><value>Duration is unknown. Enable Byte seek to seek by file position.</value></data>
+  <data name="EndTime" xml:space="preserve"><value>End time</value></data>
+  <data name="Error" xml:space="preserve"><value>Error</value></data>
+  <data name="FavoriteInputs" xml:space="preserve"><value>Favorite inputs</value></data>
+  <data name="FrameDeliverBlockTime" xml:space="preserve"><value>Frame deliver block time: {0:0.###} / {1:0.###} ms</value></data>
+  <data name="FrameDeliverBlockTimeEmpty" xml:space="preserve"><value>Frame deliver block time: -- / -- ms</value></data>
+  <data name="FrameInfo" xml:space="preserve"><value>Frame info</value></data>
+  <data name="Host" xml:space="preserve"><value>Host</value></data>
+  <data name="HWDecode" xml:space="preserve"><value>HW decode</value></data>
+  <data name="IfMediaEndsEarly" xml:space="preserve"><value>If media ends early</value></data>
+  <data name="Input" xml:space="preserve"><value>Input</value></data>
+  <data name="InputEmpty" xml:space="preserve"><value>Input is empty.</value></data>
+  <data name="InputOptions" xml:space="preserve"><value>Input options</value></data>
+  <data name="InputPathEmpty" xml:space="preserve"><value>Input path is empty.</value></data>
+  <data name="InputTitle" xml:space="preserve"><value>Input title</value></data>
+  <data name="InWindow" xml:space="preserve"><value>In window</value></data>
+  <data name="Invalid" xml:space="preserve"><value>Invalid</value></data>
+  <data name="InvalidScheduledItemTitle" xml:space="preserve"><value>Invalid scheduled item</value></data>
+  <data name="InvalidScheduledPlaylistTitle" xml:space="preserve"><value>Invalid scheduled playlist</value></data>
+  <data name="Language" xml:space="preserve"><value>Language</value></data>
+  <data name="LanguageAuto" xml:space="preserve"><value>Auto</value></data>
+  <data name="LanguageEnglish" xml:space="preserve"><value>English</value></data>
+  <data name="LanguageSimplifiedChinese" xml:space="preserve"><value>Simplified Chinese</value></data>
+  <data name="LanguageTraditionalChinese" xml:space="preserve"><value>Traditional Chinese</value></data>
+  <data name="LanguageRestartRequired" xml:space="preserve"><value>Restart the controller to apply the language change.</value></data>
+  <data name="Load" xml:space="preserve"><value>Load</value></data>
+  <data name="LoadConfigFailed" xml:space="preserve"><value>Load config failed: {0}</value></data>
+  <data name="ManualPause" xml:space="preserve"><value>Pause</value></data>
+  <data name="ManualPlay" xml:space="preserve"><value>Play</value></data>
+  <data name="MediaFileFilter" xml:space="preserve"><value>Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mxf;*.vob;*.dat;*.mpg;*.mpeg;*.asf;*.rm;*.rmvb;*.mp3;*.wav;*.aac|All files|*.*</value></data>
+  <data name="Mode" xml:space="preserve"><value>Mode</value></data>
+  <data name="Next" xml:space="preserve"><value>Next</value></data>
+  <data name="NextSchedule" xml:space="preserve"><value>Next schedule</value></data>
+  <data name="NoDays" xml:space="preserve"><value>No days</value></data>
+  <data name="NormalAutoNext" xml:space="preserve"><value>Normal auto next</value></data>
+  <data name="NormalPlaylist" xml:space="preserve"><value>Normal playlist</value></data>
+  <data name="OneTime" xml:space="preserve"><value>One-time</value></data>
+  <data name="OneTimeStart" xml:space="preserve"><value>One-time start</value></data>
+  <data name="OpenPlayout" xml:space="preserve"><value>Open playout</value></data>
+  <data name="Options" xml:space="preserve"><value>Options</value></data>
+  <data name="Ping" xml:space="preserve"><value>Ping</value></data>
+  <data name="PlaylistFilter" xml:space="preserve"><value>OmniVCam playlist|*.ovcpl;*.txt|All files|*.*</value></data>
+  <data name="PlaylistSaveFilter" xml:space="preserve"><value>OmniVCam playlist|*.ovcpl|Text files|*.txt</value></data>
+  <data name="Playout" xml:space="preserve"><value>Playout</value></data>
+  <data name="PlayoutStarted" xml:space="preserve"><value>Playout started.</value></data>
+  <data name="PlayoutStatus" xml:space="preserve"><value>Playout: {0} / {1} / {2}</value></data>
+  <data name="PlayoutStatusStopped" xml:space="preserve"><value>Playout: stopped</value></data>
+  <data name="PlayoutStopped" xml:space="preserve"><value>Playout stopped.</value></data>
+  <data name="Port" xml:space="preserve"><value>Port</value></data>
+  <data name="Position" xml:space="preserve"><value>Position</value></data>
+  <data name="Program" xml:space="preserve"><value>Program</value></data>
+  <data name="Progress" xml:space="preserve"><value>Progress</value></data>
+  <data name="Random" xml:space="preserve"><value>Random</value></data>
+  <data name="RefreshDurations" xml:space="preserve"><value>Refresh durations</value></data>
+  <data name="Remove" xml:space="preserve"><value>Remove</value></data>
+  <data name="Reopen" xml:space="preserve"><value>Reopen</value></data>
+  <data name="ReplayUntilEnd" xml:space="preserve"><value>Replay until end</value></data>
+  <data name="SaveConfigFailed" xml:space="preserve"><value>Save config failed: {0}</value></data>
+  <data name="SaveNowPlayingXmlFailed" xml:space="preserve"><value>Save now playing XML failed: {0}</value></data>
+  <data name="SaveFile" xml:space="preserve"><value>Save file</value></data>
+  <data name="SaveXml" xml:space="preserve"><value>Save XML</value></data>
+  <data name="ScaleMode" xml:space="preserve"><value>Scale mode</value></data>
+  <data name="ScheduleEndBeforeStart" xml:space="preserve"><value>End time must be after start time.</value></data>
+  <data name="Scheduled" xml:space="preserve"><value>scheduled</value></data>
+  <data name="ScheduledItemInvalid" xml:space="preserve"><value>Scheduled item #{0} is invalid: {1}</value></data>
+  <data name="ScheduledPlaylist" xml:space="preserve"><value>Scheduled playlist</value></data>
+  <data name="ScheduleType" xml:space="preserve"><value>Schedule type</value></data>
+  <data name="SeekMode" xml:space="preserve"><value>Seek mode</value></data>
+  <data name="SeekSeconds" xml:space="preserve"><value>Seek seconds</value></data>
+  <data name="Sequential" xml:space="preserve"><value>Sequential</value></data>
+  <data name="Set" xml:space="preserve"><value>Set</value></data>
+  <data name="SetAudioIndex" xml:space="preserve"><value>Set audio index</value></data>
+  <data name="SetOptions" xml:space="preserve"><value>Set options</value></data>
+  <data name="SetTitle" xml:space="preserve"><value>Set title</value></data>
+  <data name="SetVideoIndex" xml:space="preserve"><value>Set video index</value></data>
+  <data name="ShiftUs" xml:space="preserve"><value>Shift us</value></data>
+  <data name="StartAt" xml:space="preserve"><value>Start at</value></data>
+  <data name="StartImmediately" xml:space="preserve"><value>Start immediately</value></data>
+  <data name="StartPlayout" xml:space="preserve"><value>Start playout</value></data>
+  <data name="StateEnded" xml:space="preserve"><value>Ended</value></data>
+  <data name="StateError" xml:space="preserve"><value>Error</value></data>
+  <data name="StateOpening" xml:space="preserve"><value>Opening</value></data>
+  <data name="StatePaused" xml:space="preserve"><value>Paused</value></data>
+  <data name="StatePlaying" xml:space="preserve"><value>Playing</value></data>
+  <data name="StateStopped" xml:space="preserve"><value>Stopped</value></data>
+  <data name="Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="Stopped" xml:space="preserve"><value>stopped</value></data>
+  <data name="StopPlayout" xml:space="preserve"><value>Stop playout</value></data>
+  <data name="Title" xml:space="preserve"><value>Title</value></data>
+  <data name="Up" xml:space="preserve"><value>Up</value></data>
+  <data name="UseEndTime" xml:space="preserve"><value>Use end time</value></data>
+  <data name="VideoFilter" xml:space="preserve"><value>Video filter</value></data>
+  <data name="VideoIndex" xml:space="preserve"><value>Video index</value></data>
+  <data name="Waiting" xml:space="preserve"><value>Waiting</value></data>
+  <data name="WaitCurrentItem" xml:space="preserve"><value>Wait current item</value></data>
+  <data name="WaitUntilEnd" xml:space="preserve"><value>Wait until end</value></data>
+  <data name="Weekly" xml:space="preserve"><value>Weekly</value></data>
+  <data name="WeeklyTime" xml:space="preserve"><value>Weekly time</value></data>
+  <data name="WeekFriday" xml:space="preserve"><value>Fri</value></data>
+  <data name="WeekMonday" xml:space="preserve"><value>Mon</value></data>
+  <data name="WeekSaturday" xml:space="preserve"><value>Sat</value></data>
+  <data name="WeekSunday" xml:space="preserve"><value>Sun</value></data>
+  <data name="WeekThursday" xml:space="preserve"><value>Thu</value></data>
+  <data name="WeekTuesday" xml:space="preserve"><value>Tue</value></data>
+  <data name="WeekWednesday" xml:space="preserve"><value>Wed</value></data>
+  <data name="WriteNowPlayingXml" xml:space="preserve"><value>Write now playing XML</value></data>
+</root>

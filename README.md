@@ -1,5 +1,7 @@
 # OmniVCam Virtual Cam
 
+[简体中文](README.zh-CN.md)
+
 OmniVCam is a Windows DirectShow virtual camera. It can output local media files, DirectShow capture devices, OBS virtual-camera shared memory, and built-in test cards as a camera device. `OmniVCamController.exe` is the WinForms controller used to play inputs, tune playback options, and run playout playlists.
 
 The project contains two main parts:
@@ -18,6 +20,7 @@ The project contains two main parts:
 - Runtime changes for scale mode and display aspect during playback.
 - Favorite inputs list for reusable input/options pairs.
 - Multiple connection tabs, each with independent host/port, input settings, playlists, and favorites.
+- Controller UI localization through standard `.resx` resources, currently English, Simplified Chinese, and Traditional Chinese.
 - Playout window with separate scheduled and normal playlists.
 - One-time and weekly scheduled playlist items with editable title, options, start/end behavior, and live Apply.
 - Bumper items in normal playlist for interstitial content.
@@ -74,7 +77,8 @@ Main controls:
 - `Title`: display title used by playlists and now-playing XML. If blank, the controller derives a title from the input.
 - `Options`: FFmpeg/open-input options for the current input, for example `seek_time=14,video_filter='bwdif=1'`.
 - `Browse`: select a local media file.
-- `Play`: play the current `Input` with current `Options`. During playback the button toggles to **Pause/Resume**.
+- `Open`: open/play the current `Input` with current `Options`.
+- `Play`: play the current `Input`, or toggle **Pause/Play** while playback is active or paused.
 - `Stop`: stop playback and stop playout.
 - `Reopen`: reopen the current input.
 - `Ping`: test the TCP connection.
@@ -87,6 +91,7 @@ Main controls:
 - `Scale mode`: output scaling mode (`letterbox`, `fill`). Can be changed at runtime.
 - `Display AR`: display aspect ratio (`auto`, `16:9`, `4:3`, `1:1`). Can be changed at runtime.
 - `Open playout`: open the separate playout window.
+- `Language`: select Auto, English, Simplified Chinese, or Traditional Chinese. Restart the controller after changing this setting.
 
 ### Log Viewer
 
@@ -288,6 +293,7 @@ OmniVCamController.xml
 ```
 
 This file stores controller settings, favorite inputs, normal playlist, scheduled playlist, and now-playing XML output preference.
+It also stores the controller UI language in the root `uiCulture` attribute when a language is selected explicitly.
 
 `OmniVCam/config.ini` is read by the virtual camera instance. Common keys include:
 

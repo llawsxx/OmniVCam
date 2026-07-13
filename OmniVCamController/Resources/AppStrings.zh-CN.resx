@@ -1,0 +1,426 @@
+<?xml version='1.0' encoding='utf-8'?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="AddBumper" xml:space="preserve">
+    <value>添加垫片</value>
+  </data>
+  <data name="AddCurrent" xml:space="preserve">
+    <value>添加当前</value>
+  </data>
+  <data name="AddFiles" xml:space="preserve">
+    <value>添加文件</value>
+  </data>
+  <data name="AddFolder" xml:space="preserve">
+    <value>添加文件夹</value>
+  </data>
+  <data name="Apply" xml:space="preserve">
+    <value>应用</value>
+  </data>
+  <data name="AtScheduledTime" xml:space="preserve">
+    <value>到计划时间时</value>
+  </data>
+  <data name="AudioFilter" xml:space="preserve">
+    <value>音频滤镜</value>
+  </data>
+  <data name="AudioIndex" xml:space="preserve">
+    <value>音频索引</value>
+  </data>
+  <data name="Blocked" xml:space="preserve">
+    <value>被阻塞</value>
+  </data>
+  <data name="Browse" xml:space="preserve">
+    <value>浏览</value>
+  </data>
+  <data name="Bumper" xml:space="preserve">
+    <value>垫片</value>
+  </data>
+  <data name="ButtonOpen" xml:space="preserve">
+    <value>打开</value>
+  </data>
+  <data name="ByteSeek" xml:space="preserve">
+    <value>字节定位</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+  <data name="ColumnDuration" xml:space="preserve">
+    <value>时长</value>
+  </data>
+  <data name="ColumnEnd" xml:space="preserve">
+    <value>结束</value>
+  </data>
+  <data name="ColumnEndAction" xml:space="preserve">
+    <value>结束动作</value>
+  </data>
+  <data name="ColumnInput" xml:space="preserve">
+    <value>输入</value>
+  </data>
+  <data name="ColumnLastTriggered" xml:space="preserve">
+    <value>上次触发</value>
+  </data>
+  <data name="ColumnOptions" xml:space="preserve">
+    <value>选项</value>
+  </data>
+  <data name="ColumnPath" xml:space="preserve">
+    <value>路径</value>
+  </data>
+  <data name="ColumnSchedule" xml:space="preserve">
+    <value>计划</value>
+  </data>
+  <data name="ColumnStart" xml:space="preserve">
+    <value>开始</value>
+  </data>
+  <data name="ColumnStatus" xml:space="preserve">
+    <value>状态</value>
+  </data>
+  <data name="ColumnTitle" xml:space="preserve">
+    <value>标题</value>
+  </data>
+  <data name="ColumnType" xml:space="preserve">
+    <value>类型</value>
+  </data>
+  <data name="ContinueImmediately" xml:space="preserve">
+    <value>立即继续</value>
+  </data>
+  <data name="CurrentFrameInfoTitle" xml:space="preserve">
+    <value>当前帧信息</value>
+  </data>
+  <data name="Days" xml:space="preserve">
+    <value>星期</value>
+  </data>
+  <data name="DisplayAR" xml:space="preserve">
+    <value>显示宽高比</value>
+  </data>
+  <data name="Down" xml:space="preserve">
+    <value>下移</value>
+  </data>
+  <data name="DurationUnknownByteSeek" xml:space="preserve">
+    <value>时长未知。启用字节定位可按文件位置定位。</value>
+  </data>
+  <data name="EndTime" xml:space="preserve">
+    <value>结束时间</value>
+  </data>
+  <data name="Error" xml:space="preserve">
+    <value>错误</value>
+  </data>
+  <data name="FavoriteInputs" xml:space="preserve">
+    <value>常用输入</value>
+  </data>
+  <data name="FrameDeliverBlockTime" xml:space="preserve">
+    <value>帧投递阻塞时间：{0:0.###} / {1:0.###} ms</value>
+  </data>
+  <data name="FrameDeliverBlockTimeEmpty" xml:space="preserve">
+    <value>帧投递阻塞时间：-- / -- ms</value>
+  </data>
+  <data name="FrameInfo" xml:space="preserve">
+    <value>帧信息</value>
+  </data>
+  <data name="Host" xml:space="preserve">
+    <value>主机</value>
+  </data>
+  <data name="HWDecode" xml:space="preserve">
+    <value>硬件解码</value>
+  </data>
+  <data name="IfMediaEndsEarly" xml:space="preserve">
+    <value>媒体提前结束时</value>
+  </data>
+  <data name="Input" xml:space="preserve">
+    <value>输入</value>
+  </data>
+  <data name="InputEmpty" xml:space="preserve">
+    <value>输入为空。</value>
+  </data>
+  <data name="InputOptions" xml:space="preserve">
+    <value>输入选项</value>
+  </data>
+  <data name="InputPathEmpty" xml:space="preserve">
+    <value>输入路径为空。</value>
+  </data>
+  <data name="InputTitle" xml:space="preserve">
+    <value>输入标题</value>
+  </data>
+  <data name="InWindow" xml:space="preserve">
+    <value>窗口内</value>
+  </data>
+  <data name="Invalid" xml:space="preserve">
+    <value>无效</value>
+  </data>
+  <data name="InvalidScheduledItemTitle" xml:space="preserve">
+    <value>计划项无效</value>
+  </data>
+  <data name="InvalidScheduledPlaylistTitle" xml:space="preserve">
+    <value>计划播放列表无效</value>
+  </data>
+  <data name="Language" xml:space="preserve">
+    <value>语言</value>
+  </data>
+  <data name="LanguageAuto" xml:space="preserve">
+    <value>自动</value>
+  </data>
+  <data name="LanguageEnglish" xml:space="preserve">
+    <value>英语</value>
+  </data>
+  <data name="LanguageSimplifiedChinese" xml:space="preserve">
+    <value>简体中文</value>
+  </data>
+  <data name="LanguageTraditionalChinese" xml:space="preserve">
+    <value>繁体中文</value>
+  </data>
+  <data name="Load" xml:space="preserve">
+    <value>加载</value>
+  </data>
+  <data name="LoadConfigFailed" xml:space="preserve">
+    <value>加载配置失败：{0}</value>
+  </data>
+  <data name="ManualPause" xml:space="preserve">
+    <value>暂停</value>
+  </data>
+  <data name="ManualPlay" xml:space="preserve">
+    <value>播放</value>
+  </data>
+  <data name="MediaFileFilter" xml:space="preserve">
+    <value>媒体文件|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mxf;*.vob;*.dat;*.mpg;*.mpeg;*.asf;*.rm;*.rmvb;*.mp3;*.wav;*.aac|所有文件|*.*</value>
+  </data>
+  <data name="Mode" xml:space="preserve">
+    <value>模式</value>
+  </data>
+  <data name="Next" xml:space="preserve">
+    <value>下一条</value>
+  </data>
+  <data name="NextSchedule" xml:space="preserve">
+    <value>下一计划</value>
+  </data>
+  <data name="NoDays" xml:space="preserve">
+    <value>未选择星期</value>
+  </data>
+  <data name="NormalAutoNext" xml:space="preserve">
+    <value>普通列表自动下一条</value>
+  </data>
+  <data name="NormalPlaylist" xml:space="preserve">
+    <value>普通播放列表</value>
+  </data>
+  <data name="OneTime" xml:space="preserve">
+    <value>一次性</value>
+  </data>
+  <data name="OneTimeStart" xml:space="preserve">
+    <value>一次性开始</value>
+  </data>
+  <data name="OpenPlayout" xml:space="preserve">
+    <value>打开播出窗口</value>
+  </data>
+  <data name="Options" xml:space="preserve">
+    <value>选项</value>
+  </data>
+  <data name="Ping" xml:space="preserve">
+    <value>Ping</value>
+  </data>
+  <data name="PlaylistFilter" xml:space="preserve">
+    <value>OmniVCam 播放列表|*.ovcpl;*.txt|所有文件|*.*</value>
+  </data>
+  <data name="PlaylistSaveFilter" xml:space="preserve">
+    <value>OmniVCam 播放列表|*.ovcpl|文本文件|*.txt</value>
+  </data>
+  <data name="Playout" xml:space="preserve">
+    <value>播出</value>
+  </data>
+  <data name="PlayoutStarted" xml:space="preserve">
+    <value>播出已开始。</value>
+  </data>
+  <data name="PlayoutStatus" xml:space="preserve">
+    <value>播出：{0} / {1} / {2}</value>
+  </data>
+  <data name="PlayoutStatusStopped" xml:space="preserve">
+    <value>播出：已停止</value>
+  </data>
+  <data name="PlayoutStopped" xml:space="preserve">
+    <value>播出已停止。</value>
+  </data>
+  <data name="Port" xml:space="preserve">
+    <value>端口</value>
+  </data>
+  <data name="Position" xml:space="preserve">
+    <value>位置</value>
+  </data>
+  <data name="Program" xml:space="preserve">
+    <value>节目</value>
+  </data>
+  <data name="Progress" xml:space="preserve">
+    <value>进度</value>
+  </data>
+  <data name="Random" xml:space="preserve">
+    <value>随机</value>
+  </data>
+  <data name="RefreshDurations" xml:space="preserve">
+    <value>刷新时长</value>
+  </data>
+  <data name="Remove" xml:space="preserve">
+    <value>删除</value>
+  </data>
+  <data name="Reopen" xml:space="preserve">
+    <value>重新打开</value>
+  </data>
+  <data name="ReplayUntilEnd" xml:space="preserve">
+    <value>重播到结束</value>
+  </data>
+  <data name="SaveConfigFailed" xml:space="preserve">
+    <value>保存配置失败：{0}</value>
+  </data>
+  <data name="SaveNowPlayingXmlFailed" xml:space="preserve">
+    <value>保存正在播放 XML 失败：{0}</value>
+  </data>
+  <data name="SaveFile" xml:space="preserve">
+    <value>保存文件</value>
+  </data>
+  <data name="SaveXml" xml:space="preserve">
+    <value>保存 XML</value>
+  </data>
+  <data name="ScaleMode" xml:space="preserve">
+    <value>缩放模式</value>
+  </data>
+  <data name="ScheduleEndBeforeStart" xml:space="preserve">
+    <value>结束时间必须晚于开始时间。</value>
+  </data>
+  <data name="Scheduled" xml:space="preserve">
+    <value>计划</value>
+  </data>
+  <data name="ScheduledItemInvalid" xml:space="preserve">
+    <value>计划项 #{0} 无效：{1}</value>
+  </data>
+  <data name="ScheduledPlaylist" xml:space="preserve">
+    <value>计划播放列表</value>
+  </data>
+  <data name="ScheduleType" xml:space="preserve">
+    <value>计划类型</value>
+  </data>
+  <data name="SeekMode" xml:space="preserve">
+    <value>定位模式</value>
+  </data>
+  <data name="SeekSeconds" xml:space="preserve">
+    <value>定位秒数</value>
+  </data>
+  <data name="Sequential" xml:space="preserve">
+    <value>顺序</value>
+  </data>
+  <data name="Set" xml:space="preserve">
+    <value>设置</value>
+  </data>
+  <data name="SetAudioIndex" xml:space="preserve">
+    <value>设置音频索引</value>
+  </data>
+  <data name="SetOptions" xml:space="preserve">
+    <value>设置选项</value>
+  </data>
+  <data name="SetTitle" xml:space="preserve">
+    <value>设置标题</value>
+  </data>
+  <data name="SetVideoIndex" xml:space="preserve">
+    <value>设置视频索引</value>
+  </data>
+  <data name="ShiftUs" xml:space="preserve">
+    <value>偏移 us</value>
+  </data>
+  <data name="StartAt" xml:space="preserve">
+    <value>开始于</value>
+  </data>
+  <data name="StartImmediately" xml:space="preserve">
+    <value>立即开始</value>
+  </data>
+  <data name="StartPlayout" xml:space="preserve">
+    <value>开始播出</value>
+  </data>
+  <data name="StateEnded" xml:space="preserve">
+    <value>已结束</value>
+  </data>
+  <data name="StateError" xml:space="preserve">
+    <value>错误</value>
+  </data>
+  <data name="StateOpening" xml:space="preserve">
+    <value>正在打开</value>
+  </data>
+  <data name="StatePaused" xml:space="preserve">
+    <value>已暂停</value>
+  </data>
+  <data name="StatePlaying" xml:space="preserve">
+    <value>播放中</value>
+  </data>
+  <data name="StateStopped" xml:space="preserve">
+    <value>已停止</value>
+  </data>
+  <data name="Stop" xml:space="preserve">
+    <value>停止</value>
+  </data>
+  <data name="Stopped" xml:space="preserve">
+    <value>已停止</value>
+  </data>
+  <data name="StopPlayout" xml:space="preserve">
+    <value>停止播出</value>
+  </data>
+  <data name="Title" xml:space="preserve">
+    <value>标题</value>
+  </data>
+  <data name="Up" xml:space="preserve">
+    <value>上移</value>
+  </data>
+  <data name="UseEndTime" xml:space="preserve">
+    <value>使用结束时间</value>
+  </data>
+  <data name="VideoFilter" xml:space="preserve">
+    <value>视频滤镜</value>
+  </data>
+  <data name="VideoIndex" xml:space="preserve">
+    <value>视频索引</value>
+  </data>
+  <data name="Waiting" xml:space="preserve">
+    <value>等待中</value>
+  </data>
+  <data name="WaitCurrentItem" xml:space="preserve">
+    <value>等待当前项</value>
+  </data>
+  <data name="WaitUntilEnd" xml:space="preserve">
+    <value>等待到结束</value>
+  </data>
+  <data name="Weekly" xml:space="preserve">
+    <value>每周</value>
+  </data>
+  <data name="WeeklyTime" xml:space="preserve">
+    <value>每周时间</value>
+  </data>
+  <data name="WeekFriday" xml:space="preserve">
+    <value>周五</value>
+  </data>
+  <data name="WeekMonday" xml:space="preserve">
+    <value>周一</value>
+  </data>
+  <data name="WeekSaturday" xml:space="preserve">
+    <value>周六</value>
+  </data>
+  <data name="WeekSunday" xml:space="preserve">
+    <value>周日</value>
+  </data>
+  <data name="WeekThursday" xml:space="preserve">
+    <value>周四</value>
+  </data>
+  <data name="WeekTuesday" xml:space="preserve">
+    <value>周二</value>
+  </data>
+  <data name="WeekWednesday" xml:space="preserve">
+    <value>周三</value>
+  </data>
+  <data name="WriteNowPlayingXml" xml:space="preserve">
+    <value>写入正在播放 XML</value>
+  </data>
+  <data name="LanguageRestartRequired" xml:space="preserve">
+    <value>重启 Controller 后语言更改才会生效。</value>
+  </data>
+</root>
