@@ -81,6 +81,8 @@ namespace OmniVCamController
             scaleModeBox.Text = "letterbox";
             displayAspectBox.Items.AddRange(new object[] { "auto", "16:9", "4:3", "1:1" });
             displayAspectBox.Text = "auto";
+            autoDeinterlaceFilterBox.Items.AddRange(new object[] { "bwdif", "yadif", "w3fdif" });
+            autoDeinterlaceFilterBox.Text = "bwdif";
             InitializeLocalizedComboItems();
             scheduledStartPicker.Value = DateTime.Today.AddHours(DateTime.Now.Hour).AddMinutes(DateTime.Now.Minute).AddMinutes(1);
             scheduleDateTimePicker.Value = DateTime.Now.AddMinutes(1);
@@ -221,6 +223,8 @@ namespace OmniVCamController
                 DisplayAspect = displayAspectBox.Text,
                 VideoFilter = videoFilterBox.Text,
                 AudioFilter = audioFilterBox.Text,
+                AutoDeinterlace = autoDeinterlaceBox.Checked,
+                AutoDeinterlaceFilter = autoDeinterlaceFilterBox.Text,
                 VideoIndex = videoIndexBox.Value,
                 AudioIndex = audioIndexBox.Value,
                 Shift = shiftBox.Value,
@@ -312,6 +316,8 @@ namespace OmniVCamController
             activeState.DisplayAspect = displayAspectBox.Text;
             activeState.VideoFilter = videoFilterBox.Text;
             activeState.AudioFilter = audioFilterBox.Text;
+            activeState.AutoDeinterlace = autoDeinterlaceBox.Checked;
+            activeState.AutoDeinterlaceFilter = autoDeinterlaceFilterBox.Text;
             activeState.VideoIndex = videoIndexBox.Value;
             activeState.AudioIndex = audioIndexBox.Value;
             activeState.Shift = shiftBox.Value;
@@ -391,6 +397,8 @@ namespace OmniVCamController
             displayAspectBox.Text = state.DisplayAspect;
             videoFilterBox.Text = state.VideoFilter;
             audioFilterBox.Text = state.AudioFilter;
+            autoDeinterlaceBox.Checked = state.AutoDeinterlace;
+            if (autoDeinterlaceFilterBox.Items.Contains(state.AutoDeinterlaceFilter)) autoDeinterlaceFilterBox.Text = state.AutoDeinterlaceFilter;
             videoIndexBox.Value = Clamp(state.VideoIndex, videoIndexBox.Minimum, videoIndexBox.Maximum);
             audioIndexBox.Value = Clamp(state.AudioIndex, audioIndexBox.Minimum, audioIndexBox.Maximum);
             shiftBox.Value = Clamp(state.Shift, shiftBox.Minimum, shiftBox.Maximum);
@@ -479,13 +487,14 @@ namespace OmniVCamController
         {
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             parent.Controls.Add(root);
 
             var grid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, AutoSize = true };
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             root.Controls.Add(grid, 0, 0);
 
@@ -508,6 +517,7 @@ namespace OmniVCamController
             AddRow(grid, T("HWDecode"), CreateHwDecodeControl(), T("ScaleMode"), CreateScaleModeControl());
             AddRow(grid, T("DisplayAR"), CreateDisplayAspectControl(), T("ShiftUs"), CreateShiftControl());
             AddRow(grid, T("VideoFilter"), CreateVideoFilterControl(), T("AudioFilter"), CreateAudioFilterControl());
+            AddRow(grid, T("AutoDeinterlace"), CreateAutoDeinterlaceControl(), T("AutoDeinterlaceFilter"), autoDeinterlaceFilterBox);
             AddRow(grid, T("VideoIndex"), videoIndexBox, T("AudioIndex"), audioIndexBox);
             AddRow(grid, T("Position"), CreatePositionControl(), T("SeekSeconds"), seekBox);
             AddProgressRow(grid);
@@ -525,6 +535,14 @@ namespace OmniVCamController
             audioIndexBox.ValueChanged += async (_, __) =>
             {
                 if (controlsReady) await SendIndexesAsync();
+            };
+            autoDeinterlaceBox.CheckedChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendAutoDeinterlaceAsync();
+            };
+            autoDeinterlaceFilterBox.SelectedIndexChanged += async (_, __) =>
+            {
+                if (controlsReady) await SendAutoDeinterlaceAsync();
             };
             seekBox.ValueChanged += async (_, __) =>
             {
@@ -546,7 +564,7 @@ namespace OmniVCamController
                 if (controlsReady) await SendDisplayAspectAsync();
             };
 
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top | DockStyle.Left, AutoSize = true, Padding = new Padding(0, 6, 0, 6) };
             buttons.Controls.Add(MakeButton(T("Ping"), async (_, __) => await SendCommandAsync("PING")));
             buttons.Controls.Add(MakeButton(T("ButtonOpen"), async (_, __) => await PlayManualAsync()));
             manualPlayButton = MakeButton(T("ManualPlay"), async (_, __) => await ToggleManualPlayPauseAsync());
@@ -558,16 +576,13 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton(T("FrameInfo"), async (_, __) => await ShowFrameInfoAsync()));
             buttons.Controls.Add(MakeButton(T("SaveXml"), (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton(T("OpenPlayout"), (_, __) => OpenPlayoutWindow()));
-            grid.Controls.Add(buttons, 0, grid.RowCount);
-            grid.SetColumnSpan(buttons, 4);
-            grid.RowCount++;
-
-            root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 1);
+            root.Controls.Add(buttons, 0, 1);
+            root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 2);
         }
 
         private Control CreatePositionControl()
 		{
-			var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+			var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
 			panel.Controls.Add(positionLabel);
 			panel.Controls.Add(deliverLabel);
 			return panel;
@@ -822,7 +837,7 @@ namespace OmniVCamController
             grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             grid.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(0, 4, 0, 0) }, 0, row);
             grid.Controls.Add(control, 1, row);
-            grid.SetColumnSpan(control, 3);
+            grid.SetColumnSpan(control, grid.ColumnCount - 1);
         }
 
         private void AddProgressRow(TableLayoutPanel grid)
@@ -908,6 +923,14 @@ namespace OmniVCamController
             displayAspectBox.Dock = DockStyle.Fill;
             return displayAspectBox;
         }
+
+        private Control CreateAutoDeinterlaceControl()
+        {
+            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+            panel.Controls.Add(autoDeinterlaceBox);
+            return panel;
+        }
+
         private Control CreateVideoFilterControl()
         {
             return CreateFilterControl(videoFilterBox, async () => await SendVideoFilterAsync(), async () => await CancelVideoFilterAsync());
@@ -1004,7 +1027,7 @@ namespace OmniVCamController
             {
                 ColumnCount = 3,
                 Dock = DockStyle.Fill,
-                Margin = Padding.Empty,
+                Margin = new Padding(0, 4, 0, 0),
                 AutoSize = true
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1112,6 +1135,12 @@ namespace OmniVCamController
         {
             await SendCommandAsync($"SET_DISPLAY_ASPECT {displayAspectBox.Text.Trim()}");
         }
+
+        private async Task SendAutoDeinterlaceAsync()
+        {
+            await SendCommandAsync($"SET_AUTO_DEINTERLACE {(autoDeinterlaceBox.Checked ? 1 : 0)} {autoDeinterlaceFilterBox.Text.Trim()}");
+        }
+
         private async Task CancelVideoFilterAsync()
         {
             await SendCommandAsync("SET_FILTER ");
@@ -1136,6 +1165,7 @@ namespace OmniVCamController
                 $"SET_HW_DECODE {hwDecodeBox.Text.Trim()}",
                 $"SET_SCALE_MODE {scaleModeBox.Text.Trim()}",
                 $"SET_DISPLAY_ASPECT {displayAspectBox.Text.Trim()}",
+                $"SET_AUTO_DEINTERLACE {(autoDeinterlaceBox.Checked ? 1 : 0)} {autoDeinterlaceFilterBox.Text.Trim()}",
                 $"SET_INDEX video={(int)videoIndexBox.Value} audio={(int)audioIndexBox.Value}",
                 $"SET_SHIFT {(long)shiftBox.Value}"
             });
@@ -1997,6 +2027,8 @@ namespace OmniVCamController
                     new XAttribute("displayAspect", state.DisplayAspect),
                     new XAttribute("videoFilter", state.VideoFilter),
                     new XAttribute("audioFilter", state.AudioFilter),
+                    new XAttribute("autoDeinterlace", state.AutoDeinterlace ? "1" : "0"),
+                    new XAttribute("autoDeinterlaceFilter", state.AutoDeinterlaceFilter),
                     new XAttribute("videoIndex", state.VideoIndex),
                     new XAttribute("audioIndex", state.AudioIndex),
                     new XAttribute("shift", state.Shift),
@@ -2177,6 +2209,9 @@ namespace OmniVCamController
             displayAspectBox.Text = GetAttribute(settings, "displayAspect", displayAspectBox.Text);
             videoFilterBox.Text = GetAttribute(settings, "videoFilter", videoFilterBox.Text);
             audioFilterBox.Text = GetAttribute(settings, "audioFilter", audioFilterBox.Text);
+            autoDeinterlaceBox.Checked = GetAttribute(settings, "autoDeinterlace", autoDeinterlaceBox.Checked ? "1" : "0") == "1";
+            string autoDeinterlaceFilter = GetAttribute(settings, "autoDeinterlaceFilter", autoDeinterlaceFilterBox.Text);
+            if (autoDeinterlaceFilterBox.Items.Contains(autoDeinterlaceFilter)) autoDeinterlaceFilterBox.Text = autoDeinterlaceFilter;
 
             if (decimal.TryParse(GetAttribute(settings, "port", null), out decimalValue)) portBox.Value = Clamp(decimalValue, portBox.Minimum, portBox.Maximum);
             if (decimal.TryParse(GetAttribute(settings, "videoIndex", null), out decimalValue)) videoIndexBox.Value = Clamp(decimalValue, videoIndexBox.Minimum, videoIndexBox.Maximum);
@@ -3317,6 +3352,8 @@ namespace OmniVCamController
             public string DisplayAspect { get; set; } = "auto";
             public string VideoFilter { get; set; } = string.Empty;
             public string AudioFilter { get; set; } = string.Empty;
+            public bool AutoDeinterlace { get; set; } = true;
+            public string AutoDeinterlaceFilter { get; set; } = "bwdif";
             public decimal VideoIndex { get; set; } = -1;
             public decimal AudioIndex { get; set; } = -1;
             public decimal Shift { get; set; }

@@ -423,4 +423,10 @@
   <data name="LanguageRestartRequired" xml:space="preserve">
     <value>重新啟動 Controller 後語言變更才會生效。</value>
   </data>
+  <data name="AutoDeinterlace" xml:space="preserve">
+    <value>自動去隔行</value>
+  </data>
+  <data name="AutoDeinterlaceFilter" xml:space="preserve">
+    <value>自動去隔行濾鏡</value>
+  </data>
 </root>

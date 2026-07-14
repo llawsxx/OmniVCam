@@ -83,6 +83,8 @@ Main controls:
 - `Reopen`: reopen the current input.
 - `Ping`: test the TCP connection.
 - `Video filter` / `Audio filter`: set or cancel global filters.
+- `Auto deinterlace`: automatically applies the selected deinterlace filter only when no `video_filter` is set and an interlaced frame is detected. Mixed progressive/interlaced streams are handled per frame: progressive frames bypass the auto filter, interlaced frames go through it.
+- `Deinterlace filter`: automatic deinterlace filter, `bwdif`, `yadif`, or `w3fdif`.
 - `HW decode`: set hardware decode mode: `none`, `dxva2`, `d3d11va`, `cuda`, or `qsv`.
 - `Video index` / `Audio index`: select input stream indexes. `-1` means auto.
 - `Seek seconds`: seek by absolute seconds.
@@ -251,6 +253,8 @@ Supported OmniVCam-specific options include:
 
 - `video_filter`: per-input video filter.
 - `audio_filter`: per-input audio filter.
+- `auto_deinterlace`: optional per-input automatic deinterlace override, `1` or `0`.
+- `auto_deinterlace_filter`: optional per-input automatic deinterlace filter override, `bwdif`, `yadif`, or `w3fdif`.
 - `video_index` / `audio_index`: input stream indexes.
 - `seek_time`: seek after opening input.
 - `queue_left` / `queue_right` / `queue_center`: frame queue tuning.
@@ -299,6 +303,10 @@ It also stores the controller UI language in the root `uiCulture` attribute when
 
 - `hw_decode`: default hardware decode mode.
 - `tcp_port`: TCP control port, default `16999`.
+- `scale_mode`: output scaling mode, `letterbox` or `fill`.
+- `display_aspect`: output display aspect ratio, `auto` or a ratio such as `16:9`.
+- `auto_deinterlace`: automatic deinterlace default, `1` enabled and `0` disabled. It only takes effect when no global or per-input video filter is set.
+- `auto_deinterlace_filter`: automatic deinterlace filter, `bwdif`, `yadif`, or `w3fdif`; default is `bwdif`.
 - `log_level`: FFmpeg log level.
 - `video_frame_buffer` / `audio_frame_buffer`: output frame buffering.
 - `packet_queue_size`: packet queue size.
@@ -328,6 +336,7 @@ Supported commands include:
 - `SET_HW_DECODE <none|dxva2|d3d11va|cuda|qsv>`: set hardware decode.
 - `SET_SCALE_MODE <letterbox|fill|stretch|fit|keep_aspect|fullscreen>`: set output scale mode at runtime.
 - `SET_DISPLAY_ASPECT <auto|num:den>`: set display aspect ratio at runtime.
+- `SET_AUTO_DEINTERLACE <0|1> [bwdif|yadif|w3fdif]`: set automatic deinterlace behavior at runtime.
 - `SET_INDEX video=<n> audio=<n>`: set stream indexes.
 - `SET_SHIFT <microseconds>`: set output timing shift.
 - `SEEK <seconds>`: seek by seconds.

@@ -15,6 +15,8 @@ namespace OmniVCamController
         private ComboBox displayAspectBox;
         private TextBox videoFilterBox;
         private TextBox audioFilterBox;
+        private CheckBox autoDeinterlaceBox;
+        private ComboBox autoDeinterlaceFilterBox;
         private NumericUpDown videoIndexBox;
         private NumericUpDown audioIndexBox;
         private NumericUpDown shiftBox;
@@ -66,6 +68,8 @@ namespace OmniVCamController
             displayAspectBox = new ComboBox();
             videoFilterBox = new TextBox();
             audioFilterBox = new TextBox();
+            autoDeinterlaceBox = new CheckBox();
+            autoDeinterlaceFilterBox = new ComboBox();
             videoIndexBox = new NumericUpDown();
             audioIndexBox = new NumericUpDown();
             shiftBox = new NumericUpDown();
@@ -134,6 +138,11 @@ namespace OmniVCamController
             displayAspectBox.DropDownStyle = ComboBoxStyle.DropDown;
             videoFilterBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             audioFilterBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            autoDeinterlaceBox.Text = string.Empty;
+            autoDeinterlaceBox.Checked = true;
+            autoDeinterlaceBox.AutoSize = true;
+            autoDeinterlaceBox.Anchor = AnchorStyles.Left;
+            autoDeinterlaceFilterBox.DropDownStyle = ComboBoxStyle.DropDownList;
             videoIndexBox.Minimum = -1;
             videoIndexBox.Maximum = 128;
             videoIndexBox.Value = -1;

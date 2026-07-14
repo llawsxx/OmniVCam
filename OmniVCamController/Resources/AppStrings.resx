@@ -12,6 +12,8 @@
   <data name="AtScheduledTime" xml:space="preserve"><value>At scheduled time</value></data>
   <data name="AudioFilter" xml:space="preserve"><value>Audio filter</value></data>
   <data name="AudioIndex" xml:space="preserve"><value>Audio index</value></data>
+  <data name="AutoDeinterlace" xml:space="preserve"><value>Auto deinterlace</value></data>
+  <data name="AutoDeinterlaceFilter" xml:space="preserve"><value>Deinterlace filter</value></data>
   <data name="Blocked" xml:space="preserve"><value>Blocked</value></data>
   <data name="Browse" xml:space="preserve"><value>Browse</value></data>
   <data name="Bumper" xml:space="preserve"><value>Bumper</value></data>

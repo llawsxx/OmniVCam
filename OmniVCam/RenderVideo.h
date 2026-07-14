@@ -134,6 +134,10 @@ typedef struct inout_context {
 	int needs_reinit_audio_filter;
 	char* filter_text;
 	char* audio_filter_text;
+	int auto_deinterlace_enabled;
+	int auto_deinterlace_pending;
+	int auto_deinterlace_applied;
+	char* auto_deinterlace_filter;
 	CRITICAL_SECTION filter_text_mutex;
 
 	int64_t input_frame_id;

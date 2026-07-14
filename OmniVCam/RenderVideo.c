@@ -845,6 +845,7 @@ void inout_context_free(inout_context** ctx)
 	DeleteCriticalSection(&(*ctx)->input_change_mutex);
 	av_free((*ctx)->filter_text);
 	av_free((*ctx)->audio_filter_text);
+	av_free((*ctx)->auto_deinterlace_filter);
 	av_freep(&(*ctx)->input_name);
 	frame_queue_free(&(*ctx)->frame_queues[0]);
 	frame_queue_free(&(*ctx)->frame_queues[1]);
@@ -933,6 +934,7 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->force_exit = 0;
 	ctx->eof = 0;
 	ctx->input_start_time = AV_NOPTS_VALUE;
+
 }
 
 int input_call_back(void* p)
@@ -2215,16 +2217,98 @@ end:
 	return 0;
 }
 
+void set_input_filter(inout_context* ctx, char* filter_text);
+
+static int is_blank_text(const char* text)
+{
+	return !text || text[0] == '\0';
+}
+
+static const char* normalize_deinterlace_filter(const char* filter)
+{
+	if (!filter || filter[0] == '\0') return "bwdif";
+	if (_stricmp(filter, "bwdif") == 0) return "bwdif";
+	if (_stricmp(filter, "yadif") == 0) return "yadif";
+	if (_stricmp(filter, "w3fdif") == 0) return "w3fdif";
+	return "bwdif";
+}
+
+static int frame_is_interlaced(const AVFrame* frame)
+{
+	return frame && (frame->flags & AV_FRAME_FLAG_INTERLACED);
+}
+
+static void set_auto_deinterlace_config(inout_context* ctx, int enabled, const char* filter)
+{
+	if (!ctx) return;
+	EnterCriticalSection(&ctx->filter_text_mutex);
+	ctx->auto_deinterlace_enabled = enabled ? 1 : 0;
+	av_freep(&ctx->auto_deinterlace_filter);
+	ctx->auto_deinterlace_filter = av_strdup(normalize_deinterlace_filter(filter));
+	LeaveCriticalSection(&ctx->filter_text_mutex);
+}
+
+static char* get_auto_deinterlace_filter_copy(inout_context* ctx)
+{
+	char* filter = NULL;
+	if (!ctx) return NULL;
+	EnterCriticalSection(&ctx->filter_text_mutex);
+	filter = av_strdup(ctx->auto_deinterlace_filter);
+	LeaveCriticalSection(&ctx->filter_text_mutex);
+	return filter;
+}
+static void configure_auto_deinterlace_for_input(inout_context* ctx, const char* selected_video_filter, const char* global_video_filter)
+{
+	int enabled = 0;
+	if (!ctx) return;
+	EnterCriticalSection(&ctx->filter_text_mutex);
+	enabled = ctx->auto_deinterlace_enabled;
+	LeaveCriticalSection(&ctx->filter_text_mutex);
+	ctx->auto_deinterlace_pending = enabled && is_blank_text(selected_video_filter) && is_blank_text(global_video_filter);
+	ctx->auto_deinterlace_applied = 0;
+}
+
+static int apply_auto_deinterlace_if_needed(inout_context* ctx, const AVFrame* frame)
+{
+	char* filter = NULL;
+	if (!ctx || !ctx->auto_deinterlace_pending || ctx->auto_deinterlace_applied || !frame_is_interlaced(frame)) return 0;
+	filter = get_auto_deinterlace_filter_copy(ctx);
+	if (is_blank_text(filter)) {
+		av_free(filter);
+		return 0;
+	}
+	set_input_filter(ctx, filter);
+	ctx->auto_deinterlace_pending = 0;
+	ctx->auto_deinterlace_applied = 1;
+	av_log(NULL, AV_LOG_INFO, "auto deinterlace enabled, detected interlaced frame, applying filter: %s\n", filter);
+	av_free(filter);
+	return 1;
+}
+static int drain_video_filter(inout_context* ctx, AVFrame* filtered_frame)
+{
+	if (!ctx || !ctx->filter_contexts[0].filter_graph) return 0;
+	while (av_buffersink_get_frame(ctx->filter_contexts[0].buffer_sink, filtered_frame) >= 0)
+	{
+		filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[0].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		diagnostics_record_video_frame(1, filtered_frame);
+		if (fill_output_video(ctx, filtered_frame) < 0) return -1;
+	}
+	return 0;
+}
 static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFrame* filtered_frame, int* filter_sent_eof)
 {
 	diagnostics_record_video_frame(0, frame);
+	if (apply_auto_deinterlace_if_needed(ctx, frame)) *filter_sent_eof = 0;
 	if (!(*filter_sent_eof) && need_reinit_filter(ctx, frame->width, frame->height, frame->format, frame->sample_aspect_ratio, frame->colorspace, frame->color_range))
 	{
 		init_video_filter(ctx, frame->width, frame->height, frame->format,
 			ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, frame->sample_aspect_ratio, frame->colorspace, frame->color_range);
 	}
 
-	if (ctx->filter_contexts[0].filter_graph)
+	int use_filter = ctx->filter_contexts[0].filter_graph != NULL;
+	if (ctx->auto_deinterlace_applied && !frame_is_interlaced(frame)) use_filter = 0;
+
+	if (use_filter)
 	{
 		if (av_buffersrc_add_frame(ctx->filter_contexts[0].buffer_src, frame) < 0)
 		{
@@ -2232,12 +2316,8 @@ static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFra
 			return 0;
 		}
 
-		while (av_buffersink_get_frame(ctx->filter_contexts[0].buffer_sink, filtered_frame) >= 0)
-		{
-			filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[0].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-			diagnostics_record_video_frame(1, filtered_frame);
-			if (fill_output_video(ctx, filtered_frame) < 0) return -1;
-		}
+		if (drain_video_filter(ctx, filtered_frame) < 0) return -1;
+
 	}
 	else {
 		frame->pts = av_rescale_q_rnd(frame->pts, ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
@@ -2259,12 +2339,8 @@ static int flush_video_filter(inout_context* ctx, AVFrame* filtered_frame, int* 
 
 	if (ctx->filter_contexts[0].filter_graph)
 	{
-		while (av_buffersink_get_frame(ctx->filter_contexts[0].buffer_sink, filtered_frame) >= 0)
-		{
-			filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts, av_buffersink_get_time_base(ctx->filter_contexts[0].buffer_sink), UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-			diagnostics_record_video_frame(1, filtered_frame);
-			if (fill_output_video(ctx, filtered_frame) < 0) return -1;
-		}
+		if (drain_video_filter(ctx, filtered_frame) < 0) return -1;
+
 	}
 	return 0;
 }
@@ -3177,6 +3253,7 @@ void set_input_filter(inout_context* ctx, char* filter_text)//filter_textÉèÖÃÎªN
 	if (strlen(filter_text) > 0)
 		ctx->filter_text = av_strdup(filter_text);
 	LeaveCriticalSection(&ctx->filter_text_mutex);
+	ctx->auto_deinterlace_applied = 0;
 	ctx->needs_reinit_filter = 1;
 	return;
 }
@@ -3357,6 +3434,7 @@ typedef enum tcp_control_command_type {
 	TCP_CONTROL_SET_HW_DECODE,
 	TCP_CONTROL_SET_SCALE_MODE,
 	TCP_CONTROL_SET_DISPLAY_ASPECT,
+	TCP_CONTROL_SET_AUTO_DEINTERLACE,
 	TCP_CONTROL_STOP,
 	TCP_CONTROL_PAUSE,
 	TCP_CONTROL_RESUME,
@@ -3704,6 +3782,16 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 		}
 		return;
 	}
+	if (starts_with_command(line, "SET_AUTO_DEINTERLACE")) {
+		char* filter_arg = NULL;
+		arg = tcp_trim_left(line + 20);
+		cmd->type = TCP_CONTROL_SET_AUTO_DEINTERLACE;
+		cmd->number = atoi(arg) != 0;
+		filter_arg = strchr(arg, ' ');
+		filter_arg = filter_arg ? tcp_trim_left(filter_arg) : "bwdif";
+		cmd->text = av_strdup(normalize_deinterlace_filter(filter_arg));
+		return;
+	}
 	if (starts_with_command(line, "SET_INDEX")) {
 		cmd->type = TCP_CONTROL_SET_INDEX;
 		cmd->video_index = -1;
@@ -3912,6 +4000,8 @@ DWORD main_thread(LPVOID p) {
 	char str2[1024] = { 0 };
 	char config_status_text[4096] = { 0 };
 	char hw_decode[32] = "";
+	char auto_deinterlace_filter[32] = "bwdif";
+	int auto_deinterlace = 1;
 	char* current_input = NULL;
 	char* global_video_filter = av_strdup("");
 	char* global_audio_filter = av_strdup("");
@@ -3943,6 +4033,8 @@ DWORD main_thread(LPVOID p) {
 	if (buf = get_paremeter_table_content(table, "config", "av_max_offset_time", FALSE)) av_max_offset_time = atoi(buf);
 	if (buf = get_paremeter_table_content(table, "config", "scale_mode", FALSE)) output_scale_mode = parse_output_scale_mode(buf, output_scale_mode);
 	if (buf = get_paremeter_table_content(table, "config", "display_aspect", FALSE)) output_display_aspect = parse_display_aspect(buf, output_display_aspect);
+	if (buf = get_paremeter_table_content(table, "config", "auto_deinterlace", FALSE)) auto_deinterlace = atoi(buf) != 0;
+	if (buf = get_paremeter_table_content(table, "config", "auto_deinterlace_filter", FALSE)) strcpy_s(auto_deinterlace_filter, sizeof(auto_deinterlace_filter), normalize_deinterlace_filter(buf));
 
 	snprintf(config_status_text, sizeof(config_status_text),
 		"Open the OmniVCam Controller to control the playback.\n\n"
@@ -3962,7 +4054,9 @@ DWORD main_thread(LPVOID p) {
 		"ajust_start_time_if_delay_over=%d\n"
 		"av_max_offset_time=%d\n"
 		"scale_mode=%s\n"
-		"display_aspect=%s\n\n"
+		"display_aspect=%s\n"
+		"auto_deinterlace=%d\n"
+		"auto_deinterlace_filter=%s\n\n"
 		"To load config.ini, set the environment variable to the directory that contains config.ini.\n"
 		"Example: setx %s D:\\OmniVCam",
 		config_loaded ? "config.ini loaded" : "config.ini not found, using default config value",
@@ -3981,6 +4075,8 @@ DWORD main_thread(LPVOID p) {
 		av_max_offset_time,
 		output_scale_mode == OUTPUT_SCALE_MODE_FILL ? "fill" : "letterbox",
 		output_display_aspect.num > 0 && output_display_aspect.den > 0 ? "custom" : "auto",
+		auto_deinterlace,
+		auto_deinterlace_filter,
 		config_path ? config_path : "OMNI_VCAM_CONFIG");
 
 	frame_rate.den = frame_rate.den <= 0 ? 1 : frame_rate.den;
@@ -3997,6 +4093,7 @@ DWORD main_thread(LPVOID p) {
 	ctx->callback_private = opts->callback_private;
 	ctx->output_scale_mode = output_scale_mode;
 	ctx->output_display_aspect = output_display_aspect;
+	set_auto_deinterlace_config(ctx, auto_deinterlace, auto_deinterlace_filter);
 
 	if (tcp_control_start(&control_server, tcp_port) < 0) {
 		av_log(NULL, AV_LOG_ERROR, "OmniVCam TCP control start failed on port %d\n", tcp_port);
@@ -4029,6 +4126,9 @@ DWORD main_thread(LPVOID p) {
 			char* acodec_str = NULL;
 			char* scodec_str = NULL;
 			char* dcodec_str = NULL;
+			char* auto_deinterlace_opt = NULL;
+			char* auto_deinterlace_filter_opt = NULL;
+			char auto_deinterlace_filter_current[32] = { 0 };
 			int video_index_int = selected_video_index;
 			int audio_index_int = selected_audio_index;
 			int analyze_duration_int = 0;
@@ -4107,6 +4207,13 @@ DWORD main_thread(LPVOID p) {
 						av_log(NULL, AV_LOG_INFO, "output display aspect: %s\n", aspect_text);
 					}
 				}
+				break;
+			case TCP_CONTROL_SET_AUTO_DEINTERLACE:
+				auto_deinterlace = command.number ? 1 : 0;
+				strcpy_s(auto_deinterlace_filter, sizeof(auto_deinterlace_filter), normalize_deinterlace_filter(command.text));
+				set_auto_deinterlace_config(ctx, auto_deinterlace, auto_deinterlace_filter);
+				configure_auto_deinterlace_for_input(ctx, NULL, global_video_filter);
+				av_log(NULL, AV_LOG_INFO, "auto_deinterlace=%d auto_deinterlace_filter=%s\n", auto_deinterlace, auto_deinterlace_filter);
 				break;
 			case TCP_CONTROL_SET_INDEX:
 				if (command.video_index != selected_video_index) {
@@ -4233,8 +4340,11 @@ DWORD main_thread(LPVOID p) {
 					acodec_str = av_dict_pop_value(&temp_dict, "acodec");
 					scodec_str = av_dict_pop_value(&temp_dict, "scodec");
 					dcodec_str = av_dict_pop_value(&temp_dict, "dcodec");
+					auto_deinterlace_opt = av_dict_pop_value(&temp_dict, "auto_deinterlace");
+					auto_deinterlace_filter_opt = av_dict_pop_value(&temp_dict, "auto_deinterlace_filter");
 				}
 
+				strcpy_s(auto_deinterlace_filter_current, sizeof(auto_deinterlace_filter_current), auto_deinterlace_filter);
 				if (video_index) video_index_int = atoi(video_index);
 				if (audio_index) audio_index_int = atoi(audio_index);
 				if (probesize) probesize_int = atoi(probesize);
@@ -4242,9 +4352,12 @@ DWORD main_thread(LPVOID p) {
 				if (queue_left) queue_left_int = atoi(queue_left);
 				if (queue_right) queue_right_int = atoi(queue_right);
 				if (queue_center) queue_center_int = atoi(queue_center);
+				if (auto_deinterlace_filter_opt) strcpy_s(auto_deinterlace_filter_current, sizeof(auto_deinterlace_filter_current), normalize_deinterlace_filter(auto_deinterlace_filter_opt));
 
 				if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
+					set_auto_deinterlace_config(ctx, auto_deinterlace_opt ? (atoi(auto_deinterlace_opt) != 0) : auto_deinterlace, auto_deinterlace_filter_current);
 					set_input_filter(ctx, video_filter ? video_filter : global_video_filter);
+					configure_auto_deinterlace_for_input(ctx, video_filter, global_video_filter);
 					set_input_audio_filter(ctx, audio_filter ? audio_filter : global_audio_filter);
 					if (seek_time && ctx->fmt_ctx) {
 						int seek_time_int = atoi(seek_time);
@@ -4289,6 +4402,8 @@ DWORD main_thread(LPVOID p) {
 			if (acodec_str) av_free(acodec_str);
 			if (scodec_str) av_free(scodec_str);
 			if (dcodec_str) av_free(dcodec_str);
+			if (auto_deinterlace_opt) av_free(auto_deinterlace_opt);
+			if (auto_deinterlace_filter_opt) av_free(auto_deinterlace_filter_opt);
 			if (play_filename) av_free(play_filename);
 			tcp_control_command_free(&command);
 		}
