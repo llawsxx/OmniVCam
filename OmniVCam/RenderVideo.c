@@ -4042,7 +4042,7 @@ DWORD main_thread(LPVOID p) {
 	int output_scale_mode = OUTPUT_SCALE_MODE_LETTERBOX;
 	AVRational output_display_aspect = { 0, 0 };
 	int av_max_offset_time = 5 * 1000000;
-	int video_frame_buffer = 10, audio_frame_buffer = 100, packet_queue_size = 50 * 1024 * 1024, timeout = 30 * 1000000;
+	int video_frame_buffer = 10, audio_frame_buffer = 100, packet_queue_size = 4 * 1024 * 1024, timeout = 30 * 1000000;
 	AVRational frame_rate = opts->video_out_fps;
 	const char* config_path = opts->config_path;
 	int tcp_port = opts->tcp_port;
