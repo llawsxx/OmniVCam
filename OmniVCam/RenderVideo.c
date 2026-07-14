@@ -601,7 +601,7 @@ void packet_queue_init(packet_queue* q, int max_size, int max_count)
 	q->max_count = max_count;
 }
 
-void packet_queue_clean(packet_queue* q) {
+static void packet_queue_clean_unlocked(packet_queue* q) {
 	avpacket_node* temp;
 	if (q->front == NULL)
 		return;
@@ -619,6 +619,13 @@ void packet_queue_clean(packet_queue* q) {
 			q->front = temp;
 		}
 	}
+}
+
+void packet_queue_clean(packet_queue* q) {
+	EnterCriticalSection(&q->mutex);
+	packet_queue_clean_unlocked(q);
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
 }
 
 void packet_queue_destroy(packet_queue* q)
@@ -859,6 +866,44 @@ void inout_context_free(inout_context** ctx)
 }
 
 
+static void reset_video_after_stream_change(inout_context* ctx)
+{
+	if (!ctx) return;
+
+	packet_queue_clean(&ctx->queues[0]);
+
+	EnterCriticalSection(&ctx->input_change_mutex);
+	frame_queue_clean(ctx->frame_queues[0]);
+	frame_queue_clean(ctx->decoded_video_frame_queue);
+	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	LeaveCriticalSection(&ctx->input_change_mutex);
+
+
+	ctx->decoders[0].sent_eof = 0;
+	ctx->last_video_decode_time = av_gettime_relative();
+}
+static void reset_audio_after_stream_change(inout_context* ctx)
+{
+	if (!ctx) return;
+
+	packet_queue_clean(&ctx->queues[1]);
+
+	EnterCriticalSection(&ctx->input_change_mutex);
+	frame_queue_clean(ctx->frame_queues[1]);
+	av_audio_fifo_reset(ctx->output_audio_fifo);
+	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+	ctx->output_last_audio_nb_samples = 0;
+	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+	LeaveCriticalSection(&ctx->input_change_mutex);
+
+
+
+	ctx->decoders[1].sent_eof = 0;
+	ctx->last_audio_decode_time = av_gettime_relative();
+}
 void inout_context_reset_input(inout_context* ctx)
 {
 	if (!ctx) return;
@@ -3357,6 +3402,14 @@ int set_input_stream_index(inout_context* ctx, int index, enum AVMediaType type)
 	}
 	ctx->decoders[type_i].avctx = avctx;
 	ctx->decoders[type_i].index = i;
+	ctx->decoders[type_i].sent_eof = 0;
+
+	if (type_i == 0) {
+		reset_video_after_stream_change(ctx);
+	}
+	else if (type_i == 1) {
+		reset_audio_after_stream_change(ctx);
+	}
 
 	LeaveCriticalSection(&ctx->decoders[type_i].mutex);
 	return 0;
