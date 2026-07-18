@@ -279,7 +279,10 @@ static HRESULT select_format(IPin* pin, int index, AM_MEDIA_TYPE* selected)
         hr = config->GetStreamCaps(index, &type, caps.data());
         if (SUCCEEDED(hr)) hr = config->SetFormat(type);
     }
-    if (FAILED(hr) || !type) return FAILED(hr) ? hr : E_FAIL;
+    if (FAILED(hr) || !type) {
+        delete_media_type(type);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
     hr = copy_media_type(selected, type);
     delete_media_type(type);
     return hr;
@@ -503,7 +506,6 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
     camera->audio_next_pts = 0;
     camera->opaque = opaque;
     BITMAPINFOHEADER* bitmap = NULL;
-    CComPtr<IPin> grabber_pin;
 
     HRESULT hr = camera->graph.CoCreateInstance(CLSID_FilterGraph);
     if (FAILED(hr)) { set_error(error, error_size, "create filter graph failed", hr); goto failed; }
@@ -545,8 +547,8 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
         camera->grabber = new DShowGrabber(sample_callback, camera, &camera->media_type);
         hr = camera->graph->AddFilter(camera->grabber, L"OmniVCam Grabber");
         if (FAILED(hr)) { set_error(error, error_size, "add sample grabber failed", hr); goto failed; }
-        hr = camera->grabber->FindPin(L"In", &grabber_pin);
-        if (FAILED(hr) || FAILED(hr = camera->graph->ConnectDirect(camera->source_pin, grabber_pin, &camera->media_type))) {
+        hr = camera->builder->RenderStream(NULL, NULL, camera->source_pin, NULL, camera->grabber);
+        if (FAILED(hr)) {
             set_error(error, error_size, "connect capture pin failed", hr); goto failed;
         }
     }
@@ -587,9 +589,8 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
         camera->audio_grabber = new DShowGrabber(audio_sample_callback, camera, &camera->audio_media_type);
         hr = camera->graph->AddFilter(camera->audio_grabber, L"OmniVCam Audio Grabber");
         if (FAILED(hr)) { set_error(error, error_size, "add audio grabber failed", hr); goto failed; }
-        CComPtr<IPin> audio_grabber_pin;
-        hr = camera->audio_grabber->FindPin(L"In", &audio_grabber_pin);
-        if (FAILED(hr) || FAILED(hr = camera->graph->ConnectDirect(camera->audio_source_pin, audio_grabber_pin, &camera->audio_media_type))) {
+        hr = camera->builder->RenderStream(NULL, NULL, camera->audio_source_pin, NULL, camera->audio_grabber);
+        if (FAILED(hr)) {
             set_error(error, error_size, "connect audio pin failed", hr); goto failed;
         }
     }
