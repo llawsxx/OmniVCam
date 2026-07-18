@@ -157,10 +157,8 @@ end:
     dshow_camera_close(&camera);
     ctx->decoders[0].exit = 1;
     ctx->decoders[1].exit = 1;
-    if (ctx->decoded_video_frame_queue)
-        WakeAllConditionVariable(&ctx->decoded_video_frame_queue->cond);
-    if (ctx->decoded_audio_frame_queue)
-        WakeAllConditionVariable(&ctx->decoded_audio_frame_queue->cond);
+    frame_queue_set_abort(ctx->decoded_video_frame_queue, 1);
+    frame_queue_set_abort(ctx->decoded_audio_frame_queue, 1);
     ctx->special_source_running = 0;
     if (SUCCEEDED(com_hr)) CoUninitialize();
     return 0;

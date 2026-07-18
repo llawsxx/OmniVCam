@@ -49,6 +49,7 @@ typedef struct frame_queue {
 	avframe_node* front, * rear;
 	int count;
 	int max_count;
+	int abort_request;
 	int left_count;
 	int right_count;
 	int center_count;
@@ -70,6 +71,7 @@ typedef struct packet_queue {
 	int max_size;//in KByte
 	int count;
 	int max_count;
+	int abort_request;
 	CRITICAL_SECTION mutex;
 	CONDITION_VARIABLE cond;
 }packet_queue;
@@ -249,6 +251,7 @@ typedef struct inout_options {
 int open_thread(HANDLE* thread, LPTHREAD_START_ROUTINE start, LPVOID arg);
 void free_thread(HANDLE* thread);
 void frame_queue_set(frame_queue *q, int left_count, int right_count, int center_count);
+void frame_queue_set_abort(frame_queue* q, int abort_request);
 int fill_output_video(inout_context* ctx, AVFrame* frame);
 int fill_output_audio(inout_context* ctx, AVFrame* frame);
 int enqueue_decoded_video_frame(inout_context* ctx, AVFrame* frame);

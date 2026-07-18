@@ -20,7 +20,7 @@
 
 static int clamp_frame_queue_max_count(int64_t max_count)
 {
-	if (max_count < 0) return 0;
+	if (max_count <= 0) return 1;
 	return max_count > FRAME_QUEUE_MAX_COUNT_LIMIT ? FRAME_QUEUE_MAX_COUNT_LIMIT : (int)max_count;
 }
 
@@ -34,8 +34,7 @@ static int64_t universal_to_seconds(int64_t value)
 	return av_rescale_q_rnd(value, UNIVERSAL_TB, (AVRational) { 1, 1 }, AV_ROUND_DOWN);
 }
 
-void frame_queue_wait_empty(frame_queue* q,int64_t timeout,int *exit) {
-	int64_t start_time = av_gettime_relative();
+void frame_queue_wait_empty(frame_queue* q, int *exit) {
 	EnterCriticalSection(&q->mutex);
 
 	q->reached_center = 0;
@@ -43,19 +42,16 @@ void frame_queue_wait_empty(frame_queue* q,int64_t timeout,int *exit) {
 	q->left_count = -1;
 	q->right_count = -1;
 
-	while (q->count > 0 && !(*exit))
+	while (q->count > 0 && !q->abort_request && !(*exit))
 	{
-		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
-		if (av_gettime_relative() - start_time >= timeout) {
-			break;
-		}
+		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
 	}
 	LeaveCriticalSection(&q->mutex);
 }
 
 void inout_ctx_frame_queue_wait_empty(inout_context *ctx, int* exit) {
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
-		frame_queue_wait_empty(ctx->frame_queues[i],ctx->timeout,exit);
+		frame_queue_wait_empty(ctx->frame_queues[i], exit);
 	}
 }
 
@@ -76,7 +72,7 @@ static int inout_ctx_frame_queues_empty(inout_context* ctx)
 	return 1;
 }
 
-static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit, int *pause);
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit);
 
 static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 {
@@ -87,7 +83,7 @@ static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 	if (frame) {
 		int exit = 0;
 		if (ctx->input_frame_id == 0) ctx->input_frame_id = av_gettime_relative();
-		frame_enqueue(ctx->frame_queues[0], frame, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &exit, NULL);
+		frame_enqueue(ctx->frame_queues[0], frame, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &exit);
 		av_frame_free(&frame);
 	}
 	test_card_free(card);
@@ -341,31 +337,27 @@ static void diagnostics_get_text(char* dst, size_t dst_size)
 		g_frame_diagnostics.audio_logic[0] ? g_frame_diagnostics.audio_logic : "audio.output_logic method=unknown");
 	LeaveCriticalSection(&g_frame_diagnostics.mutex);
 }
-static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit, int *pause) {
-	int64_t start_time = av_gettime_relative();
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit) {
 	int ret = 0;
 	int wake = 0;
 	EnterCriticalSection(&q->mutex);
 
-	while (q->count >= q->max_count)
+	while (q->count >= q->max_count && !q->abort_request)
 	{
 		if (timeout < 0) {
 			ret = -2;
 			goto end;
 		}
-		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
+		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
 
-		if (*exit) {
+		if (q->abort_request || *exit) {
 			ret = -2;
 			goto end;
 		}
-		else if (pause && *pause) {
-			start_time = av_gettime_relative();
-		}
-		else if (av_gettime_relative() - start_time >= timeout) {
-			ret = -2;
-			goto end;
-		}
+	}
+	if (q->abort_request || *exit) {
+		ret = -2;
+		goto end;
 	}
 
 	avframe_node* node = av_mallocz(sizeof(avframe_node));
@@ -468,8 +460,12 @@ int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int wait, i
 			LeaveCriticalSection(&q->mutex);
 			return -1;
 		}
-		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
-		if (!q->front || (q->center_count != -1 && !q->reached_center)) {
+		if (q->abort_request) {
+			LeaveCriticalSection(&q->mutex);
+			return -1;
+		}
+		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
+		if (q->abort_request) {
 			LeaveCriticalSection(&q->mutex);
 			return -1;
 		}
@@ -502,6 +498,7 @@ frame_queue* frame_queue_alloc(int max_count)
 	InitializeCriticalSection(&q->mutex);
 	InitializeConditionVariable(&q->cond);
 	q->max_count = clamp_frame_queue_max_count(max_count);
+	q->abort_request = 0;
 	q->reached_center = 0;
 	q->left_count = -1;
 	q->center_count = -1;
@@ -520,6 +517,7 @@ void frame_queue_clean(frame_queue* q)
 	if (!q->front)
 	{
 		LeaveCriticalSection(&q->mutex);
+		WakeAllConditionVariable(&q->cond);
 		return;
 	}
 	while (1) {
@@ -530,13 +528,23 @@ void frame_queue_clean(frame_queue* q)
 		//printf("%d\n", q->count);
 		if (!temp) {
 			q->front = q->rear = NULL;
-			LeaveCriticalSection(&q->mutex);
 			break;
 		}
 		else {
 			q->front = temp;
 		}
 	}
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
+}
+
+void frame_queue_set_abort(frame_queue* q, int abort_request)
+{
+	if (!q) return;
+	EnterCriticalSection(&q->mutex);
+	q->abort_request = abort_request;
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
 }
 
 void frame_queue_free(frame_queue **q)
@@ -584,6 +592,7 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 	q->max_count = clamp_frame_queue_max_count(right_count);
 end:
 	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
 }
 
 void codec_context_init(codec_context* ctx)
@@ -605,6 +614,7 @@ void packet_queue_init(packet_queue* q, int max_size, int max_count)
 	InitializeConditionVariable(&q->cond);
 	q->max_size = max_size;
 	q->max_count = max_count;
+	q->abort_request = 0;
 }
 
 static void packet_queue_clean_unlocked(packet_queue* q) {
@@ -634,6 +644,15 @@ void packet_queue_clean(packet_queue* q) {
 	WakeAllConditionVariable(&q->cond);
 }
 
+static void packet_queue_set_abort(packet_queue* q, int abort_request)
+{
+	if (!q) return;
+	EnterCriticalSection(&q->mutex);
+	q->abort_request = abort_request;
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
+}
+
 void packet_queue_destroy(packet_queue* q)
 {
 	packet_queue_clean(q);
@@ -652,13 +671,11 @@ int packet_dequeue(packet_queue* q, AVPacket* pkt)
 
 	EnterCriticalSection(&q->mutex);
 
-	if (!q->front)
-	{
-		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
-		if (!q->front) {
-			LeaveCriticalSection(&q->mutex);
-			return -1;
-		}
+	while (!q->front && !q->abort_request)
+		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
+	if (!q->front) {
+		LeaveCriticalSection(&q->mutex);
+		return -1;
 	}
 
 	avpacket_node* temp = q->front->next;
@@ -683,13 +700,17 @@ int packet_enqueue(packet_queue* q, AVPacket* pkt, int* exit)
 {
 	int ret = 0;
 	EnterCriticalSection(&q->mutex);
-	while (q->size >= q->max_size)
+	while (q->size >= q->max_size && !q->abort_request)
 	{
-		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
-		if (*exit) {
+		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
+		if (q->abort_request || *exit) {
 			ret = -2;
 			goto end;
 		}
+	}
+	if (q->abort_request || *exit) {
+		ret = -2;
+		goto end;
 	}
 
 	avpacket_node* node = av_mallocz(sizeof(avpacket_node));
@@ -830,8 +851,12 @@ void inout_context_free(inout_context** ctx)
 	if (!ctx || !(*ctx)) return;
 
 	(*ctx)->force_exit = 1;
-	if ((*ctx)->decoded_video_frame_queue) WakeAllConditionVariable(&(*ctx)->decoded_video_frame_queue->cond);
-	if ((*ctx)->decoded_audio_frame_queue) WakeAllConditionVariable(&(*ctx)->decoded_audio_frame_queue->cond);
+	for (int i = 0; i < ARRAY_ELEMS((*ctx)->queues); i++)
+		packet_queue_set_abort(&(*ctx)->queues[i], 1);
+	for (int i = 0; i < ARRAY_ELEMS((*ctx)->frame_queues); i++)
+		frame_queue_set_abort((*ctx)->frame_queues[i], 1);
+	frame_queue_set_abort((*ctx)->decoded_video_frame_queue, 1);
+	frame_queue_set_abort((*ctx)->decoded_audio_frame_queue, 1);
 	free_thread(&(*ctx)->reading_tid);
 	free_thread(&(*ctx)->special_source_tid);
 	free_thread(&(*ctx)->decode_video_tid);
@@ -1400,6 +1425,8 @@ DWORD WINAPI reading_input(LPVOID p)
 	av_packet_free(&pkt);
 
 	ctx->eof = 1;
+	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
+		packet_queue_set_abort(&ctx->queues[i], 1);
 	return 0;
 }
 
@@ -2012,7 +2039,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		}
 		diagnostics_record_video_logic("direct_pixel_copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 		diagnostics_record_video_frame(2, f);
-		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
 		}
@@ -2044,7 +2071,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		av_frame_copy_props(f, frame);
 		diagnostics_record_video_logic(!filp && avframe_is_data_continuous(frame) ? "ref" : "copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 		diagnostics_record_video_frame(2, f);
-		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
 		}
@@ -2100,7 +2127,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 
 	diagnostics_record_video_logic("sws_scale", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 	diagnostics_record_video_frame(2, f);
-	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -2180,7 +2207,7 @@ int fill_output_audio(inout_context* ctx, AVFrame* frame)
 	diagnostics_record_audio_logic(ctx->swr_ctx ? "swr_convert" : "copy", frame, f);
 	diagnostics_record_audio_frame(2, f);
 
-	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -2220,7 +2247,7 @@ DWORD test_card_thread(LPVOID p) {
 			ctx->audio_filter_text);
 		LeaveCriticalSection(&ctx->filter_text_mutex);
 		if (f = test_card_draw(card, infoText)) {
-			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit, &ctx->output_paused) < 0) {
+			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
 				break;
 			}
 		}
@@ -2400,7 +2427,7 @@ int enqueue_decoded_video_frame(inout_context* ctx, AVFrame* frame)
 	// DirectShow's Receive callback must not wait for a slow filter. If the
 	// processing queue is full, drop this real-time frame instead of blocking.
 	return frame_enqueue(ctx->decoded_video_frame_queue, frame, -1,
-		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit, NULL);
+		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit);
 }
 
 static int flush_video_filter(inout_context* ctx, AVFrame* filtered_frame, int* filter_sent_eof)
@@ -2473,7 +2500,7 @@ DWORD WINAPI decode_video_thread(LPVOID p) {
 		if (decode_frame(ctx, frame, pkt, decoded, AVMEDIA_TYPE_VIDEO) >= 0)
 		{
 			ctx->last_video_decode_time = av_gettime_relative();
-			if (frame_enqueue(ctx->decoded_video_frame_queue, frame, ctx->timeout, ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit, &ctx->output_paused) < 0) goto end;
+			if (frame_enqueue(ctx->decoded_video_frame_queue, frame, ctx->timeout, ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit) < 0) goto end;
 		}
 		else {
 			if (!ctx->output_paused && av_gettime_relative() - ctx->last_video_decode_time >= ctx->timeout) {
@@ -2494,7 +2521,7 @@ end:
 	av_frame_free(&decoded);
 	av_packet_free(&pkt);
 	ctx->decoders[0].exit = 1;
-	if (ctx->decoded_video_frame_queue) WakeAllConditionVariable(&ctx->decoded_video_frame_queue->cond);
+	frame_queue_set_abort(ctx->decoded_video_frame_queue, 1);
 	return 0;
 }
 
@@ -2579,6 +2606,7 @@ end:
 	av_frame_free(&decoded);
 	av_packet_free(&pkt);
 	ctx->decoders[1].exit = 1;
+	frame_queue_set_abort(ctx->decoded_audio_frame_queue, 1);
 	return 0;
 }
 
@@ -2624,7 +2652,7 @@ int enqueue_decoded_audio_frame(inout_context* ctx, AVFrame* frame)
 {
 	if (!ctx || !frame || !ctx->decoded_audio_frame_queue || ctx->force_exit) return -1;
 	return frame_enqueue(ctx->decoded_audio_frame_queue, frame, -1,
-		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit, NULL);
+		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit);
 }
 
 DWORD WINAPI process_input_audio_thread(LPVOID p)
@@ -2658,6 +2686,12 @@ int start_read(inout_context* ctx) {
 		ctx->decoders[i].exit = 0;
 		ctx->decoders[i].sent_eof = 0;
 	}
+	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
+		packet_queue_set_abort(&ctx->queues[i], 0);
+	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+		frame_queue_set_abort(ctx->frame_queues[i], 0);
+	frame_queue_set_abort(ctx->decoded_video_frame_queue, 0);
+	frame_queue_set_abort(ctx->decoded_audio_frame_queue, 0);
 	HANDLE special_source_tid = NULL;
 	HANDLE decode_video_tid = NULL;
 	HANDLE process_video_tid = NULL;
@@ -2732,6 +2766,12 @@ int start_read(inout_context* ctx) {
 
 failed:
 	ctx->force_exit = 1;
+	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
+		packet_queue_set_abort(&ctx->queues[i], 1);
+	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+		frame_queue_set_abort(ctx->frame_queues[i], 1);
+	frame_queue_set_abort(ctx->decoded_video_frame_queue, 1);
+	frame_queue_set_abort(ctx->decoded_audio_frame_queue, 1);
 
 	free_thread(&read_tid);
 	free_thread(&special_source_tid);
@@ -2745,10 +2785,12 @@ void stop_read(inout_context* ctx, int force)
 {
 	if (force) {
 		ctx->force_exit = 1;
-		if (ctx->frame_queues[0]) WakeAllConditionVariable(&ctx->frame_queues[0]->cond);
-		if (ctx->frame_queues[1]) WakeAllConditionVariable(&ctx->frame_queues[1]->cond);
-		if (ctx->decoded_video_frame_queue) WakeAllConditionVariable(&ctx->decoded_video_frame_queue->cond);
-		if (ctx->decoded_audio_frame_queue) WakeAllConditionVariable(&ctx->decoded_audio_frame_queue->cond);
+		for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
+			packet_queue_set_abort(&ctx->queues[i], 1);
+		for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+			frame_queue_set_abort(ctx->frame_queues[i], 1);
+		frame_queue_set_abort(ctx->decoded_video_frame_queue, 1);
+		frame_queue_set_abort(ctx->decoded_audio_frame_queue, 1);
 	}
 	free_thread(&ctx->reading_tid);
 	free_thread(&ctx->special_source_tid);
