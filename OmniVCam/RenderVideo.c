@@ -349,6 +349,10 @@ static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t
 
 	while (q->count >= q->max_count)
 	{
+		if (timeout < 0) {
+			ret = -2;
+			goto end;
+		}
 		SleepConditionVariableCS(&q->cond, &q->mutex, COND_TIMEOUT);
 
 		if (*exit) {
@@ -738,6 +742,7 @@ inout_context* inout_context_alloc(
 	frame_queue* video_frame_queue;
 	frame_queue* audio_frame_queue;
 	frame_queue* decoded_video_frame_queue;
+	frame_queue* decoded_audio_frame_queue;
 	if (!ctx) goto failed;
 
 	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++)
@@ -752,8 +757,9 @@ inout_context* inout_context_alloc(
 	video_frame_queue = frame_queue_alloc(video_frame_queue_count);
 	audio_frame_queue = frame_queue_alloc(audio_frame_queue_count);
 	decoded_video_frame_queue = frame_queue_alloc(VIDEO_PROCESS_QUEUE_COUNT);
+	decoded_audio_frame_queue = frame_queue_alloc(AUDIO_PROCESS_QUEUE_COUNT);
 
-	if (!video_frame_queue || !audio_frame_queue || !decoded_video_frame_queue) {
+	if (!video_frame_queue || !audio_frame_queue || !decoded_video_frame_queue || !decoded_audio_frame_queue) {
 		goto failed;
 	}
 
@@ -771,6 +777,9 @@ inout_context* inout_context_alloc(
 	ctx->frame_queues[0] = video_frame_queue;
 	ctx->frame_queues[1] = audio_frame_queue;
 	ctx->decoded_video_frame_queue = decoded_video_frame_queue;
+	ctx->decoded_video_time_base = UNIVERSAL_TB;
+	ctx->decoded_audio_frame_queue = decoded_audio_frame_queue;
+	ctx->decoded_audio_time_base = UNIVERSAL_TB;
 	ctx->output_frame_width = video_out_width;
 	ctx->output_frame_height = video_out_height;
 	ctx->output_frame_format = video_out_format;
@@ -806,6 +815,7 @@ failed:
 		frame_queue_free(&video_frame_queue);
 		frame_queue_free(&audio_frame_queue);
 		frame_queue_free(&decoded_video_frame_queue);
+		frame_queue_free(&decoded_audio_frame_queue);
 		av_channel_layout_uninit(&ctx->output_audio_layout);
 		av_audio_fifo_free(audio_fifo);
 		DeleteCriticalSection(&ctx->filter_text_mutex);
@@ -821,6 +831,7 @@ void inout_context_free(inout_context** ctx)
 
 	(*ctx)->force_exit = 1;
 	if ((*ctx)->decoded_video_frame_queue) WakeAllConditionVariable(&(*ctx)->decoded_video_frame_queue->cond);
+	if ((*ctx)->decoded_audio_frame_queue) WakeAllConditionVariable(&(*ctx)->decoded_audio_frame_queue->cond);
 	free_thread(&(*ctx)->reading_tid);
 	free_thread(&(*ctx)->special_source_tid);
 	free_thread(&(*ctx)->decode_video_tid);
@@ -860,6 +871,7 @@ void inout_context_free(inout_context** ctx)
 	frame_queue_free(&(*ctx)->frame_queues[0]);
 	frame_queue_free(&(*ctx)->frame_queues[1]);
 	frame_queue_free(&(*ctx)->decoded_video_frame_queue);
+	frame_queue_free(&(*ctx)->decoded_audio_frame_queue);
 	av_channel_layout_uninit(&(*ctx)->output_audio_layout);
 	av_channel_layout_uninit(&(*ctx)->last_audio_layout);
 	av_channel_layout_uninit(&(*ctx)->last_filtered_audio_layout);
@@ -894,6 +906,7 @@ static void reset_audio_after_stream_change(inout_context* ctx)
 
 	EnterCriticalSection(&ctx->input_change_mutex);
 	frame_queue_clean(ctx->frame_queues[1]);
+	frame_queue_clean(ctx->decoded_audio_frame_queue);
 	av_audio_fifo_reset(ctx->output_audio_fifo);
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
@@ -938,6 +951,7 @@ void inout_context_reset_input(inout_context* ctx)
 		frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
 	}
 	frame_queue_clean(ctx->decoded_video_frame_queue);
+	frame_queue_clean(ctx->decoded_audio_frame_queue);
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
@@ -2347,14 +2361,15 @@ static int drain_video_filter(inout_context* ctx, AVFrame* filtered_frame)
 	}
 	return 0;
 }
-static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFrame* filtered_frame, int* filter_sent_eof)
+static int process_video_frame(inout_context* ctx, AVFrame* frame, AVFrame* filtered_frame,
+	int* filter_sent_eof, AVRational time_base)
 {
 	diagnostics_record_video_frame(0, frame);
 	if (apply_auto_deinterlace_if_needed(ctx, frame)) *filter_sent_eof = 0;
 	if (!(*filter_sent_eof) && need_reinit_filter(ctx, frame->width, frame->height, frame->format, frame->sample_aspect_ratio, frame->colorspace, frame->color_range))
 	{
 		init_video_filter(ctx, frame->width, frame->height, frame->format,
-			ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, frame->sample_aspect_ratio, frame->colorspace, frame->color_range);
+			time_base, frame->sample_aspect_ratio, frame->colorspace, frame->color_range);
 	}
 
 	int use_filter = ctx->filter_contexts[0].filter_graph != NULL;
@@ -2372,11 +2387,20 @@ static int process_decoded_video_frame(inout_context* ctx, AVFrame* frame, AVFra
 
 	}
 	else {
-		frame->pts = av_rescale_q_rnd(frame->pts, ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		frame->pts = av_rescale_q_rnd(frame->pts, time_base, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 		if (fill_output_video(ctx, frame) < 0) return -1;
 	}
 
 	return 0;
+}
+
+int enqueue_decoded_video_frame(inout_context* ctx, AVFrame* frame)
+{
+	if (!ctx || !frame || !ctx->decoded_video_frame_queue || ctx->force_exit) return -1;
+	// DirectShow's Receive callback must not wait for a slow filter. If the
+	// processing queue is full, drop this real-time frame instead of blocking.
+	return frame_enqueue(ctx->decoded_video_frame_queue, frame, -1,
+		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit, NULL);
 }
 
 static int flush_video_filter(inout_context* ctx, AVFrame* filtered_frame, int* filter_sent_eof)
@@ -2413,7 +2437,8 @@ DWORD WINAPI process_video_thread(LPVOID p) {
 	{
 		if (frame_dequeue(ctx->decoded_video_frame_queue, frame, &frame_id, 1, &reset) >= 0)
 		{
-			if (process_decoded_video_frame(ctx, frame, filtered_frame, &filter_sent_eof) < 0) goto end;
+			if (process_video_frame(ctx, frame, filtered_frame, &filter_sent_eof,
+				ctx->decoded_video_time_base) < 0) goto end;
 		}
 		else {
 			if (ctx->decoders[0].exit && frame_queue_is_empty(ctx->decoded_video_frame_queue))
@@ -2508,7 +2533,7 @@ DWORD WINAPI decode_audio_thread(LPVOID p) {
 			if (!filter_sent_eof && need_reinit_audio_filter(ctx, &frame->ch_layout, frame->sample_rate, frame->format))
 			{
 				init_audio_filter(ctx, &frame->ch_layout, frame->sample_rate, frame->format,
-					ctx->fmt_ctx->streams[ctx->decoders[1].index]->time_base);
+					ctx->decoded_audio_time_base);
 			}
 
 			if (ctx->filter_contexts[1].filter_graph)
@@ -2519,7 +2544,7 @@ DWORD WINAPI decode_audio_thread(LPVOID p) {
 				}
 			}
 			else {
-				frame->pts = av_rescale_q_rnd(frame->pts, ctx->fmt_ctx->streams[ctx->decoders[1].index]->time_base, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+				frame->pts = av_rescale_q_rnd(frame->pts, ctx->decoded_audio_time_base, UNIVERSAL_TB, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 				if (fill_output_audio(ctx, frame) < 0) goto end;
 			}
 
@@ -2554,6 +2579,73 @@ end:
 	av_frame_free(&decoded);
 	av_packet_free(&pkt);
 	ctx->decoders[1].exit = 1;
+	return 0;
+}
+
+int process_input_audio_frame(inout_context* ctx, AVFrame* frame, AVRational time_base)
+{
+	AVFrame* filtered_frame;
+	int ret = 0;
+	if (!ctx || !frame) return -1;
+	filtered_frame = av_frame_alloc();
+	if (!filtered_frame) return -1;
+	diagnostics_record_audio_frame(0, frame);
+	if (need_reinit_audio_filter(ctx, &frame->ch_layout, frame->sample_rate, frame->format))
+		init_audio_filter(ctx, &frame->ch_layout, frame->sample_rate, frame->format, time_base);
+	if (ctx->filter_contexts[1].filter_graph)
+	{
+		if (av_buffersrc_add_frame(ctx->filter_contexts[1].buffer_src, frame) < 0)
+		{
+			av_frame_unref(frame);
+			ret = -1;
+			goto end;
+		}
+		while (av_buffersink_get_frame(ctx->filter_contexts[1].buffer_sink, filtered_frame) >= 0)
+		{
+			filtered_frame->pts = av_rescale_q_rnd(filtered_frame->pts,
+				av_buffersink_get_time_base(ctx->filter_contexts[1].buffer_sink), UNIVERSAL_TB,
+				AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+			diagnostics_record_audio_frame(1, filtered_frame);
+			if (fill_output_audio(ctx, filtered_frame) < 0) { ret = -1; goto end; }
+		}
+	}
+	else
+	{
+		frame->pts = av_rescale_q_rnd(frame->pts, time_base, UNIVERSAL_TB,
+			AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		ret = fill_output_audio(ctx, frame);
+	}
+end:
+	av_frame_free(&filtered_frame);
+	return ret;
+}
+
+int enqueue_decoded_audio_frame(inout_context* ctx, AVFrame* frame)
+{
+	if (!ctx || !frame || !ctx->decoded_audio_frame_queue || ctx->force_exit) return -1;
+	return frame_enqueue(ctx->decoded_audio_frame_queue, frame, -1,
+		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit, NULL);
+}
+
+DWORD WINAPI process_input_audio_thread(LPVOID p)
+{
+	inout_context* ctx = (inout_context*)p;
+	AVFrame* frame = av_frame_alloc();
+	int64_t frame_id = 0;
+	int reset = 0;
+	if (!ctx || !frame) goto end;
+	while (!ctx->force_exit)
+	{
+		if (frame_dequeue(ctx->decoded_audio_frame_queue, frame, &frame_id, 1, &reset) >= 0)
+		{
+			if (process_input_audio_frame(ctx, frame, ctx->decoded_audio_time_base) < 0)
+				break;
+		}
+		else if (ctx->decoders[1].exit && frame_queue_is_empty(ctx->decoded_audio_frame_queue))
+			break;
+	}
+end:
+	av_frame_free(&frame);
 	return 0;
 }
 
@@ -2594,9 +2686,19 @@ int start_read(inout_context* ctx) {
 		}
 		else if (strcmp(ctx->input_name, "<DSHOW>") == 0) {
 			ctx->special_source_running = 1;
+			if (ctx->dshow_options.device && ctx->dshow_options.device[0]) {
+				ret = open_thread(&process_video_tid, process_video_thread, ctx);
+				if (ret < 0) goto failed;
+			}
+			if (ctx->dshow_options.audio_device && ctx->dshow_options.audio_device[0]) {
+				ret = open_thread(&decode_audio_tid, process_input_audio_thread, ctx);
+				if (ret < 0) goto failed;
+			}
 			ret = open_thread(&special_source_tid, dshow_source_thread, ctx);
 			if (ret < 0) goto failed;
 			ctx->special_source_tid = special_source_tid;
+			ctx->process_video_tid = process_video_tid;
+			ctx->decode_audio_tid = decode_audio_tid;
 			return 0;
 		}
 	}
@@ -2608,6 +2710,7 @@ int start_read(inout_context* ctx) {
 	}
 	if (ctx->decoders[0].avctx)
 	{
+		ctx->decoded_video_time_base = ctx->fmt_ctx->streams[ctx->decoders[0].index]->time_base;
 		ret = open_thread(&decode_video_tid, decode_video_thread, ctx);
 		if (ret < 0) goto failed;
 		ret = open_thread(&process_video_tid, process_video_thread, ctx);
@@ -2615,6 +2718,7 @@ int start_read(inout_context* ctx) {
 	}
 	if (ctx->decoders[1].avctx)
 	{
+		ctx->decoded_audio_time_base = ctx->fmt_ctx->streams[ctx->decoders[1].index]->time_base;
 		ret = open_thread(&decode_audio_tid, decode_audio_thread, ctx);
 		if (ret < 0) goto failed;
 	}
@@ -2644,6 +2748,7 @@ void stop_read(inout_context* ctx, int force)
 		if (ctx->frame_queues[0]) WakeAllConditionVariable(&ctx->frame_queues[0]->cond);
 		if (ctx->frame_queues[1]) WakeAllConditionVariable(&ctx->frame_queues[1]->cond);
 		if (ctx->decoded_video_frame_queue) WakeAllConditionVariable(&ctx->decoded_video_frame_queue->cond);
+		if (ctx->decoded_audio_frame_queue) WakeAllConditionVariable(&ctx->decoded_audio_frame_queue->cond);
 	}
 	free_thread(&ctx->reading_tid);
 	free_thread(&ctx->special_source_tid);
@@ -2670,6 +2775,7 @@ void reset_after_seek(inout_context* ctx)
 		frame_queue_clean(ctx->frame_queues[i]);
 	}
 	frame_queue_clean(ctx->decoded_video_frame_queue);
+	frame_queue_clean(ctx->decoded_audio_frame_queue);
 	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++) {
 		avfilter_graph_free(&ctx->filter_contexts[i].filter_graph);
 		avfilter_inout_free(&ctx->filter_contexts[i].input);

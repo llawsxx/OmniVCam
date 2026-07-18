@@ -36,6 +36,7 @@ extern AVRational DSHOW_TB;
 
 #define MAX_AUTO_THREADS 16
 #define VIDEO_PROCESS_QUEUE_COUNT 4
+#define AUDIO_PROCESS_QUEUE_COUNT 16
 
 typedef struct avframe_node {
 	AVFrame* frame;
@@ -123,6 +124,9 @@ typedef struct inout_context {
 	filter_context filter_contexts[2];
 	frame_queue* frame_queues[2];//output queue, should convert to output format
 	frame_queue* decoded_video_frame_queue;
+	AVRational decoded_video_time_base;
+	frame_queue* decoded_audio_frame_queue;
+	AVRational decoded_audio_time_base;
 
 	struct SwsContext* sws_ctx;
 	SwrContext* swr_ctx;
@@ -247,6 +251,10 @@ void free_thread(HANDLE* thread);
 void frame_queue_set(frame_queue *q, int left_count, int right_count, int center_count);
 int fill_output_video(inout_context* ctx, AVFrame* frame);
 int fill_output_audio(inout_context* ctx, AVFrame* frame);
+int enqueue_decoded_video_frame(inout_context* ctx, AVFrame* frame);
+int enqueue_decoded_audio_frame(inout_context* ctx, AVFrame* frame);
+int process_input_audio_frame(inout_context* ctx, AVFrame* frame, AVRational time_base);
+DWORD WINAPI process_input_audio_thread(LPVOID p);
 DWORD main_thread(LPVOID p);
 
 #ifdef __cplusplus

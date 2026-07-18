@@ -2,6 +2,7 @@
 #include "dshow_camera.h"
 
 extern "C" {
+#include "global.h"
 #include <libavutil/base64.h>
 #include <libavutil/time.h>
 }
@@ -61,6 +62,8 @@ int dshow_source_open(inout_context* ctx, AVDictionary** dict, int queue_left, i
 {
     if (!ctx) return -1;
     dshow_source_reset(ctx);
+    ctx->decoded_video_time_base = DSHOW_TB;
+    ctx->decoded_audio_time_base = DSHOW_TB;
     source_options* options = &ctx->dshow_options;
     options->format = -1;
     options->audio_format = -1;
@@ -103,7 +106,7 @@ static void frame_callback(void* opaque, void* frame_ptr)
     AVFrame* frame = (AVFrame*)frame_ptr;
     if (!ctx || !frame || ctx->force_exit) return;
     ctx->last_video_decode_time = av_gettime_relative();
-    fill_output_video(ctx, frame);
+    enqueue_decoded_video_frame(ctx, frame);
 }
 
 static void audio_frame_callback(void* opaque, void* frame_ptr)
@@ -112,7 +115,7 @@ static void audio_frame_callback(void* opaque, void* frame_ptr)
     AVFrame* frame = (AVFrame*)frame_ptr;
     if (!ctx || !frame || ctx->force_exit) return;
     ctx->last_audio_decode_time = av_gettime_relative();
-    fill_output_audio(ctx, frame);
+    enqueue_decoded_audio_frame(ctx, frame);
 }
 
 DWORD dshow_source_thread(LPVOID opaque)
@@ -149,9 +152,15 @@ DWORD dshow_source_thread(LPVOID opaque)
         ctx->force_exit = 1;
         goto end;
     }
-    while (!ctx->force_exit) Sleep(20);
+    while (!ctx->force_exit) Sleep(100);
 end:
     dshow_camera_close(&camera);
+    ctx->decoders[0].exit = 1;
+    ctx->decoders[1].exit = 1;
+    if (ctx->decoded_video_frame_queue)
+        WakeAllConditionVariable(&ctx->decoded_video_frame_queue->cond);
+    if (ctx->decoded_audio_frame_queue)
+        WakeAllConditionVariable(&ctx->decoded_audio_frame_queue->cond);
     ctx->special_source_running = 0;
     if (SUCCEEDED(com_hr)) CoUninitialize();
     return 0;
