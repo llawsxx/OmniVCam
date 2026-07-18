@@ -31,6 +31,9 @@ DShowGrabber::DShowGrabber(GrabberCallback callback, void* callback_priv, AM_MED
 	m_callback_priv = callback_priv;
 	m_starttime = 0;
 	m_clock = NULL;
+	InitializeCriticalSection(&m_receive_mutex);
+	InitializeConditionVariable(&m_receive_cond);
+	m_receive_count = 0;
 	m_ds_pin = new DShowPin(this, type);
 }
 
@@ -40,6 +43,7 @@ DShowGrabber::~DShowGrabber() {
 	m_clock = NULL;
 	delete m_ds_pin;
 	m_ds_pin = NULL;
+	DeleteCriticalSection(&m_receive_mutex);
 }
 
 
@@ -55,7 +59,11 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::GetClassID(CLSID* pClassID)
 HRESULT STDMETHODCALLTYPE DShowGrabber::Stop(void)
 {
 	GBDEBUG("DShowGrabber::Stop(void)\n");
+	EnterCriticalSection(&m_receive_mutex);
 	InterlockedExchange(&m_state, State_Stopped);
+	while (m_receive_count > 0)
+		SleepConditionVariableCS(&m_receive_cond, &m_receive_mutex, INFINITE);
+	LeaveCriticalSection(&m_receive_mutex);
 	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE DShowGrabber::Pause(void)
@@ -466,10 +474,20 @@ HRESULT STDMETHODCALLTYPE DShowPin::Receive(
 	if (!pSample) return E_POINTER;
 	if (InterlockedCompareExchange(&m_flushing, 0, 0)) return S_FALSE;
 	if (!m_connectedto) return VFW_E_NOT_CONNECTED;
-	if (InterlockedCompareExchange(&m_grabber->m_state, 0, 0) != State_Running)
+	EnterCriticalSection(&m_grabber->m_receive_mutex);
+	if (InterlockedCompareExchange(&m_grabber->m_state, 0, 0) != State_Running) {
+		LeaveCriticalSection(&m_grabber->m_receive_mutex);
 		return VFW_E_NOT_RUNNING;
+	}
+	m_grabber->m_receive_count++;
+	LeaveCriticalSection(&m_grabber->m_receive_mutex);
 	if (m_grabber->m_callback)
 		m_grabber->m_callback(m_grabber->m_callback_priv, pSample);
+	EnterCriticalSection(&m_grabber->m_receive_mutex);
+	m_grabber->m_receive_count--;
+	if (m_grabber->m_receive_count == 0)
+		WakeAllConditionVariable(&m_grabber->m_receive_cond);
+	LeaveCriticalSection(&m_grabber->m_receive_mutex);
 	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE DShowPin::ReceiveMultiple(

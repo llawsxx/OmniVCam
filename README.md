@@ -99,7 +99,7 @@ Main controls:
 
 ### Native `<DSHOW>` Capture Input
 
-`<DSHOW>` is the native DirectShow capture path. Unlike the `format=dshow` FFmpeg input, it builds a DirectShow graph in OmniVCam and sends captured frames through the normal video/audio filter and output pipeline.
+`<DSHOW>` is the native DirectShow capture path. Unlike the `format=dshow` FFmpeg input, it builds a DirectShow graph in OmniVCam and sends captured frames through the normal video/audio filter and output pipeline. Compressed samples are copied into bounded real-time queues and decoded on dedicated worker threads, so codec work does not block the DirectShow sample callback.
 
 1. Select `<DSHOW>` in **Input**, then choose **DirectShow** → **Camera**.
 2. Select a video device and capture format. Audio is optional; it can come from the capture device or a separate audio device.

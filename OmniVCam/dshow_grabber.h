@@ -120,6 +120,9 @@ public:
     void* m_callback_priv;
     REFERENCE_TIME m_starttime;
     IReferenceClock* m_clock;
+    CRITICAL_SECTION m_receive_mutex;
+    CONDITION_VARIABLE m_receive_cond;
+    LONG m_receive_count;
     HRESULT STDMETHODCALLTYPE GetClassID(CLSID* pClassID) override;
     HRESULT STDMETHODCALLTYPE Stop(void) override;
 

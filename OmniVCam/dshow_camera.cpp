@@ -1,5 +1,6 @@
 #include "dshow_camera.h"
 #include "dshow_grabber.h"
+#include "Threads.h"
 #include "video_frame.h"
 
 #include <dvdmedia.h>
@@ -9,6 +10,7 @@
 #include <atlbase.h>
 #include <string>
 #include <vector>
+#include <deque>
 #include <algorithm>
 
 extern "C" {
@@ -20,6 +22,29 @@ extern "C" {
 #include <libavutil/time.h>
 }
 
+struct dshow_packet_queue {
+    CRITICAL_SECTION mutex;
+    CONDITION_VARIABLE cond;
+    std::deque<AVPacket*> packets;
+    size_t bytes;
+    size_t max_bytes;
+    size_t max_packets;
+    int stopping;
+    int reset_decoder;
+
+    dshow_packet_queue() : bytes(0), max_bytes(0), max_packets(0), stopping(0), reset_decoder(0)
+    {
+        InitializeCriticalSection(&mutex);
+        InitializeConditionVariable(&cond);
+    }
+
+    ~dshow_packet_queue()
+    {
+        for (AVPacket* packet : packets) av_packet_free(&packet);
+        DeleteCriticalSection(&mutex);
+    }
+};
+
 struct dshow_camera {
     CComPtr<IGraphBuilder> graph;
     CComPtr<ICaptureGraphBuilder2> builder;
@@ -29,6 +54,8 @@ struct dshow_camera {
     DShowGrabber* grabber;
     AM_MEDIA_TYPE media_type;
     AVCodecContext* decoder;
+    dshow_packet_queue video_packets;
+    HANDLE video_decoder_thread;
     AVPixelFormat pixel_format;
     int width;
     int height;
@@ -42,6 +69,8 @@ struct dshow_camera {
     DShowGrabber* audio_grabber;
     AM_MEDIA_TYPE audio_media_type;
     AVCodecContext* audio_decoder;
+    dshow_packet_queue audio_packets;
+    HANDLE audio_decoder_thread;
     REFERENCE_TIME audio_next_pts;
     dshow_camera_frame_callback audio_callback;
     void* opaque;
@@ -52,8 +81,10 @@ static std::wstring utf8_to_wide(const char* text)
     if (!text || !*text) return std::wstring();
     int count = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
     if (count <= 1) return std::wstring();
-    std::wstring result((size_t)count - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text, -1, &result[0], count);
+    std::wstring result((size_t)count, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, 0, text, -1, &result[0], count) != count)
+        return std::wstring();
+    result.resize((size_t)count - 1);
     return result;
 }
 
@@ -62,8 +93,10 @@ static std::string wide_to_utf8(const wchar_t* text)
     if (!text || !*text) return std::string();
     int count = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
     if (count <= 1) return std::string();
-    std::string result((size_t)count - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text, -1, &result[0], count, NULL, NULL);
+    std::string result((size_t)count, '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, text, -1, &result[0], count, NULL, NULL) != count)
+        return std::string();
+    result.resize((size_t)count - 1);
     return result;
 }
 
@@ -360,6 +393,128 @@ static REFERENCE_TIME get_sample_timestamp(DShowGrabber* grabber, IMediaSample* 
     return fallback_pts;
 }
 
+static void clear_packet_queue_locked(dshow_packet_queue* queue)
+{
+    while (!queue->packets.empty()) {
+        AVPacket* packet = queue->packets.front();
+        queue->packets.pop_front();
+        av_packet_free(&packet);
+    }
+    queue->bytes = 0;
+}
+
+static int enqueue_packet(dshow_packet_queue* queue, const BYTE* data, int size,
+    int64_t pts, int64_t duration, int key_frame)
+{
+    AVPacket* packet;
+    if (!queue || !data || size <= 0) return -1;
+    if ((size_t)size > queue->max_bytes) return -1;
+    packet = av_packet_alloc();
+    if (!packet || av_new_packet(packet, size) < 0) {
+        av_packet_free(&packet);
+        return -1;
+    }
+    memcpy(packet->data, data, size);
+    packet->pts = packet->dts = pts;
+    packet->duration = duration;
+    if (key_frame) packet->flags |= AV_PKT_FLAG_KEY;
+
+    EnterCriticalSection(&queue->mutex);
+    if (queue->stopping) {
+        LeaveCriticalSection(&queue->mutex);
+        av_packet_free(&packet);
+        return -1;
+    }
+    if (queue->packets.size() >= queue->max_packets ||
+        queue->bytes + (size_t)size > queue->max_bytes) {
+        clear_packet_queue_locked(queue);
+        queue->reset_decoder = 1;
+    }
+    try {
+        queue->packets.push_back(packet);
+    }
+    catch (...) {
+        LeaveCriticalSection(&queue->mutex);
+        av_packet_free(&packet);
+        return -1;
+    }
+    queue->bytes += (size_t)size;
+    LeaveCriticalSection(&queue->mutex);
+    WakeConditionVariable(&queue->cond);
+    return 0;
+}
+
+static AVPacket* dequeue_packet(dshow_packet_queue* queue, int* reset_decoder)
+{
+    AVPacket* packet = NULL;
+    EnterCriticalSection(&queue->mutex);
+    while (!queue->stopping && queue->packets.empty())
+        SleepConditionVariableCS(&queue->cond, &queue->mutex, INFINITE);
+    if (!queue->stopping && !queue->packets.empty()) {
+        packet = queue->packets.front();
+        queue->packets.pop_front();
+        queue->bytes -= (size_t)packet->size;
+        *reset_decoder = queue->reset_decoder;
+        queue->reset_decoder = 0;
+    }
+    LeaveCriticalSection(&queue->mutex);
+    return packet;
+}
+
+static void stop_packet_queue(dshow_packet_queue* queue)
+{
+    EnterCriticalSection(&queue->mutex);
+    queue->stopping = 1;
+    clear_packet_queue_locked(queue);
+    LeaveCriticalSection(&queue->mutex);
+    WakeAllConditionVariable(&queue->cond);
+}
+
+static void decode_packets(dshow_camera* camera, dshow_packet_queue* queue,
+    AVCodecContext* decoder, dshow_camera_frame_callback callback)
+{
+    AVFrame* frame = av_frame_alloc();
+    if (!frame) return;
+    while (1) {
+        int reset_decoder = 0;
+        AVPacket* packet = dequeue_packet(queue, &reset_decoder);
+        if (!packet) break;
+        if (reset_decoder) avcodec_flush_buffers(decoder);
+        int ret = avcodec_send_packet(decoder, packet);
+        if (ret == AVERROR(EAGAIN)) {
+            while (avcodec_receive_frame(decoder, frame) >= 0) {
+                if (frame->pts == AV_NOPTS_VALUE) frame->pts = packet->pts;
+                callback(camera->opaque, frame);
+                av_frame_unref(frame);
+            }
+            ret = avcodec_send_packet(decoder, packet);
+        }
+        if (ret >= 0) {
+            while (avcodec_receive_frame(decoder, frame) >= 0) {
+                if (frame->pts == AV_NOPTS_VALUE) frame->pts = packet->pts;
+                callback(camera->opaque, frame);
+                av_frame_unref(frame);
+            }
+        }
+        av_packet_free(&packet);
+    }
+    av_frame_free(&frame);
+}
+
+static DWORD WINAPI video_decoder_thread(void* opaque)
+{
+    dshow_camera* camera = static_cast<dshow_camera*>(opaque);
+    decode_packets(camera, &camera->video_packets, camera->decoder, camera->callback);
+    return 0;
+}
+
+static DWORD WINAPI audio_decoder_thread(void* opaque)
+{
+    dshow_camera* camera = static_cast<dshow_camera*>(opaque);
+    decode_packets(camera, &camera->audio_packets, camera->audio_decoder, camera->audio_callback);
+    return 0;
+}
+
 static void STDMETHODCALLTYPE sample_callback(void* opaque, IMediaSample* sample)
 {
     dshow_camera* camera = static_cast<dshow_camera*>(opaque);
@@ -373,25 +528,9 @@ static void STDMETHODCALLTYPE sample_callback(void* opaque, IMediaSample* sample
     camera->next_pts = end;
 
     if (camera->decoder) {
-        AVPacket* packet = av_packet_alloc();
-        AVFrame* frame = av_frame_alloc();
-        if (!packet || !frame || av_new_packet(packet, size) < 0) {
-            av_packet_free(&packet);
-            av_frame_free(&frame);
-            return;
-        }
-        memcpy(packet->data, data, size);
-        packet->pts = packet->dts = start;
-        packet->duration = end > start ? end - start : camera->frame_interval;
-        if (avcodec_send_packet(camera->decoder, packet) >= 0) {
-            while (avcodec_receive_frame(camera->decoder, frame) >= 0) {
-                if (frame->pts == AV_NOPTS_VALUE) frame->pts = start;
-                camera->callback(camera->opaque, frame);
-                av_frame_unref(frame);
-            }
-        }
-        av_packet_free(&packet);
-        av_frame_free(&frame);
+        enqueue_packet(&camera->video_packets, data, size, start,
+            end > start ? end - start : camera->frame_interval,
+            sample->IsSyncPoint() == S_OK);
         return;
     }
 
@@ -432,24 +571,7 @@ static void STDMETHODCALLTYPE audio_sample_callback(void* opaque, IMediaSample* 
     if (format && format->nAvgBytesPerSec > 0)
         camera->audio_next_pts = start + av_rescale(size, 10000000, format->nAvgBytesPerSec);
     if (camera->audio_decoder) {
-        AVPacket* packet = av_packet_alloc();
-        AVFrame* frame = av_frame_alloc();
-        if (!packet || !frame || av_new_packet(packet, size) < 0) {
-            av_packet_free(&packet);
-            av_frame_free(&frame);
-            return;
-        }
-        memcpy(packet->data, data, size);
-        packet->pts = packet->dts = start;
-        if (avcodec_send_packet(camera->audio_decoder, packet) >= 0) {
-            while (avcodec_receive_frame(camera->audio_decoder, frame) >= 0) {
-                if (frame->pts == AV_NOPTS_VALUE) frame->pts = start;
-                camera->audio_callback(camera->opaque, frame);
-                av_frame_unref(frame);
-            }
-        }
-        av_packet_free(&packet);
-        av_frame_free(&frame);
+        enqueue_packet(&camera->audio_packets, data, size, start, 0, 1);
         return;
     }
 
@@ -494,6 +616,12 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
     camera->audio_grabber = NULL;
     camera->decoder = NULL;
     camera->audio_decoder = NULL;
+    camera->video_decoder_thread = NULL;
+    camera->audio_decoder_thread = NULL;
+    camera->video_packets.max_packets = 8;
+    camera->video_packets.max_bytes = 64 * 1024 * 1024;
+    camera->audio_packets.max_packets = 64;
+    camera->audio_packets.max_bytes = 8 * 1024 * 1024;
     ZeroMemory(&camera->audio_media_type, sizeof(camera->audio_media_type));
     camera->pixel_format = AV_PIX_FMT_NONE;
     camera->width = camera->height = 0;
@@ -607,7 +735,21 @@ failed:
 int dshow_camera_start(dshow_camera* camera)
 {
     if (!camera || !camera->control) return -1;
-    return SUCCEEDED(camera->control->Run()) ? 0 : -1;
+    if (camera->decoder && open_thread(&camera->video_decoder_thread, video_decoder_thread, camera) < 0)
+        return -1;
+    if (camera->audio_decoder && open_thread(&camera->audio_decoder_thread, audio_decoder_thread, camera) < 0) {
+        stop_packet_queue(&camera->video_packets);
+        free_thread(&camera->video_decoder_thread);
+        return -1;
+    }
+    if (FAILED(camera->control->Run())) {
+        stop_packet_queue(&camera->video_packets);
+        stop_packet_queue(&camera->audio_packets);
+        free_thread(&camera->video_decoder_thread);
+        free_thread(&camera->audio_decoder_thread);
+        return -1;
+    }
+    return 0;
 }
 
 void dshow_camera_close(dshow_camera** camera_ptr)
@@ -615,6 +757,10 @@ void dshow_camera_close(dshow_camera** camera_ptr)
     if (!camera_ptr || !*camera_ptr) return;
     dshow_camera* camera = *camera_ptr;
     if (camera->control) camera->control->Stop();
+    stop_packet_queue(&camera->video_packets);
+    stop_packet_queue(&camera->audio_packets);
+    free_thread(&camera->video_decoder_thread);
+    free_thread(&camera->audio_decoder_thread);
     camera->control.Release();
     camera->source_pin.Release();
     camera->audio_source_pin.Release();
