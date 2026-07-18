@@ -29,6 +29,8 @@
   <ItemGroup>
     <ClInclude Include="clock.h" />
     <ClInclude Include="dshow_grabber.h" />
+    <ClInclude Include="dshow_camera.h" />
+    <ClInclude Include="dshow_source.h" />
     <ClInclude Include="global.h" />
     <ClInclude Include="OBSVirtualCamReader.h" />
     <ClInclude Include="OBSVirtualCamReader\shared-memory-queue.h" />
@@ -45,7 +47,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="clock.c" />
-    <ClCompile Include="dshow_grabber.cpp" />
+    <ClCompile Include="dshow_grabber.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="dshow_camera.cpp" />
+    <ClCompile Include="dshow_source.cpp" />
     <ClCompile Include="OBSVirtualCamReader.c" />
     <ClCompile Include="OBSVirtualCamReader\shared-memory-queue.c" />
     <ClCompile Include="OmniAudioPin.cpp" />
@@ -53,7 +59,9 @@
     <ClCompile Include="OmniVCam.cpp" />
     <ClCompile Include="OmniVideoPin.cpp" />
     <ClCompile Include="ParseConfig.c" />
-    <ClCompile Include="RenderVideo.c" />
+    <ClCompile Include="RenderVideo.c">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="TestCard.cpp" />
     <ClCompile Include="Threads.c" />
     <ClCompile Include="Utils.c" />

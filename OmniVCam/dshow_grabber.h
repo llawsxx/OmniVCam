@@ -32,21 +32,14 @@ public:
     }
 
     void operator delete(void* p) {
-
-        // 打印调用栈（Windows）
-//#ifdef _WIN32
-//        void* stack[10];
-//        WORD frames = CaptureStackBackTrace(0, 10, stack, NULL);
-//        for (WORD i = 0; i < frames; i++) {
-//            GBDEBUG("  [%d] %p\n", i, stack[i]);
-//        }
-//#endif
         CoTaskMemFree(p);
     }
 };
 
 static HRESULT copy_media_type(AM_MEDIA_TYPE* dst, const AM_MEDIA_TYPE* src)
 {
+    if (!dst || !src) return E_POINTER;
+    if (src->cbFormat && !src->pbFormat) return E_INVALIDARG;
     uint8_t* pbFormat = NULL;
 
     if (src->cbFormat) {
@@ -57,7 +50,7 @@ static HRESULT copy_media_type(AM_MEDIA_TYPE* dst, const AM_MEDIA_TYPE* src)
     }
 
     *dst = *src;
-    dst->pUnk = NULL;
+    if (dst->pUnk) dst->pUnk->AddRef();
     dst->pbFormat = pbFormat;
 
     return S_OK;
@@ -121,15 +114,12 @@ private:
     
 public:
     DShowGrabber(GrabberCallback callback, void* callback_priv, AM_MEDIA_TYPE* type);
-    DShowGrabber();
     ~DShowGrabber();
-    FILTER_STATE m_state;
+    volatile LONG m_state;
     GrabberCallback m_callback;
     void* m_callback_priv;
     REFERENCE_TIME m_starttime;
     IReferenceClock* m_clock;
-    // 通过 IBaseFilter 继承
-
     HRESULT STDMETHODCALLTYPE GetClassID(CLSID* pClassID) override;
     HRESULT STDMETHODCALLTYPE Stop(void) override;
 
@@ -156,10 +146,10 @@ public:
 
     //DECLARE_REF_IMPLEMENT(DShowGrabber)
 
-    private: long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
-        printf("DShowGrabber""::AddRef:%d\n", m_ref + 1); return _InterlockedIncrement(&m_ref);
+    private: volatile long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
+        return InterlockedIncrement(&m_ref);
     } ULONG __stdcall Release(void) override {
-        long ref = _InterlockedDecrement(&this->m_ref); printf("DShowGrabber""::Release:%d\n", ref); if (ref == 0) {
+        long ref = InterlockedDecrement(&m_ref); if (ref == 0) {
             delete this;
         } return ref;
     }
@@ -198,9 +188,9 @@ class DShowPin :public IPin, public IMemInputPin,public DShowBase2
     DShowGrabber* m_grabber;
     IPin* m_connectedto;
     AM_MEDIA_TYPE m_type;
+    volatile LONG m_flushing;
 public:
     DShowPin(DShowGrabber* m_grabber, AM_MEDIA_TYPE* type);
-    DShowPin();
     ~DShowPin();
     HRESULT STDMETHODCALLTYPE Connect(
         /* [in] */ IPin* pReceivePin,
@@ -280,13 +270,8 @@ public:
     HRESULT STDMETHODCALLTYPE ReceiveCanBlock(void) override;
 
     //DECLARE_REF_IMPLEMENT(DShowPin)
-    private: long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
-        printf("DShowPin""::AddRef:%d\n", m_ref + 1); return _InterlockedIncrement(&m_ref);
-    } ULONG __stdcall Release(void) override {
-        long ref = _InterlockedDecrement(&this->m_ref); printf("DShowPin""::Release:%d\n", ref); if (ref == 0) {
-            delete this;
-        } return ref;
-    }
+    public: ULONG __stdcall AddRef(void) override { return m_grabber->AddRef(); }
+    ULONG __stdcall Release(void) override { return m_grabber->Release(); }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
     {
@@ -338,10 +323,10 @@ public:
         _Out_  IEnumMediaTypes** ppEnum);
 
     //DECLARE_REF_IMPLEMENT(DShowEnumMediaTypes)
-    private: long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
-        printf("DShowEnumMediaTypes""::AddRef:%d\n", m_ref + 1); return _InterlockedIncrement(&m_ref);
+    private: volatile long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
+        return InterlockedIncrement(&m_ref);
     } ULONG __stdcall Release(void) override {
-        long ref = _InterlockedDecrement(&this->m_ref); printf("DShowEnumMediaTypes""::Release:%d\n", ref); if (ref == 0) {
+        long ref = InterlockedDecrement(&m_ref); if (ref == 0) {
             delete this;
         } return ref;
     }
@@ -366,10 +351,9 @@ public:
     }
 };
 
-class DShowEnumPins :public IEnumPins
+class DShowEnumPins :public IEnumPins, public DShowBase2
 {
     int m_pos = 0;
-    // 通过 IEnumPins 继承
     IPin* m_pin;
 
 public:
@@ -381,10 +365,10 @@ public:
     HRESULT STDMETHODCALLTYPE Reset(void) override;
     HRESULT STDMETHODCALLTYPE Clone(IEnumPins** ppEnum) override;
     //DECLARE_REF_IMPLEMENT(DShowEnumPins)
-    private: long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
-        printf("DShowEnumPins""::AddRef:%d\n", m_ref + 1); return _InterlockedIncrement(&m_ref);
+    private: volatile long m_ref = 1; public: ULONG __stdcall AddRef(void) override {
+        return InterlockedIncrement(&m_ref);
     } ULONG __stdcall Release(void) override {
-        long ref = _InterlockedDecrement(&this->m_ref); printf("DShowEnumPins""::Release:%d\n", ref); if (ref == 0) {
+        long ref = InterlockedDecrement(&m_ref); if (ref == 0) {
             delete this;
         } return ref;
     }

@@ -23,20 +23,23 @@ static HRESULT GetWideString(LPCWSTR psz, __deref_out LPWSTR* ppszReturn)
 	return NOERROR;
 }
 
-DShowGrabber::DShowGrabber() {
-	GBDEBUG("DShowGrabber::DShowGrabber()\n");
-}
-
 DShowGrabber::DShowGrabber(GrabberCallback callback, void* callback_priv, AM_MEDIA_TYPE* type) {
 	GBDEBUG("DShowGrabber::DShowGrabber(GrabberCallback callback, void* callback_priv,AM_MEDIA_TYPE *type)\n");
+	ZeroMemory(&m_info, sizeof(m_info));
+	m_state = State_Stopped;
 	m_callback = callback;
 	m_callback_priv = callback_priv;
+	m_starttime = 0;
+	m_clock = NULL;
 	m_ds_pin = new DShowPin(this, type);
 }
 
 DShowGrabber::~DShowGrabber() {
 	GBDEBUG("DShowGrabber::~DShowGrabber()\n");
-	m_ds_pin->Release();
+	if (m_clock) m_clock->Release();
+	m_clock = NULL;
+	delete m_ds_pin;
+	m_ds_pin = NULL;
 }
 
 
@@ -45,24 +48,26 @@ DShowGrabber::~DShowGrabber() {
 HRESULT STDMETHODCALLTYPE DShowGrabber::GetClassID(CLSID* pClassID)
 {
 	GBDEBUG("DShowGrabber::GetClassID(CLSID* pClassID)\n");
+	if (!pClassID) return E_POINTER;
+	*pClassID = CLSID_NULL;
 	return E_NOTIMPL;
 }
 HRESULT STDMETHODCALLTYPE DShowGrabber::Stop(void)
 {
 	GBDEBUG("DShowGrabber::Stop(void)\n");
-	m_state = State_Stopped;
+	InterlockedExchange(&m_state, State_Stopped);
 	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE DShowGrabber::Pause(void)
 {
 	GBDEBUG("DShowGrabber::Pause(void)\n");
-	m_state = State_Paused;
+	InterlockedExchange(&m_state, State_Paused);
 	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE DShowGrabber::Run(REFERENCE_TIME tStart)
 {
 	GBDEBUG("DShowGrabber::Run(REFERENCE_TIME tStart)\n");
-	m_state = State_Running;
+	InterlockedExchange(&m_state, State_Running);
 	m_starttime = tStart;
 	return S_OK;
 }
@@ -70,7 +75,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::GetState(DWORD dwMilliSecsTimeout, FILTE
 {
 	GBDEBUG("DShowGrabber::GetState(DWORD dwMilliSecsTimeout, FILTER_STATE* State)\n");
 	if (!State) return E_POINTER;
-	*State = m_state;
+	*State = (FILTER_STATE)InterlockedCompareExchange(&m_state, 0, 0);
 	return S_OK;
 }
 HRESULT STDMETHODCALLTYPE DShowGrabber::SetSyncSource(IReferenceClock* pClock)
@@ -102,6 +107,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::EnumPins(IEnumPins** ppEnum)
 	HRESULT hr;
 	if (!ppEnum)
 		return E_POINTER;
+	*ppEnum = NULL;
 	CComPtr<IPin> pin;
 	hr = m_ds_pin->QueryInterface(IID_PPV_ARGS(&pin));
 	if (hr != S_OK) return hr;
@@ -119,6 +125,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::FindPin(LPCWSTR Id, IPin** ppPin)
 	HRESULT hr;
 	if (!Id || !ppPin)
 		return E_POINTER;
+	*ppPin = NULL;
 	if (!wcscmp(Id, L"In")) {
 		hr = m_ds_pin->QueryInterface(IID_PPV_ARGS(&pin));
 		if (hr == S_OK) {
@@ -133,6 +140,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::QueryFilterInfo(FILTER_INFO* pInfo)
 	GBDEBUG("DShowGrabber::QueryFilterInfo(FILTER_INFO* pInfo)\n");
 	if (!pInfo)
 		return E_POINTER;
+	ZeroMemory(pInfo, sizeof(*pInfo));
 	if (m_info.pGraph)
 		m_info.pGraph->AddRef();
 	*pInfo = m_info;
@@ -143,6 +151,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::JoinFilterGraph(IFilterGraph* pGraph, LP
 {
 	GBDEBUG("DShowGrabber::JoinFilterGraph(IFilterGraph* pGraph, LPCWSTR pName)\n");
 	m_info.pGraph = pGraph;
+	m_info.achName[0] = L'\0';
 	if (pName)
 		wcscpy_s(m_info.achName, _countof(m_info.achName), pName);
 
@@ -152,6 +161,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::QueryVendorInfo(LPWSTR* pVendorInfo)
 {
 	GBDEBUG("DShowGrabber::QueryVendorInfo(LPWSTR* pVendorInfo)\n");
 	if (!pVendorInfo) return E_POINTER;
+	*pVendorInfo = NULL;
 	return E_NOTIMPL;
 }
 
@@ -159,6 +169,7 @@ HRESULT STDMETHODCALLTYPE DShowGrabber::QueryVendorInfo(LPWSTR* pVendorInfo)
 
 DShowEnumMediaTypes::DShowEnumMediaTypes(AM_MEDIA_TYPE* type) {
 	GBDEBUG("DShowEnumMediaTypes::DShowEnumMediaTypes(AM_MEDIA_TYPE *type)\n");
+	ZeroMemory(&m_type, sizeof(m_type));
 	if (!type)
 		m_type.majortype = GUID_NULL;
 	else
@@ -177,32 +188,38 @@ HRESULT STDMETHODCALLTYPE DShowEnumMediaTypes::Next(
 	/* [annotation][out] */
 	_Out_opt_  ULONG* pcFetched) {
 	GBDEBUG("DShowGrabber::Next()\n");
-	int count = 0;
+	ULONG count = 0;
 	if (!ppMediaTypes)
 		return E_POINTER;
-	if (!m_pos && cMediaTypes == 1) {
+	if (cMediaTypes != 1 && !pcFetched) return E_POINTER;
+	if (pcFetched) *pcFetched = 0;
+	for (ULONG i = 0; i < cMediaTypes; ++i) ppMediaTypes[i] = NULL;
+	if (!m_pos && cMediaTypes > 0) {
 		if (!IsEqualGUID(m_type.majortype, GUID_NULL)) {
 			AM_MEDIA_TYPE* type = (AM_MEDIA_TYPE*)CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
 			if (!type)
 				return E_OUTOFMEMORY;
-			copy_media_type(type, &m_type);
+			HRESULT hr = copy_media_type(type, &m_type);
+			if (FAILED(hr)) {
+				CoTaskMemFree(type);
+				return hr;
+			}
 			*ppMediaTypes = type;
 			count = 1;
 		}
 		m_pos = 1;
 	}
-	if (pcFetched)
-		*pcFetched = count;
-	if (!count)
-		return S_FALSE;
-	return S_OK;
+	if (pcFetched) *pcFetched = count;
+	return count == cMediaTypes ? S_OK : S_FALSE;
 }
 
 HRESULT STDMETHODCALLTYPE DShowEnumMediaTypes::Skip(
 	/* [in] */ ULONG cMediaTypes) {
 	GBDEBUG("DShowEnumMediaTypes::Skip(ULONG cMediaTypes)\n");
-	if (cMediaTypes) return S_FALSE;
-	return S_OK;
+	if (cMediaTypes == 0) return S_OK;
+	if (m_pos || IsEqualGUID(m_type.majortype, GUID_NULL)) return S_FALSE;
+	m_pos = 1;
+	return cMediaTypes == 1 ? S_OK : S_FALSE;
 }
 
 HRESULT STDMETHODCALLTYPE DShowEnumMediaTypes::Reset(void) {
@@ -218,6 +235,7 @@ HRESULT STDMETHODCALLTYPE DShowEnumMediaTypes::Clone(
 	DShowEnumMediaTypes* _new;
 	if (!ppEnum)
 		return E_POINTER;
+	*ppEnum = NULL;
 	_new = new DShowEnumMediaTypes(&m_type);
 	if (!_new)
 		return E_OUTOFMEMORY;
@@ -230,6 +248,9 @@ HRESULT STDMETHODCALLTYPE DShowEnumMediaTypes::Clone(
 DShowPin::DShowPin(DShowGrabber* grabber, AM_MEDIA_TYPE* type)
 {
 	GBDEBUG("DShowPin::DShowPin(AM_MEDIA_TYPE* type)\n");
+	ZeroMemory(&m_type, sizeof(m_type));
+	m_connectedto = NULL;
+	m_flushing = FALSE;
 	if (type != NULL)
 		copy_media_type(&m_type, type);
 	else
@@ -238,14 +259,11 @@ DShowPin::DShowPin(DShowGrabber* grabber, AM_MEDIA_TYPE* type)
 	m_grabber = grabber;
 }
 
-DShowPin::DShowPin() {
-	GBDEBUG("DShowPin::DShowPin()\n");
-	m_type.majortype = GUID_NULL;
-}
-
 DShowPin::~DShowPin()
 {
 	GBDEBUG("DShowPin::~DShowPin %p\n",this);
+	if (m_connectedto) m_connectedto->Release();
+	m_connectedto = NULL;
 	free_media_type(m_type);
 }
 
@@ -255,7 +273,7 @@ HRESULT STDMETHODCALLTYPE DShowPin::Connect(
 	/* [annotation][in] */
 	_In_opt_  const AM_MEDIA_TYPE* pmt) {
 	GBDEBUG("DShowPin::Connect(IPin *pReceivePin, const AM_MEDIA_TYPE *pmt)\n");
-	return S_FALSE;
+	return VFW_E_INVALID_DIRECTION;
 }
 
 HRESULT STDMETHODCALLTYPE DShowPin::ReceiveConnection(
@@ -264,25 +282,31 @@ HRESULT STDMETHODCALLTYPE DShowPin::ReceiveConnection(
 	GBDEBUG("DShowPin::ReceiveConnection(IPin *pConnector,const AM_MEDIA_TYPE *pmt)\n");
 	if (m_connectedto)
 		return VFW_E_ALREADY_CONNECTED;
-
-	if (!pConnector)
+	if (InterlockedCompareExchange(&m_grabber->m_state, 0, 0) != State_Stopped)
+		return VFW_E_NOT_STOPPED;
+	if (!pConnector || !pmt)
 		return E_POINTER;
+	if (QueryAccept(pmt) != S_OK) return VFW_E_TYPE_NOT_ACCEPTED;
+	PIN_DIRECTION direction;
+	HRESULT hr = pConnector->QueryDirection(&direction);
+	if (FAILED(hr)) return hr;
+	if (direction != PINDIR_OUTPUT) return VFW_E_INVALID_DIRECTION;
 
 	pConnector->AddRef();
 	m_connectedto = pConnector;
-	copy_media_type(&m_type, pmt);
 	return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE DShowPin::Disconnect(void) {
 	GBDEBUG("DShowPin::Disconnect(void)\n");
-	if (m_grabber->m_state != State_Stopped)
+	if (InterlockedCompareExchange(&m_grabber->m_state, 0, 0) != State_Stopped)
 		return VFW_E_NOT_STOPPED;
 	if (!m_connectedto)
 		return S_FALSE;
 
 	m_connectedto->Release();
 	m_connectedto = NULL;
+	InterlockedExchange(&m_flushing, FALSE);
 	return S_OK;
 }
 
@@ -292,6 +316,7 @@ HRESULT STDMETHODCALLTYPE DShowPin::ConnectedTo(
 	GBDEBUG("DShowPin::ConnectedTo(IPin** pPin)\n");
 	if (!pPin)
 		return E_POINTER;
+	*pPin = NULL;
 	if (!m_connectedto)
 		return VFW_E_NOT_CONNECTED;
 	m_connectedto->AddRef();
@@ -303,6 +328,8 @@ HRESULT STDMETHODCALLTYPE DShowPin::ConnectionMediaType(
 	/* [annotation][out] */
 	_Out_  AM_MEDIA_TYPE* pmt) {
 	GBDEBUG("DShowPin::ConnectionMediaType(AM_MEDIA_TYPE* pmt)\n");
+	if (!pmt) return E_POINTER;
+	ZeroMemory(pmt, sizeof(*pmt));
 	if (!m_connectedto)
 		return VFW_E_NOT_CONNECTED;
 
@@ -315,6 +342,7 @@ HRESULT STDMETHODCALLTYPE DShowPin::QueryPinInfo(
 	GBDEBUG("DShowPin::QueryPinInfo(PIN_INFO* pInfo)\n");
 	if (!pInfo)
 		return E_POINTER;
+	ZeroMemory(pInfo, sizeof(*pInfo));
 
 	if (m_grabber) {
 		m_grabber->AddRef();
@@ -340,12 +368,19 @@ HRESULT STDMETHODCALLTYPE DShowPin::QueryId(
 	/* [annotation][out] */
 	_Out_  LPWSTR* Id) {
 	GBDEBUG("DShowPin::QueryId(LPWSTR* Id)\n");
-	return GetWideString(L"libAV Pin", Id);
+	return GetWideString(L"In", Id);
 }
 
 HRESULT STDMETHODCALLTYPE DShowPin::QueryAccept(
 	/* [in] */ const AM_MEDIA_TYPE* pmt) {
 	GBDEBUG("DShowPin::QueryAccept(const AM_MEDIA_TYPE* pmt)\n");
+	if (!pmt) return E_POINTER;
+	if (m_type.majortype != GUID_NULL && pmt->majortype != m_type.majortype) return S_FALSE;
+	if (m_type.subtype != GUID_NULL && pmt->subtype != m_type.subtype) return S_FALSE;
+	if (m_type.formattype != GUID_NULL && pmt->formattype != m_type.formattype) return S_FALSE;
+	if (m_type.cbFormat != pmt->cbFormat) return S_FALSE;
+	if (m_type.cbFormat && (!m_type.pbFormat || !pmt->pbFormat ||
+		memcmp(m_type.pbFormat, pmt->pbFormat, m_type.cbFormat) != 0)) return S_FALSE;
 	return S_OK;
 }
 
@@ -356,6 +391,7 @@ HRESULT STDMETHODCALLTYPE DShowPin::EnumMediaTypes(
 	DShowEnumMediaTypes* _new;
 	if (!ppEnum)
 		return E_POINTER;
+	*ppEnum = NULL;
 	_new = new DShowEnumMediaTypes(&m_type);
 	if (!_new)
 		return E_OUTOFMEMORY;
@@ -368,6 +404,8 @@ HRESULT STDMETHODCALLTYPE DShowPin::QueryInternalConnections(
 	_Out_writes_to_opt_(*nPin, *nPin)  IPin** apPin,
 	/* [out][in] */ ULONG* nPin) {
 	GBDEBUG("DShowPin::QueryInternalConnections(IPin** apPin, ULONG * nPin)\n");
+	if (!nPin) return E_POINTER;
+	*nPin = 0;
 	return E_NOTIMPL;
 }
 
@@ -378,11 +416,13 @@ HRESULT STDMETHODCALLTYPE DShowPin::EndOfStream(void) {
 
 HRESULT STDMETHODCALLTYPE DShowPin::BeginFlush(void) {
 	GBDEBUG("DShowPin::BeginFlush(void)\n");
+	InterlockedExchange(&m_flushing, TRUE);
 	return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE DShowPin::EndFlush(void) {
 	GBDEBUG("DShowPin::EndFlush(void)\n");
+	InterlockedExchange(&m_flushing, FALSE);
 	return S_OK;
 }
 
@@ -398,6 +438,8 @@ HRESULT STDMETHODCALLTYPE DShowPin::GetAllocator(
 	/* [annotation][out] */
 	_Out_  IMemAllocator** ppAllocator) {
 	GBDEBUG("DShowPin::GetAllocator(IMemAllocator** ppAllocator)\n");
+	if (!ppAllocator) return E_POINTER;
+	*ppAllocator = NULL;
 	return VFW_E_NO_ALLOCATOR;
 }
 
@@ -405,6 +447,7 @@ HRESULT STDMETHODCALLTYPE DShowPin::NotifyAllocator(
 	/* [in] */ IMemAllocator* pAllocator,
 	/* [in] */ BOOL bReadOnly) {
 	GBDEBUG("DShowPin::NotifyAllocator(IMemAllocator* pAllocator, BOOL bReadOnly)\n");
+	if (!pAllocator) return E_POINTER;
 	return S_OK;
 }
 
@@ -412,13 +455,19 @@ HRESULT STDMETHODCALLTYPE DShowPin::GetAllocatorRequirements(
 	/* [annotation][out] */
 	_Out_  ALLOCATOR_PROPERTIES* pProps) {
 	GBDEBUG("DShowPin::GetAllocatorRequirements(ALLOCATOR_PROPERTIES* pProps)\n");
+	if (!pProps) return E_POINTER;
+	ZeroMemory(pProps, sizeof(*pProps));
 	return E_NOTIMPL;
 }
 
 HRESULT STDMETHODCALLTYPE DShowPin::Receive(
 	/* [in] */ IMediaSample* pSample) {
 	GBDEBUG("DShowPin::Receive(IMediaSample* pSample)\n");
-	if (m_grabber->m_state != State_Running) return VFW_E_NOT_RUNNING;
+	if (!pSample) return E_POINTER;
+	if (InterlockedCompareExchange(&m_flushing, 0, 0)) return S_FALSE;
+	if (!m_connectedto) return VFW_E_NOT_CONNECTED;
+	if (InterlockedCompareExchange(&m_grabber->m_state, 0, 0) != State_Running)
+		return VFW_E_NOT_RUNNING;
 	if (m_grabber->m_callback)
 		m_grabber->m_callback(m_grabber->m_callback_priv, pSample);
 	return S_OK;
@@ -430,10 +479,14 @@ HRESULT STDMETHODCALLTYPE DShowPin::ReceiveMultiple(
 	/* [annotation][out] */
 	_Out_  long* nSamplesProcessed) {
 	GBDEBUG("DShowPin::ReceiveMultiple(IMediaSample** pSamples, long* nSamplesProcessed)\n");
-	if (m_grabber->m_state != State_Running) return VFW_E_NOT_RUNNING;
-	for (int i = 0; i < nSamples; i++)
-		Receive(pSamples[i]);
-	*nSamplesProcessed = nSamples;
+	if (!pSamples || !nSamplesProcessed) return E_POINTER;
+	if (nSamples < 0) return E_INVALIDARG;
+	*nSamplesProcessed = 0;
+	for (long i = 0; i < nSamples; i++) {
+		HRESULT hr = Receive(pSamples[i]);
+		if (hr != S_OK) return hr;
+		(*nSamplesProcessed)++;
+	}
 	return S_OK;
 }
 
@@ -444,38 +497,41 @@ HRESULT STDMETHODCALLTYPE DShowPin::ReceiveCanBlock(void) {
 
 DShowEnumPins::DShowEnumPins(IPin* pin) {
 	GBDEBUG("DShowEnumPins::DShowEnumPins(IPin* pin)\n");
-	pin->AddRef();
 	m_pin = pin;
+	if (m_pin) m_pin->AddRef();
 }
 
 DShowEnumPins::~DShowEnumPins() {
 	GBDEBUG("DShowEnumPins::~DShowEnumPins()\n");
-	m_pin->Release();
+	if (m_pin) m_pin->Release();
 }
 
 HRESULT STDMETHODCALLTYPE DShowEnumPins::Next(ULONG cPins, IPin** ppPins, ULONG* pcFetched)
 {
 	GBDEBUG("DShowEnumPins::Next(ULONG cPins, IPin** ppPins, ULONG* pcFetched)\n");
-	int count = 0;
+	ULONG count = 0;
 	if (!ppPins)
 		return E_POINTER;
-	if (!m_pos && cPins == 1) {
+	if (cPins != 1 && !pcFetched)
+		return E_POINTER;
+	if (pcFetched) *pcFetched = 0;
+	for (ULONG i = 0; i < cPins; ++i) ppPins[i] = NULL;
+	if (!m_pos && cPins > 0 && m_pin) {
 		m_pin->AddRef();
 		*ppPins = m_pin;
 		count = 1;
 		m_pos = 1;
 	}
-	if (pcFetched)
-		*pcFetched = count;
-	if (!count)
-		return S_FALSE;
-	return S_OK;
+	if (pcFetched) *pcFetched = count;
+	return count == cPins ? S_OK : S_FALSE;
 }
 HRESULT STDMETHODCALLTYPE DShowEnumPins::Skip(ULONG cPins)
 {
 	GBDEBUG("DShowEnumPins::Skip(ULONG cPins)\n");
-	if (cPins) return S_FALSE;
-	return S_OK;
+	if (cPins == 0) return S_OK;
+	if (m_pos || !m_pin) return S_FALSE;
+	m_pos = 1;
+	return cPins == 1 ? S_OK : S_FALSE;
 }
 HRESULT STDMETHODCALLTYPE DShowEnumPins::Reset(void)
 {
@@ -489,10 +545,12 @@ HRESULT STDMETHODCALLTYPE DShowEnumPins::Clone(IEnumPins** ppEnum)
 	DShowEnumPins* _new;
 	if (!ppEnum)
 		return E_POINTER;
+	*ppEnum = NULL;
 
 	_new = new DShowEnumPins(this->m_pin);
 	if (!_new)
 		return E_OUTOFMEMORY;
+	_new->m_pos = m_pos;
 
 	*ppEnum = (IEnumPins*)_new;
 	return S_OK;

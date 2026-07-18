@@ -60,6 +60,7 @@ namespace OmniVCamController
         private bool controlsReady;
         private bool syncingInitialCameraSettings;
         private Button manualPlayButton;
+        private Button dshowConfigureButton;
         private ComboBox languageBox;
         private Form playoutForm;
         private bool closingMainForm;
@@ -514,6 +515,7 @@ namespace OmniVCamController
             AddWideRow(grid, T("Input"), CreateInputPicker());
             AddWideRow(grid, T("Title"), titleBox);
             AddWideRow(grid, T("Options"), optionsBox);
+            AddWideRow(grid, "DirectShow", CreateDShowControl());
             AddRow(grid, T("HWDecode"), CreateHwDecodeControl(), T("ScaleMode"), CreateScaleModeControl());
             AddRow(grid, T("DisplayAR"), CreateDisplayAspectControl(), T("ShiftUs"), CreateShiftControl());
             AddRow(grid, T("VideoFilter"), CreateVideoFilterControl(), T("AudioFilter"), CreateAudioFilterControl());
@@ -1006,7 +1008,7 @@ namespace OmniVCamController
                 Dock = DockStyle.Fill,
                 Margin = new Padding(4, 0, 4, 0)
             };
-            quickBox.Items.AddRange(new object[] { "<TESTCARD>", "<TESTCARD2>", "<OBSVCAM>" });
+            quickBox.Items.AddRange(new object[] { "<TESTCARD>", "<TESTCARD2>", "<OBSVCAM>", "<DSHOW>" });
             quickBox.SelectedIndexChanged += (_, __) =>
             {
                 if (quickBox.SelectedItem != null) inputBox.Text = quickBox.SelectedItem.ToString();
@@ -1019,6 +1021,277 @@ namespace OmniVCamController
             panel.Controls.Add(button, 2, 0);
 
             return panel;
+        }
+
+        private Control CreateDShowControl()
+        {
+            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+            dshowConfigureButton = MakeButton("Camera...", async (_, __) => await ConfigureDShowAsync());
+            dshowConfigureButton.AutoSize = true;
+            panel.Controls.Add(dshowConfigureButton);
+            return panel;
+        }
+
+        private async Task ConfigureDShowAsync()
+        {
+            string reply = await SendRawCommandAsync("DSHOW_DEVICES");
+            List<DShowDeviceItem> allDevices = ParseDShowPayload(reply).Select(record =>
+            {
+                string[] parts = record.Split('|');
+                return parts.Length == 3 && int.TryParse(parts[0], out int type)
+                    ? new DShowDeviceItem(type, DecodeBase64Utf8(parts[1]), DecodeBase64Utf8(parts[2])) : null;
+            }).Where(item => item != null && !string.IsNullOrWhiteSpace(item.Name)).ToList();
+            List<DShowDeviceItem> devices = allDevices.Where(item => item.Type == 0).ToList();
+            if (devices.Count == 0 && allDevices.All(item => item.Type != 1))
+            {
+                MessageBox.Show(this, reply ?? "No DirectShow video devices found.", "DirectShow", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using (var dialog = new Form
+            {
+                Text = "DirectShow Camera",
+                Size = new Size(800, 560),
+                MinimumSize = new Size(680, 480),
+                StartPosition = FormStartPosition.CenterParent
+            })
+            {
+                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 11, Padding = new Padding(10) };
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                var deviceBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                deviceBox.Items.Add(new DShowDeviceItem(-1, "No video", string.Empty));
+                deviceBox.Items.AddRange(devices.Cast<object>().ToArray());
+                deviceBox.SelectedIndex = devices.Count > 0 ? 1 : 0;
+                var formatBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                var audioSourceBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                audioSourceBox.Items.Add(new DShowDeviceItem(-1, "No audio", string.Empty));
+                audioSourceBox.Items.AddRange(devices.Cast<object>().ToArray());
+                audioSourceBox.Items.AddRange(allDevices.Where(item => item.Type == 1).Cast<object>().ToArray());
+                audioSourceBox.SelectedIndex = 0;
+                var audioFormatBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                var videoRouteBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                var audioRouteBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                var crossbarDialog = new CheckBox { Text = "Open Crossbar property page when playing", AutoSize = true };
+                var tunerDialog = new CheckBox { Text = "Open TV Tuner property page when playing", AutoSize = true };
+                var audioDialog = new CheckBox { Text = "Open TV Audio property page when playing", AutoSize = true };
+                var statusLabel = new Label { Dock = DockStyle.Fill, AutoSize = true };
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
+                var ok = MakeButton("OK", null);
+                var cancel = MakeButton(T("Cancel"), null);
+                buttons.Controls.Add(ok);
+                buttons.Controls.Add(cancel);
+
+                grid.Controls.Add(new Label { Text = "Device", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+                grid.Controls.Add(deviceBox, 1, 0);
+                grid.Controls.Add(new Label { Text = "Resolution / FPS / Format", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+                grid.Controls.Add(formatBox, 1, 1);
+                grid.Controls.Add(new Label { Text = "Audio source", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+                grid.Controls.Add(audioSourceBox, 1, 2);
+                grid.Controls.Add(new Label { Text = "Audio Pin / Format", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+                grid.Controls.Add(audioFormatBox, 1, 3);
+                grid.Controls.Add(new Label { Text = "Video Crossbar", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+                grid.Controls.Add(videoRouteBox, 1, 4);
+                grid.Controls.Add(new Label { Text = "Audio Crossbar", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+                grid.Controls.Add(audioRouteBox, 1, 5);
+                grid.Controls.Add(crossbarDialog, 1, 6);
+                grid.Controls.Add(tunerDialog, 1, 7);
+                grid.Controls.Add(audioDialog, 1, 8);
+                grid.Controls.Add(statusLabel, 1, 9);
+                grid.Controls.Add(buttons, 1, 10);
+                dialog.Controls.Add(grid);
+
+                Func<Task> refresh = async () =>
+                {
+                    var videoDevice = (DShowDeviceItem)deviceBox.SelectedItem;
+                    string device = videoDevice.DisplayName;
+                    formatBox.Items.Clear();
+                    videoRouteBox.Items.Clear();
+                    audioRouteBox.Items.Clear();
+                    videoRouteBox.Items.Add(new DShowRouteItem("Default", -1, -1, false));
+                    audioRouteBox.Items.Add(new DShowRouteItem("Default", -1, -1, true));
+                    if (videoDevice.Type < 0)
+                    {
+                        formatBox.Enabled = false;
+                        videoRouteBox.Enabled = false;
+                        audioRouteBox.Enabled = false;
+                        crossbarDialog.Enabled = false;
+                        tunerDialog.Enabled = false;
+                        audioDialog.Enabled = false;
+                        statusLabel.Text = "Audio-only source";
+                        return;
+                    }
+                    formatBox.Enabled = true;
+                    videoRouteBox.Enabled = true;
+                    audioRouteBox.Enabled = true;
+                    crossbarDialog.Enabled = true;
+                    string formatsReply = await SendRawCommandAsync("DSHOW_FORMATS 0 " + device);
+                    foreach (string record in ParseDShowPayload(formatsReply))
+                    {
+                        string[] parts = record.Split('|');
+                        if (parts.Length != 4 || parts[0] != "video" || !int.TryParse(parts[2], out int index)) continue;
+                        formatBox.Items.Add(new DShowFormatItem(DecodeBase64Utf8(parts[1]), index, DecodeBase64Utf8(parts[3])));
+                    }
+                    if (formatBox.Items.Count > 0) formatBox.SelectedIndex = 0;
+
+                    string crossbarReply = await SendRawCommandAsync("DSHOW_CROSSBAR " + device);
+                    bool hasTuner = false, hasAudio = false;
+                    foreach (string record in ParseDShowPayload(crossbarReply))
+                    {
+                        string[] parts = record.Split('|');
+                        if (parts.Length == 6 && parts[0] == "route" && int.TryParse(parts[1], out int output) &&
+                            int.TryParse(parts[2], out int input) && int.TryParse(parts[3], out int outputType) &&
+                            int.TryParse(parts[4], out int inputType) && int.TryParse(parts[5], out int current))
+                        {
+                            bool audio = inputType >= 4096;
+                            string name = $"In {input} ({PhysicalConnectorName(inputType)}) -> Out {output} ({PhysicalConnectorName(outputType)})" + (current == input ? " [current]" : "");
+                            (audio ? audioRouteBox : videoRouteBox).Items.Add(new DShowRouteItem(name, input, output, audio));
+                        }
+                        else if (parts.Length == 3 && parts[0] == "features")
+                        {
+                            hasTuner = parts[1] == "1";
+                            hasAudio = parts[2] == "1";
+                        }
+                    }
+                    videoRouteBox.SelectedIndex = 0;
+                    audioRouteBox.SelectedIndex = 0;
+                    tunerDialog.Enabled = hasTuner;
+                    audioDialog.Enabled = hasAudio;
+                    statusLabel.Text = $"{formatBox.Items.Count} formats, {videoRouteBox.Items.Count - 1} video routes, {audioRouteBox.Items.Count - 1} audio routes";
+                };
+
+                Func<Task> refreshAudio = async () =>
+                {
+                    audioFormatBox.Items.Clear();
+                    var audioDevice = audioSourceBox.SelectedItem as DShowDeviceItem;
+                    if (audioDevice == null || audioDevice.Type < 0)
+                    {
+                        audioFormatBox.Enabled = false;
+                        return;
+                    }
+                    audioFormatBox.Enabled = true;
+                    string formatsReply = await SendRawCommandAsync("DSHOW_FORMATS " + audioDevice.Type + " " + audioDevice.DisplayName);
+                    foreach (string record in ParseDShowPayload(formatsReply))
+                    {
+                        string[] parts = record.Split('|');
+                        if (parts.Length != 4 || parts[0] != "audio" || !int.TryParse(parts[2], out int index)) continue;
+                        audioFormatBox.Items.Add(new DShowFormatItem(DecodeBase64Utf8(parts[1]), index, DecodeBase64Utf8(parts[3])));
+                    }
+                    if (audioFormatBox.Items.Count > 0) audioFormatBox.SelectedIndex = 0;
+                };
+
+                deviceBox.SelectedIndexChanged += async (_, __) =>
+                {
+                    await refresh();
+                    if ((audioSourceBox.SelectedItem as DShowDeviceItem)?.Type == 0) await refreshAudio();
+                };
+                audioSourceBox.SelectedIndexChanged += async (_, __) => await refreshAudio();
+                cancel.Click += (_, __) => dialog.DialogResult = DialogResult.Cancel;
+                ok.Click += (_, __) =>
+                {
+                    var format = formatBox.SelectedItem as DShowFormatItem;
+                    var videoRoute = videoRouteBox.SelectedItem as DShowRouteItem;
+                    var audioRoute = audioRouteBox.SelectedItem as DShowRouteItem;
+                    var audioDevice = audioSourceBox.SelectedItem as DShowDeviceItem;
+                    var audioFormat = audioFormatBox.SelectedItem as DShowFormatItem;
+                    var videoDevice = deviceBox.SelectedItem as DShowDeviceItem;
+                    if ((videoDevice == null || videoDevice.Type < 0) && (audioDevice == null || audioDevice.Type < 0 || audioFormat == null)) return;
+                    if (videoDevice != null && videoDevice.Type >= 0 && format == null) return;
+                    var options = new List<string>();
+                    if (videoDevice != null && videoDevice.Type >= 0)
+                    {
+                        options.Add("dshow_device_b64=" + EncodeBase64Utf8(videoDevice.DisplayName));
+                        options.Add("dshow_pin_b64=" + EncodeBase64Utf8(format.PinId));
+                        options.Add("dshow_format=" + format.Index.ToString(CultureInfo.InvariantCulture));
+                    }
+                    if (audioDevice != null && audioDevice.Type >= 0 && audioFormat != null)
+                    {
+                        options.Add("dshow_audio_device_b64=" + EncodeBase64Utf8(audioDevice.DisplayName));
+                        options.Add("dshow_audio_device_type=" + audioDevice.Type);
+                        options.Add("dshow_audio_pin_b64=" + EncodeBase64Utf8(audioFormat.PinId));
+                        options.Add("dshow_audio_format=" + audioFormat.Index);
+                    }
+                    if (videoRoute != null && videoRoute.Input >= 0)
+                    {
+                        options.Add("dshow_xbar_video_in=" + videoRoute.Input);
+                        options.Add("dshow_xbar_video_out=" + videoRoute.Output);
+                    }
+                    if (audioRoute != null && audioRoute.Input >= 0)
+                    {
+                        options.Add("dshow_xbar_audio_in=" + audioRoute.Input);
+                        options.Add("dshow_xbar_audio_out=" + audioRoute.Output);
+                    }
+                    if (crossbarDialog.Checked) options.Add("dshow_crossbar_dialog=1");
+                    if (tunerDialog.Checked) options.Add("dshow_tv_tuner_dialog=1");
+                    if (audioDialog.Checked) options.Add("dshow_tv_audio_dialog=1");
+                    string title = videoDevice != null && videoDevice.Type >= 0 ? videoDevice.Name : audioDevice.Name;
+                    SetInputFields("<DSHOW>", title, string.Join(",", options));
+                    dialog.DialogResult = DialogResult.OK;
+                };
+
+                await refresh();
+                await refreshAudio();
+                dialog.ShowDialog(this);
+            }
+        }
+
+        private static IEnumerable<string> ParseDShowPayload(string reply)
+        {
+            if (string.IsNullOrWhiteSpace(reply) || !reply.StartsWith("OK data=", StringComparison.OrdinalIgnoreCase)) return Enumerable.Empty<string>();
+            string payload = reply.Substring(8);
+            return payload.Length == 0 ? Enumerable.Empty<string>() : payload.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        private static string EncodeBase64Utf8(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+        private static string DecodeBase64Utf8(string value)
+        {
+            try { return Encoding.UTF8.GetString(Convert.FromBase64String(value ?? string.Empty)); }
+            catch { return string.Empty; }
+        }
+
+        private static string PhysicalConnectorName(int type)
+        {
+            switch (type)
+            {
+                case 1: return "Video Tuner";
+                case 2: return "Composite";
+                case 3: return "S-Video";
+                case 4: return "RGB";
+                case 12: return "Video Decoder";
+                case 4096: return "Audio Tuner";
+                case 4097: return "Audio Line";
+                case 4098: return "Microphone";
+                case 4106: return "Audio Decoder";
+                default: return type.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        private sealed class DShowFormatItem
+        {
+            public DShowFormatItem(string pinId, int index, string description) { PinId = pinId; Index = index; Description = description; }
+            public string PinId { get; }
+            public int Index { get; }
+            public string Description { get; }
+            public override string ToString() => Description;
+        }
+
+        private sealed class DShowDeviceItem
+        {
+            public DShowDeviceItem(int type, string name, string displayName) { Type = type; Name = name; DisplayName = displayName; }
+            public int Type { get; }
+            public string Name { get; }
+            public string DisplayName { get; }
+            public override string ToString() => Type < 0 ? Name : (Type == 0 ? "Video device: " : "Audio device: ") + Name;
+        }
+
+        private sealed class DShowRouteItem
+        {
+            public DShowRouteItem(string description, int input, int output, bool audio) { Description = description; Input = input; Output = output; Audio = audio; }
+            public string Description { get; }
+            public int Input { get; }
+            public int Output { get; }
+            public bool Audio { get; }
+            public override string ToString() => Description;
         }
 
         private Control CreateProgressControl()

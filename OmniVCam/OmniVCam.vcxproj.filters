@@ -42,6 +42,12 @@
     <ClInclude Include="dshow_grabber.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="dshow_camera.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="dshow_source.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="clock.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -78,6 +84,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="dshow_grabber.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="dshow_camera.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="dshow_source.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ParseConfig.c">
