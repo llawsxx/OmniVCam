@@ -12,7 +12,8 @@ The project contains two main parts:
 ## Features
 
 - Play local media files and arbitrary FFmpeg inputs.
-- Play DirectShow devices such as capture cards or OBS Virtual Camera.
+- Play DirectShow devices such as capture cards or OBS Virtual Camera, either through FFmpeg or the native `<DSHOW>` capture input.
+- Native `<DSHOW>` capture configuration: enumerate devices and formats, select video/audio pins, configure Crossbar routes and analog-device property pages, use device timestamps, and request an audio buffer size.
 - Read OBS virtual camera shared-memory input with `<OBSVCAM>`.
 - Built-in test cards: `<TESTCARD>` and `<TESTCARD2>`.
 - Per-input options such as `seek_time`, stream indexes, filters, queue settings, and input format.
@@ -73,7 +74,7 @@ The controller supports **multiple connection tabs**. Each tab maintains its own
 Main controls:
 
 - `Host` / `Port`: TCP control endpoint.
-- `Input`: the input to play. It can be a file path, URL, DirectShow input, or a special input such as `<TESTCARD>`, `<TESTCARD2>`, or `<OBSVCAM>`. A quick-select dropdown provides quick access to special inputs.
+- `Input`: the input to play. It can be a file path, URL, DirectShow input, or a special input such as `<TESTCARD>`, `<TESTCARD2>`, `<OBSVCAM>`, or `<DSHOW>`. A quick-select dropdown provides quick access to special inputs.
 - `Title`: display title used by playlists and now-playing XML. If blank, the controller derives a title from the input.
 - `Options`: FFmpeg/open-input options for the current input, for example `seek_time=14,video_filter='bwdif=1'`.
 - `Browse`: select a local media file.
@@ -92,8 +93,22 @@ Main controls:
 - `Shift us`: output frame timing shift in microseconds.
 - `Scale mode`: output scaling mode (`letterbox`, `fill`). Can be changed at runtime.
 - `Display AR`: display aspect ratio (`auto`, `16:9`, `4:3`, `1:1`). Can be changed at runtime.
+- `DirectShow` / `Camera`: opens the native `<DSHOW>` capture setup dialog. It is enabled for the `<DSHOW>` input and writes the required options automatically.
 - `Open playout`: open the separate playout window.
 - `Language`: select Auto, English, Simplified Chinese, or Traditional Chinese. Restart the controller after changing this setting.
+
+### Native `<DSHOW>` Capture Input
+
+`<DSHOW>` is the native DirectShow capture path. Unlike the `format=dshow` FFmpeg input, it builds a DirectShow graph in OmniVCam and sends captured frames through the normal video/audio filter and output pipeline.
+
+1. Select `<DSHOW>` in **Input**, then choose **DirectShow** → **Camera**.
+2. Select a video device and capture format. Audio is optional; it can come from the capture device or a separate audio device.
+3. Optionally select video/audio Crossbar routes, open Crossbar/TV tuner/TV audio property pages on playback, use video/audio device timestamps, and request an audio buffer size.
+4. Choose **OK** to fill `Input`, `Title`, and `Options`, or **Open** to apply and start playback immediately.
+
+The controller enumerates compatible pins and formats and stores device names and pin IDs as UTF-8 Base64 options, so the generated options should normally be kept intact. `<DSHOW>` supports video-only, audio-only, and combined capture. Standard per-input options still apply, including `video_filter`, `audio_filter`, `queue_left`, `queue_right`, and `queue_center`.
+
+For programmatic control, the native options are `dshow_device_b64`, `dshow_pin_b64`, `dshow_format`, `dshow_audio_device_b64`, `dshow_audio_device_type` (`0` for a video-capture device, `1` for an audio device), `dshow_audio_pin_b64`, `dshow_audio_format`, `dshow_xbar_video_in`, `dshow_xbar_video_out`, `dshow_xbar_audio_in`, `dshow_xbar_audio_out`, `dshow_crossbar_dialog`, `dshow_tv_tuner_dialog`, `dshow_tv_audio_dialog`, `dshow_use_video_device_timestamp`, `dshow_use_audio_device_timestamp`, and `dshow_audio_buffer_size` (milliseconds). Device and pin values use UTF-8 Base64; omitted format/route values select the device default.
 
 ### Log Viewer
 
@@ -243,6 +258,7 @@ Uncheck `Write now playing XML` to stop writing this file. Existing XML files ar
 | OBS shared-memory input | `<OBSVCAM>` | `queue_left=1,queue_right=5` |
 | Test card 1 | `<TESTCARD>` | empty |
 | Test card 2 | `<TESTCARD2>` | empty |
+| Native DirectShow capture | `<DSHOW>` | Configure with **DirectShow** → **Camera**; for example add `video_filter='bwdif=1',audio_filter='loudnorm'` as needed |
 | Play file and seek to 14 seconds | `D:\example.mp4` | `seek_time=14` |
 | Play file with filters/indexes | `D:\tv.ts` | `video_filter='bwdif=1',audio_filter='loudnorm',video_index=0,audio_index=1` |
 | OBS Virtual Camera device | `video=OBS Virtual Camera` | `format=dshow,rtbufsize=1G,queue_left=5,queue_right=20` |
@@ -261,6 +277,8 @@ Supported OmniVCam-specific options include:
 - `probesize` / `analyzeduration`: FFmpeg probing options.
 - `format`: input format, for example `dshow`.
 - `vcodec` / `acodec` / `scodec` / `dcodec`: decoder selection.
+
+`format=dshow` remains available for FFmpeg's DirectShow demuxer. Prefer `<DSHOW>` when you want the controller to select native-device pins, formats, audio sources, Crossbar routes, or device timestamp settings.
 
 To list DirectShow capture formats with FFmpeg:
 
@@ -339,6 +357,9 @@ Supported commands include:
 - `SET_AUTO_DEINTERLACE <0|1> [bwdif|yadif|w3fdif]`: set automatic deinterlace behavior at runtime.
 - `SET_INDEX video=<n> audio=<n>`: set stream indexes.
 - `SET_SHIFT <microseconds>`: set output timing shift.
+- `DSHOW_DEVICES`: list native DirectShow video and audio devices for the controller.
+- `DSHOW_FORMATS <type> <device-moniker>`: list native capture formats for a device (`type` is `0` for video capture or `1` for audio capture).
+- `DSHOW_CROSSBAR <device-moniker>`: list available Crossbar routes and TV-tuner/TV-audio capabilities.
 - `SEEK <seconds>`: seek by seconds.
 - `SEEK_BYTE_PERCENT <0-10000>`: seek by byte percentage; `10000` means 100%.
 
