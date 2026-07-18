@@ -108,6 +108,9 @@ typedef struct source_options {
 	int crossbar_dialog;
 	int tuner_dialog;
 	int audio_dialog;
+	int use_video_device_timestamp;
+	int use_audio_device_timestamp;
+	int audio_buffer_size;
 } source_options;
 
 typedef struct inout_context {

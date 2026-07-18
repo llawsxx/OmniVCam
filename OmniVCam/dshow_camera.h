@@ -21,6 +21,9 @@ typedef struct dshow_camera_options {
     int show_crossbar_dialog;
     int show_tv_tuner_dialog;
     int show_tv_audio_dialog;
+    int use_video_device_timestamp;
+    int use_audio_device_timestamp;
+    int audio_buffer_size;
 } dshow_camera_options;
 
 typedef void (*dshow_camera_frame_callback)(void* opaque, void* avframe);

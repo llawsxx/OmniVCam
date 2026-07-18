@@ -80,11 +80,20 @@ int dshow_source_open(inout_context* ctx, AVDictionary** dict, int queue_left, i
     options->crossbar_dialog = pop_integer(dict, "dshow_crossbar_dialog", 0) != 0;
     options->tuner_dialog = pop_integer(dict, "dshow_tv_tuner_dialog", 0) != 0;
     options->audio_dialog = pop_integer(dict, "dshow_tv_audio_dialog", 0) != 0;
+	options->use_video_device_timestamp = pop_integer(dict, "dshow_use_video_device_timestamps",
+		pop_integer(dict, "dshow_use_video_device_timestamp", 0)) != 0;
+	options->use_audio_device_timestamp = pop_integer(dict, "dshow_use_audio_device_timestamps",
+		pop_integer(dict, "dshow_use_audio_device_timestamp", 0)) != 0;
+	options->audio_buffer_size = pop_integer(dict, "dshow_audio_buffer_size",
+		pop_integer(dict, "audio_buffer_size", 50));
     if ((!options->device || !options->device[0]) && (!options->audio_device || !options->audio_device[0])) {
         reset_options(options);
         return -1;
     }
-    frame_queue_set(ctx->frame_queues[0], queue_left, queue_right, queue_center);
+    if (options->device && options->device[0])
+        frame_queue_set(ctx->frame_queues[0], queue_left, queue_right, queue_center);
+    else
+        frame_queue_set(ctx->frame_queues[1], queue_left, queue_right, queue_center);
     return 0;
 }
 
@@ -128,6 +137,9 @@ DWORD dshow_source_thread(LPVOID opaque)
     options.show_crossbar_dialog = source->crossbar_dialog;
     options.show_tv_tuner_dialog = source->tuner_dialog;
     options.show_tv_audio_dialog = source->audio_dialog;
+    options.use_video_device_timestamp = source->use_video_device_timestamp;
+    options.use_audio_device_timestamp = source->use_audio_device_timestamp;
+    options.audio_buffer_size = source->audio_buffer_size;
     ctx->input_frame_id = av_gettime_relative();
     ctx->last_video_decode_time = av_gettime_relative();
     ctx->last_audio_decode_time = av_gettime_relative();

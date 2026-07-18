@@ -429,4 +429,31 @@
   <data name="AutoDeinterlaceFilter" xml:space="preserve">
     <value>自動去隔行濾鏡</value>
   </data>
+  <data name="FrameQueue" xml:space="preserve"><value>影格佇列</value></data>
+  <data name="DirectShow" xml:space="preserve"><value>DirectShow</value></data>
+  <data name="CameraButton" xml:space="preserve"><value>攝影機...</value></data>
+  <data name="UseVideoDeviceTimestamp" xml:space="preserve"><value>使用視訊裝置時間戳記</value></data>
+  <data name="UseAudioDeviceTimestamp" xml:space="preserve"><value>使用音訊裝置時間戳記</value></data>
+  <data name="QueueLeft" xml:space="preserve"><value>左（-1=關閉）</value></data>
+  <data name="QueueRight" xml:space="preserve"><value>右</value></data>
+  <data name="QueueCenter" xml:space="preserve"><value>中（-1=自動）</value></data>
+  <data name="NoDirectShowDevices" xml:space="preserve"><value>找不到 DirectShow 裝置。</value></data>
+  <data name="DirectShowCamera" xml:space="preserve"><value>DirectShow 攝影機</value></data>
+  <data name="NoVideo" xml:space="preserve"><value>無視訊</value></data>
+  <data name="NoAudio" xml:space="preserve"><value>無音訊</value></data>
+  <data name="OpenCrossbarWhenPlaying" xml:space="preserve"><value>播放時開啟 Crossbar 屬性頁</value></data>
+  <data name="OpenTVTunerWhenPlaying" xml:space="preserve"><value>播放時開啟電視調諧器屬性頁</value></data>
+  <data name="OpenTVAudioWhenPlaying" xml:space="preserve"><value>播放時開啟電視音訊屬性頁</value></data>
+  <data name="Device" xml:space="preserve"><value>裝置</value></data>
+  <data name="ResolutionFPSFormat" xml:space="preserve"><value>解析度 / 幀率 / 格式</value></data>
+  <data name="AudioSource" xml:space="preserve"><value>音訊來源</value></data>
+  <data name="AudioPinFormat" xml:space="preserve"><value>音訊 Pin / 格式</value></data>
+  <data name="VideoCrossbar" xml:space="preserve"><value>視訊 Crossbar</value></data>
+  <data name="AudioCrossbar" xml:space="preserve"><value>音訊 Crossbar</value></data>
+  <data name="Default" xml:space="preserve"><value>預設</value></data>
+  <data name="AudioOnlySource" xml:space="preserve"><value>僅音訊來源</value></data>
+  <data name="DShowFormatsRoutes" xml:space="preserve"><value>{0} 種格式，{1} 條視訊路由，{2} 條音訊路由</value></data>
+  <data name="AudioBufferSize" xml:space="preserve"><value>音訊緩衝大小</value></data>
+  <data name="AudioBufferSizeMs" xml:space="preserve"><value>音訊緩衝（毫秒）</value></data>
+  <data name="MillisecondsDeviceDefault" xml:space="preserve"><value>毫秒（0 = 裝置預設值）</value></data>
 </root>

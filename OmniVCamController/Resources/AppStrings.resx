@@ -143,4 +143,31 @@
   <data name="WeekTuesday" xml:space="preserve"><value>Tue</value></data>
   <data name="WeekWednesday" xml:space="preserve"><value>Wed</value></data>
   <data name="WriteNowPlayingXml" xml:space="preserve"><value>Write now playing XML</value></data>
+  <data name="FrameQueue" xml:space="preserve"><value>Frame queue</value></data>
+  <data name="DirectShow" xml:space="preserve"><value>DirectShow</value></data>
+  <data name="CameraButton" xml:space="preserve"><value>Camera...</value></data>
+  <data name="UseVideoDeviceTimestamp" xml:space="preserve"><value>Use video device timestamp</value></data>
+  <data name="UseAudioDeviceTimestamp" xml:space="preserve"><value>Use audio device timestamp</value></data>
+  <data name="QueueLeft" xml:space="preserve"><value>Left (-1=off)</value></data>
+  <data name="QueueRight" xml:space="preserve"><value>Right</value></data>
+  <data name="QueueCenter" xml:space="preserve"><value>Center (-1=auto)</value></data>
+  <data name="NoDirectShowDevices" xml:space="preserve"><value>No DirectShow devices found.</value></data>
+  <data name="DirectShowCamera" xml:space="preserve"><value>DirectShow Camera</value></data>
+  <data name="NoVideo" xml:space="preserve"><value>No video</value></data>
+  <data name="NoAudio" xml:space="preserve"><value>No audio</value></data>
+  <data name="OpenCrossbarWhenPlaying" xml:space="preserve"><value>Open Crossbar property page when playing</value></data>
+  <data name="OpenTVTunerWhenPlaying" xml:space="preserve"><value>Open TV Tuner property page when playing</value></data>
+  <data name="OpenTVAudioWhenPlaying" xml:space="preserve"><value>Open TV Audio property page when playing</value></data>
+  <data name="Device" xml:space="preserve"><value>Device</value></data>
+  <data name="ResolutionFPSFormat" xml:space="preserve"><value>Resolution / FPS / Format</value></data>
+  <data name="AudioSource" xml:space="preserve"><value>Audio source</value></data>
+  <data name="AudioPinFormat" xml:space="preserve"><value>Audio Pin / Format</value></data>
+  <data name="VideoCrossbar" xml:space="preserve"><value>Video Crossbar</value></data>
+  <data name="AudioCrossbar" xml:space="preserve"><value>Audio Crossbar</value></data>
+  <data name="Default" xml:space="preserve"><value>Default</value></data>
+  <data name="AudioOnlySource" xml:space="preserve"><value>Audio-only source</value></data>
+  <data name="DShowFormatsRoutes" xml:space="preserve"><value>{0} formats, {1} video routes, {2} audio routes</value></data>
+  <data name="AudioBufferSize" xml:space="preserve"><value>Audio buffer size</value></data>
+  <data name="AudioBufferSizeMs" xml:space="preserve"><value>Audio buffer (ms)</value></data>
+  <data name="MillisecondsDeviceDefault" xml:space="preserve"><value>ms (0 = device default)</value></data>
 </root>

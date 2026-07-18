@@ -429,4 +429,31 @@
   <data name="AutoDeinterlaceFilter" xml:space="preserve">
     <value>自动反交错滤镜</value>
   </data>
+  <data name="FrameQueue" xml:space="preserve"><value>帧队列</value></data>
+  <data name="DirectShow" xml:space="preserve"><value>DirectShow</value></data>
+  <data name="CameraButton" xml:space="preserve"><value>摄像头...</value></data>
+  <data name="UseVideoDeviceTimestamp" xml:space="preserve"><value>使用视频设备时间戳</value></data>
+  <data name="UseAudioDeviceTimestamp" xml:space="preserve"><value>使用音频设备时间戳</value></data>
+  <data name="QueueLeft" xml:space="preserve"><value>左（-1=关闭）</value></data>
+  <data name="QueueRight" xml:space="preserve"><value>右</value></data>
+  <data name="QueueCenter" xml:space="preserve"><value>中（-1=自动）</value></data>
+  <data name="NoDirectShowDevices" xml:space="preserve"><value>未找到 DirectShow 设备。</value></data>
+  <data name="DirectShowCamera" xml:space="preserve"><value>DirectShow 摄像头</value></data>
+  <data name="NoVideo" xml:space="preserve"><value>无视频</value></data>
+  <data name="NoAudio" xml:space="preserve"><value>无音频</value></data>
+  <data name="OpenCrossbarWhenPlaying" xml:space="preserve"><value>播放时打开 Crossbar 属性页</value></data>
+  <data name="OpenTVTunerWhenPlaying" xml:space="preserve"><value>播放时打开电视调谐器属性页</value></data>
+  <data name="OpenTVAudioWhenPlaying" xml:space="preserve"><value>播放时打开电视音频属性页</value></data>
+  <data name="Device" xml:space="preserve"><value>设备</value></data>
+  <data name="ResolutionFPSFormat" xml:space="preserve"><value>分辨率 / 帧率 / 格式</value></data>
+  <data name="AudioSource" xml:space="preserve"><value>音频来源</value></data>
+  <data name="AudioPinFormat" xml:space="preserve"><value>音频 Pin / 格式</value></data>
+  <data name="VideoCrossbar" xml:space="preserve"><value>视频 Crossbar</value></data>
+  <data name="AudioCrossbar" xml:space="preserve"><value>音频 Crossbar</value></data>
+  <data name="Default" xml:space="preserve"><value>默认</value></data>
+  <data name="AudioOnlySource" xml:space="preserve"><value>仅音频来源</value></data>
+  <data name="DShowFormatsRoutes" xml:space="preserve"><value>{0} 个格式，{1} 条视频路由，{2} 条音频路由</value></data>
+  <data name="AudioBufferSize" xml:space="preserve"><value>音频缓冲大小</value></data>
+  <data name="AudioBufferSizeMs" xml:space="preserve"><value>音频缓冲（毫秒）</value></data>
+  <data name="MillisecondsDeviceDefault" xml:space="preserve"><value>毫秒（0 = 设备默认值）</value></data>
 </root>

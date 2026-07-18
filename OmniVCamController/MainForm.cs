@@ -61,6 +61,14 @@ namespace OmniVCamController
         private bool syncingInitialCameraSettings;
         private Button manualPlayButton;
         private Button dshowConfigureButton;
+        private CheckBox dshowDeviceTimestampBox;
+        private CheckBox dshowAudioDeviceTimestampBox;
+        private NumericUpDown dshowAudioBufferSizeBox;
+        private NumericUpDown queueLeftBox;
+        private NumericUpDown queueRightBox;
+        private NumericUpDown queueCenterBox;
+        private bool updatingQueueControls;
+        private bool updatingDShowTimestamp;
         private ComboBox languageBox;
         private Form playoutForm;
         private bool closingMainForm;
@@ -515,7 +523,8 @@ namespace OmniVCamController
             AddWideRow(grid, T("Input"), CreateInputPicker());
             AddWideRow(grid, T("Title"), titleBox);
             AddWideRow(grid, T("Options"), optionsBox);
-            AddWideRow(grid, "DirectShow", CreateDShowControl());
+            AddWideRow(grid, T("FrameQueue"), CreateFrameQueueControl());
+            AddWideRow(grid, T("DirectShow"), CreateDShowControl());
             AddRow(grid, T("HWDecode"), CreateHwDecodeControl(), T("ScaleMode"), CreateScaleModeControl());
             AddRow(grid, T("DisplayAR"), CreateDisplayAspectControl(), T("ShiftUs"), CreateShiftControl());
             AddRow(grid, T("VideoFilter"), CreateVideoFilterControl(), T("AudioFilter"), CreateAudioFilterControl());
@@ -550,7 +559,12 @@ namespace OmniVCamController
             {
                 if (controlsReady && !suppressSeekValueEvent) await SeekBySecondsAsync((long)seekBox.Value);
             };
-            inputBox.TextChanged += (_, __) => UpdateTitleFromManualInput();
+            inputBox.TextChanged += (_, __) =>
+            {
+                UpdateTitleFromManualInput();
+                ApplyInputQueuePolicy(true);
+            };
+            optionsBox.Leave += (_, __) => ApplyInputQueuePolicy(false);
             ConfigureFileDrop(inputBox, async files => await DropFilesToInputAsync(files));
             ConfigureFileDrop(playlistView, async files => await DropFilesToPlaylistAsync(files));
             scaleModeBox.SelectedIndexChanged += async (_, __) =>
@@ -1026,10 +1040,65 @@ namespace OmniVCamController
         private Control CreateDShowControl()
         {
             var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
-            dshowConfigureButton = MakeButton("Camera...", async (_, __) => await ConfigureDShowAsync());
+            dshowConfigureButton = MakeButton(T("CameraButton"), async (_, __) => await ConfigureDShowAsync());
             dshowConfigureButton.AutoSize = true;
+            dshowDeviceTimestampBox = new CheckBox
+            {
+                Text = T("UseVideoDeviceTimestamp"),
+                AutoSize = true,
+                Padding = new Padding(8, 4, 0, 0)
+            };
+            dshowAudioDeviceTimestampBox = new CheckBox
+            {
+                Text = T("UseAudioDeviceTimestamp"),
+                AutoSize = true,
+                Padding = new Padding(8, 4, 0, 0)
+            };
+            dshowAudioBufferSizeBox = new NumericUpDown
+            {
+                Minimum = 0,
+                Maximum = 60000,
+                Value = 50,
+                Width = 72
+            };
+            dshowDeviceTimestampBox.CheckedChanged += (_, __) => UpdateDShowCaptureOptions();
+            dshowAudioDeviceTimestampBox.CheckedChanged += (_, __) => UpdateDShowCaptureOptions();
+            dshowAudioBufferSizeBox.ValueChanged += (_, __) => UpdateDShowCaptureOptions();
             panel.Controls.Add(dshowConfigureButton);
+            panel.Controls.Add(dshowDeviceTimestampBox);
+            panel.Controls.Add(dshowAudioDeviceTimestampBox);
+            panel.Controls.Add(MakeInlineLabel(T("AudioBufferSizeMs")));
+            panel.Controls.Add(dshowAudioBufferSizeBox);
             return panel;
+        }
+
+        private Control CreateFrameQueueControl()
+        {
+            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+            queueLeftBox = CreateQueueNumber();
+            queueRightBox = CreateQueueNumber();
+            queueCenterBox = CreateQueueNumber();
+            queueLeftBox.ValueChanged += (_, __) => UpdateQueueOptionsFromControls();
+            queueRightBox.ValueChanged += (_, __) => UpdateQueueOptionsFromControls();
+            queueCenterBox.ValueChanged += (_, __) => UpdateQueueOptionsFromControls();
+            panel.Controls.Add(MakeInlineLabel(T("QueueLeft")));
+            panel.Controls.Add(queueLeftBox);
+            panel.Controls.Add(MakeInlineLabel(T("QueueRight")));
+            panel.Controls.Add(queueRightBox);
+            panel.Controls.Add(MakeInlineLabel(T("QueueCenter")));
+            panel.Controls.Add(queueCenterBox);
+            return panel;
+        }
+
+        private static NumericUpDown CreateQueueNumber()
+        {
+            return new NumericUpDown
+            {
+                Minimum = -1,
+                Maximum = 1000000,
+                Value = -1,
+                Width = 72
+            };
         }
 
         private async Task ConfigureDShowAsync()
@@ -1044,61 +1113,82 @@ namespace OmniVCamController
             List<DShowDeviceItem> devices = allDevices.Where(item => item.Type == 0).ToList();
             if (devices.Count == 0 && allDevices.All(item => item.Type != 1))
             {
-                MessageBox.Show(this, reply ?? "No DirectShow video devices found.", "DirectShow", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, reply ?? T("NoDirectShowDevices"), T("DirectShow"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             using (var dialog = new Form
             {
-                Text = "DirectShow Camera",
-                Size = new Size(800, 560),
+                Text = T("DirectShowCamera"),
+                Size = new Size(800, 650),
                 MinimumSize = new Size(680, 480),
                 StartPosition = FormStartPosition.CenterParent
             })
             {
-                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 11, Padding = new Padding(10) };
+                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 14, Padding = new Padding(10) };
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 var deviceBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-                deviceBox.Items.Add(new DShowDeviceItem(-1, "No video", string.Empty));
+                deviceBox.Items.Add(new DShowDeviceItem(-1, T("NoVideo"), string.Empty));
                 deviceBox.Items.AddRange(devices.Cast<object>().ToArray());
                 deviceBox.SelectedIndex = devices.Count > 0 ? 1 : 0;
                 var formatBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
                 var audioSourceBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-                audioSourceBox.Items.Add(new DShowDeviceItem(-1, "No audio", string.Empty));
+                audioSourceBox.Items.Add(new DShowDeviceItem(-1, T("NoAudio"), string.Empty));
                 audioSourceBox.Items.AddRange(devices.Cast<object>().ToArray());
                 audioSourceBox.Items.AddRange(allDevices.Where(item => item.Type == 1).Cast<object>().ToArray());
                 audioSourceBox.SelectedIndex = 0;
                 var audioFormatBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
                 var videoRouteBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
                 var audioRouteBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-                var crossbarDialog = new CheckBox { Text = "Open Crossbar property page when playing", AutoSize = true };
-                var tunerDialog = new CheckBox { Text = "Open TV Tuner property page when playing", AutoSize = true };
-                var audioDialog = new CheckBox { Text = "Open TV Audio property page when playing", AutoSize = true };
+                var crossbarDialog = new CheckBox { Text = T("OpenCrossbarWhenPlaying"), AutoSize = true };
+                var tunerDialog = new CheckBox { Text = T("OpenTVTunerWhenPlaying"), AutoSize = true };
+                var audioDialog = new CheckBox { Text = T("OpenTVAudioWhenPlaying"), AutoSize = true };
+                var deviceTimestamp = new CheckBox { Text = T("UseVideoDeviceTimestamp"), AutoSize = true, Checked = false };
+                var audioDeviceTimestamp = new CheckBox { Text = T("UseAudioDeviceTimestamp"), AutoSize = true, Checked = false };
+                var audioBufferSize = new NumericUpDown { Minimum = 0, Maximum = 60000, Value = 50, Width = 100 };
+                var existingOptions = ParseOptionMap(optionsBox.Text);
+                if (existingOptions.TryGetValue("dshow_use_video_device_timestamp", out string timestampValue) ||
+                    existingOptions.TryGetValue("dshow_use_video_device_timestamps", out timestampValue))
+                    deviceTimestamp.Checked = timestampValue != "0";
+                if (existingOptions.TryGetValue("dshow_use_audio_device_timestamp", out timestampValue) ||
+                    existingOptions.TryGetValue("dshow_use_audio_device_timestamps", out timestampValue))
+                    audioDeviceTimestamp.Checked = timestampValue != "0";
+                if ((existingOptions.TryGetValue("dshow_audio_buffer_size", out string bufferValue) ||
+                    existingOptions.TryGetValue("audio_buffer_size", out bufferValue)) &&
+                    decimal.TryParse(bufferValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out decimal bufferSize))
+                    audioBufferSize.Value = Math.Max(audioBufferSize.Minimum, Math.Min(audioBufferSize.Maximum, bufferSize));
                 var statusLabel = new Label { Dock = DockStyle.Fill, AutoSize = true };
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
-                var ok = MakeButton("OK", null);
+                var ok = MakeButton(T("OK"), null);
                 var cancel = MakeButton(T("Cancel"), null);
                 buttons.Controls.Add(ok);
                 buttons.Controls.Add(cancel);
 
-                grid.Controls.Add(new Label { Text = "Device", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+                grid.Controls.Add(new Label { Text = T("Device"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
                 grid.Controls.Add(deviceBox, 1, 0);
-                grid.Controls.Add(new Label { Text = "Resolution / FPS / Format", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+                grid.Controls.Add(new Label { Text = T("ResolutionFPSFormat"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
                 grid.Controls.Add(formatBox, 1, 1);
-                grid.Controls.Add(new Label { Text = "Audio source", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+                grid.Controls.Add(new Label { Text = T("AudioSource"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
                 grid.Controls.Add(audioSourceBox, 1, 2);
-                grid.Controls.Add(new Label { Text = "Audio Pin / Format", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+                grid.Controls.Add(new Label { Text = T("AudioPinFormat"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
                 grid.Controls.Add(audioFormatBox, 1, 3);
-                grid.Controls.Add(new Label { Text = "Video Crossbar", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+                grid.Controls.Add(new Label { Text = T("VideoCrossbar"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
                 grid.Controls.Add(videoRouteBox, 1, 4);
-                grid.Controls.Add(new Label { Text = "Audio Crossbar", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+                grid.Controls.Add(new Label { Text = T("AudioCrossbar"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
                 grid.Controls.Add(audioRouteBox, 1, 5);
                 grid.Controls.Add(crossbarDialog, 1, 6);
                 grid.Controls.Add(tunerDialog, 1, 7);
                 grid.Controls.Add(audioDialog, 1, 8);
-                grid.Controls.Add(statusLabel, 1, 9);
-                grid.Controls.Add(buttons, 1, 10);
+                grid.Controls.Add(deviceTimestamp, 1, 9);
+                grid.Controls.Add(audioDeviceTimestamp, 1, 10);
+                var audioBufferPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+                audioBufferPanel.Controls.Add(audioBufferSize);
+                audioBufferPanel.Controls.Add(MakeInlineLabel(T("MillisecondsDeviceDefault")));
+                grid.Controls.Add(new Label { Text = T("AudioBufferSize"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 11);
+                grid.Controls.Add(audioBufferPanel, 1, 11);
+                grid.Controls.Add(statusLabel, 1, 12);
+                grid.Controls.Add(buttons, 1, 13);
                 dialog.Controls.Add(grid);
 
                 Func<Task> refresh = async () =>
@@ -1108,8 +1198,8 @@ namespace OmniVCamController
                     formatBox.Items.Clear();
                     videoRouteBox.Items.Clear();
                     audioRouteBox.Items.Clear();
-                    videoRouteBox.Items.Add(new DShowRouteItem("Default", -1, -1, false));
-                    audioRouteBox.Items.Add(new DShowRouteItem("Default", -1, -1, true));
+                    videoRouteBox.Items.Add(new DShowRouteItem(T("Default"), -1, -1, false));
+                    audioRouteBox.Items.Add(new DShowRouteItem(T("Default"), -1, -1, true));
                     if (videoDevice.Type < 0)
                     {
                         formatBox.Enabled = false;
@@ -1118,13 +1208,15 @@ namespace OmniVCamController
                         crossbarDialog.Enabled = false;
                         tunerDialog.Enabled = false;
                         audioDialog.Enabled = false;
-                        statusLabel.Text = "Audio-only source";
+                        deviceTimestamp.Enabled = false;
+                        statusLabel.Text = T("AudioOnlySource");
                         return;
                     }
                     formatBox.Enabled = true;
                     videoRouteBox.Enabled = true;
                     audioRouteBox.Enabled = true;
                     crossbarDialog.Enabled = true;
+                    deviceTimestamp.Enabled = true;
                     string formatsReply = await SendRawCommandAsync("DSHOW_FORMATS 0 " + device);
                     foreach (string record in ParseDShowPayload(formatsReply))
                     {
@@ -1157,7 +1249,8 @@ namespace OmniVCamController
                     audioRouteBox.SelectedIndex = 0;
                     tunerDialog.Enabled = hasTuner;
                     audioDialog.Enabled = hasAudio;
-                    statusLabel.Text = $"{formatBox.Items.Count} formats, {videoRouteBox.Items.Count - 1} video routes, {audioRouteBox.Items.Count - 1} audio routes";
+                    statusLabel.Text = TF("DShowFormatsRoutes", formatBox.Items.Count,
+                        videoRouteBox.Items.Count - 1, audioRouteBox.Items.Count - 1);
                 };
 
                 Func<Task> refreshAudio = async () =>
@@ -1167,9 +1260,13 @@ namespace OmniVCamController
                     if (audioDevice == null || audioDevice.Type < 0)
                     {
                         audioFormatBox.Enabled = false;
+                        audioDeviceTimestamp.Enabled = false;
+                        audioBufferSize.Enabled = false;
                         return;
                     }
                     audioFormatBox.Enabled = true;
+                    audioDeviceTimestamp.Enabled = true;
+                    audioBufferSize.Enabled = true;
                     string formatsReply = await SendRawCommandAsync("DSHOW_FORMATS " + audioDevice.Type + " " + audioDevice.DisplayName);
                     foreach (string record in ParseDShowPayload(formatsReply))
                     {
@@ -1224,6 +1321,9 @@ namespace OmniVCamController
                     if (crossbarDialog.Checked) options.Add("dshow_crossbar_dialog=1");
                     if (tunerDialog.Checked) options.Add("dshow_tv_tuner_dialog=1");
                     if (audioDialog.Checked) options.Add("dshow_tv_audio_dialog=1");
+                    options.Add("dshow_use_video_device_timestamp=" + (deviceTimestamp.Checked ? "1" : "0"));
+                    options.Add("dshow_use_audio_device_timestamp=" + (audioDeviceTimestamp.Checked ? "1" : "0"));
+                    options.Add("dshow_audio_buffer_size=" + audioBufferSize.Value.ToString(CultureInfo.InvariantCulture));
                     string title = videoDevice != null && videoDevice.Type >= 0 ? videoDevice.Name : audioDevice.Name;
                     SetInputFields("<DSHOW>", title, string.Join(",", options));
                     dialog.DialogResult = DialogResult.OK;
@@ -1337,15 +1437,158 @@ namespace OmniVCamController
         private void SetInputFields(string input, string title, string options)
         {
             suppressInputTitleUpdate = true;
+            updatingQueueControls = true;
+            updatingDShowTimestamp = true;
             try
             {
                 inputBox.Text = input;
                 titleBox.Text = title;
-                optionsBox.Text = options;
+                optionsBox.Text = NormalizeQueueOptions(input, options, true);
+                LoadQueueControlsFromOptions(input, optionsBox.Text);
+                LoadDShowTimestampFromOptions(input, optionsBox.Text);
             }
             finally
             {
+                updatingDShowTimestamp = false;
+                updatingQueueControls = false;
                 suppressInputTitleUpdate = false;
+            }
+        }
+
+        private void LoadDShowTimestampFromOptions(string input, string options)
+        {
+            if (dshowDeviceTimestampBox == null || dshowAudioDeviceTimestampBox == null || dshowAudioBufferSizeBox == null) return;
+            bool isDShow = string.Equals(input?.Trim(), "<DSHOW>", StringComparison.OrdinalIgnoreCase);
+            var values = ParseOptionMap(options);
+            bool hasVideo = isDShow && values.ContainsKey("dshow_device_b64");
+            bool hasAudio = isDShow && values.ContainsKey("dshow_audio_device_b64");
+            dshowDeviceTimestampBox.Enabled = hasVideo;
+            dshowDeviceTimestampBox.Checked = hasVideo &&
+                ((values.TryGetValue("dshow_use_video_device_timestamp", out string value) && value != "0") ||
+                 (values.TryGetValue("dshow_use_video_device_timestamps", out value) && value != "0"));
+            dshowAudioDeviceTimestampBox.Enabled = hasAudio;
+            dshowAudioDeviceTimestampBox.Checked = hasAudio &&
+                ((values.TryGetValue("dshow_use_audio_device_timestamp", out value) && value != "0") ||
+                 (values.TryGetValue("dshow_use_audio_device_timestamps", out value) && value != "0"));
+            dshowAudioBufferSizeBox.Enabled = hasAudio;
+            dshowAudioBufferSizeBox.Value = GetDShowAudioBufferSize(values);
+        }
+
+        private static decimal GetDShowAudioBufferSize(Dictionary<string, string> values)
+        {
+            return (values.TryGetValue("dshow_audio_buffer_size", out string value) ||
+                values.TryGetValue("audio_buffer_size", out value)) && decimal.TryParse(value,
+                    NumberStyles.Integer, CultureInfo.InvariantCulture, out decimal size)
+                ? Math.Max(0, Math.Min(60000, size)) : 50;
+        }
+
+        private void UpdateDShowCaptureOptions()
+        {
+            if (updatingDShowTimestamp || dshowDeviceTimestampBox == null || dshowAudioDeviceTimestampBox == null || dshowAudioBufferSizeBox == null ||
+                !string.Equals(inputBox.Text?.Trim(), "<DSHOW>", StringComparison.OrdinalIgnoreCase)) return;
+            var entries = optionsBox.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim()).Where(value => value.Length > 0).ToList();
+            entries.RemoveAll(value => value.StartsWith("dshow_use_video_device_timestamp=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("dshow_use_video_device_timestamps=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("dshow_use_audio_device_timestamp=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("dshow_use_audio_device_timestamps=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("dshow_audio_buffer_size=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("audio_buffer_size=", StringComparison.OrdinalIgnoreCase));
+            entries.Add("dshow_use_video_device_timestamp=" + (dshowDeviceTimestampBox.Checked ? "1" : "0"));
+            entries.Add("dshow_use_audio_device_timestamp=" + (dshowAudioDeviceTimestampBox.Checked ? "1" : "0"));
+            entries.Add("dshow_audio_buffer_size=" + dshowAudioBufferSizeBox.Value.ToString(CultureInfo.InvariantCulture));
+            optionsBox.Text = string.Join(",", entries);
+            if (controlsReady) SaveActiveConnectionState();
+        }
+
+        private static bool IsBufferedSpecialSource(string input)
+        {
+            return string.Equals(input?.Trim(), "<DSHOW>", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(input?.Trim(), "<OBSVCAM>", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, string> ParseOptionMap(string options)
+        {
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string entry in (options ?? string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int separator = entry.IndexOf('=');
+                if (separator > 0) values[entry.Substring(0, separator).Trim()] = entry.Substring(separator + 1).Trim();
+            }
+            return values;
+        }
+
+        private static string NormalizeQueueOptions(string input, string options, bool resetToDefaults)
+        {
+            var entries = (options ?? string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim()).Where(value => value.Length > 0).ToList();
+            var values = ParseOptionMap(options);
+            entries.RemoveAll(value => value.StartsWith("queue_left=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("queue_right=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("queue_center=", StringComparison.OrdinalIgnoreCase));
+            bool bufferedSpecialSource = IsBufferedSpecialSource(input);
+            string defaultLeft = bufferedSpecialSource ? "1" : "-1";
+            string defaultRight = bufferedSpecialSource ? "5" : "-1";
+            string left = resetToDefaults ? defaultLeft : (values.ContainsKey("queue_left") ? values["queue_left"] : defaultLeft);
+            string right = resetToDefaults ? defaultRight : (values.ContainsKey("queue_right") ? values["queue_right"] : defaultRight);
+            string center = resetToDefaults ? "-1" : (values.ContainsKey("queue_center") ? values["queue_center"] : "-1");
+            bool hasQueueOptions = values.ContainsKey("queue_left") || values.ContainsKey("queue_right") || values.ContainsKey("queue_center");
+            if (bufferedSpecialSource || (!resetToDefaults && hasQueueOptions))
+            {
+                entries.Add("queue_left=" + left);
+                entries.Add("queue_right=" + right);
+                entries.Add("queue_center=" + center);
+            }
+            return string.Join(",", entries);
+        }
+
+        private static decimal GetQueueOption(Dictionary<string, string> values, string key, decimal fallback)
+        {
+            return values.TryGetValue(key, out string value) && decimal.TryParse(value, NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out decimal parsed) ? Math.Max(-1, Math.Min(1000000, parsed)) : fallback;
+        }
+
+        private void LoadQueueControlsFromOptions(string input, string options)
+        {
+            if (queueLeftBox == null) return;
+            var values = ParseOptionMap(options);
+            decimal defaultLeft = IsBufferedSpecialSource(input) ? 1 : -1;
+            decimal defaultRight = IsBufferedSpecialSource(input) ? 5 : -1;
+            queueLeftBox.Value = GetQueueOption(values, "queue_left", defaultLeft);
+            queueRightBox.Value = GetQueueOption(values, "queue_right", defaultRight);
+            queueCenterBox.Value = GetQueueOption(values, "queue_center", -1);
+        }
+
+        private void UpdateQueueOptionsFromControls()
+        {
+            if (updatingQueueControls || queueLeftBox == null) return;
+            optionsBox.Text = NormalizeQueueOptions(inputBox.Text, optionsBox.Text, false);
+            var entries = optionsBox.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+            entries.RemoveAll(value => value.StartsWith("queue_left=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("queue_right=", StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith("queue_center=", StringComparison.OrdinalIgnoreCase));
+            entries.Add("queue_left=" + queueLeftBox.Value.ToString(CultureInfo.InvariantCulture));
+            entries.Add("queue_right=" + queueRightBox.Value.ToString(CultureInfo.InvariantCulture));
+            entries.Add("queue_center=" + queueCenterBox.Value.ToString(CultureInfo.InvariantCulture));
+            optionsBox.Text = string.Join(",", entries);
+            if (controlsReady) SaveActiveConnectionState();
+        }
+
+        private void ApplyInputQueuePolicy(bool resetQueueDefaults)
+        {
+            if (updatingQueueControls || queueLeftBox == null) return;
+            updatingQueueControls = true;
+            updatingDShowTimestamp = true;
+            try
+            {
+                optionsBox.Text = NormalizeQueueOptions(inputBox.Text, optionsBox.Text, resetQueueDefaults);
+                LoadQueueControlsFromOptions(inputBox.Text, optionsBox.Text);
+                LoadDShowTimestampFromOptions(inputBox.Text, optionsBox.Text);
+            }
+            finally
+            {
+                updatingDShowTimestamp = false;
+                updatingQueueControls = false;
             }
         }
 
@@ -1451,6 +1694,7 @@ namespace OmniVCamController
                 AppendLog(T("InputEmpty"));
                 return;
             }
+            options = NormalizeQueueOptions(input, options, false);
             await SendCommandAsync(string.IsNullOrWhiteSpace(options) ? "PLAY " + input : "PLAY " + input + "\t" + options);
         }
 

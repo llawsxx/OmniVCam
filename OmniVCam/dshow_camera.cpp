@@ -17,6 +17,7 @@ extern "C" {
 #include <libavutil/base64.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/time.h>
 }
 
 struct dshow_camera {
@@ -33,6 +34,8 @@ struct dshow_camera {
     int height;
     REFERENCE_TIME frame_interval;
     int64_t next_pts;
+    int use_video_device_timestamp;
+    int use_audio_device_timestamp;
     dshow_camera_frame_callback callback;
     CComPtr<IBaseFilter> audio_source;
     CComPtr<IPin> audio_source_pin;
@@ -282,6 +285,32 @@ static HRESULT select_format(IPin* pin, int index, AM_MEDIA_TYPE* selected)
     return hr;
 }
 
+// This is a latency request in milliseconds.  DirectShow devices may ignore it.
+static HRESULT set_audio_buffer_size(IPin* pin, int buffer_size_ms)
+{
+    if (!pin || buffer_size_ms <= 0) return S_FALSE;
+    CComPtr<IAMStreamConfig> config;
+    CComPtr<IAMBufferNegotiation> negotiation;
+    AM_MEDIA_TYPE* type = NULL;
+    HRESULT hr = pin->QueryInterface(IID_PPV_ARGS(&config));
+    if (FAILED(hr)) return hr;
+    hr = config->GetFormat(&type);
+    if (FAILED(hr) || !type) return FAILED(hr) ? hr : E_FAIL;
+    if (type->formattype != FORMAT_WaveFormatEx || !type->pbFormat ||
+        type->cbFormat < sizeof(WAVEFORMATEX)) {
+        delete_media_type(type);
+        return S_FALSE;
+    }
+    const WAVEFORMATEX* format = reinterpret_cast<const WAVEFORMATEX*>(type->pbFormat);
+    int64_t bytes = (int64_t)format->nAvgBytesPerSec * buffer_size_ms / 1000;
+    delete_media_type(type);
+    if (bytes <= 0 || bytes > LONG_MAX) return E_INVALIDARG;
+    hr = pin->QueryInterface(IID_PPV_ARGS(&negotiation));
+    if (FAILED(hr)) return hr;
+    ALLOCATOR_PROPERTIES properties = { -1, (LONG)bytes, -1, -1 };
+    return negotiation->SuggestAllocatorProperties(&properties);
+}
+
 static void show_properties(IUnknown* object)
 {
     if (!object) return;
@@ -318,6 +347,16 @@ static void configure_analog(dshow_camera* camera, const dshow_camera_options* o
     }
 }
 
+static REFERENCE_TIME get_sample_timestamp(DShowGrabber* grabber, IMediaSample* sample,
+    bool use_device_timestamp, REFERENCE_TIME fallback_pts)
+{
+    if (!use_device_timestamp) return av_gettime_relative() * 10;
+    REFERENCE_TIME start = 0, end = 0;
+    if (grabber && sample && SUCCEEDED(sample->GetTime(&start, &end)))
+        return start + grabber->m_starttime;
+    return fallback_pts;
+}
+
 static void STDMETHODCALLTYPE sample_callback(void* opaque, IMediaSample* sample)
 {
     dshow_camera* camera = static_cast<dshow_camera*>(opaque);
@@ -325,11 +364,9 @@ static void STDMETHODCALLTYPE sample_callback(void* opaque, IMediaSample* sample
     BYTE* data = NULL;
     long size = sample->GetActualDataLength();
     if (size <= 0 || FAILED(sample->GetPointer(&data)) || !data) return;
-    REFERENCE_TIME start = 0, end = 0;
-    if (FAILED(sample->GetTime(&start, &end))) {
-        start = camera->next_pts;
-        end = start + std::max<REFERENCE_TIME>(camera->frame_interval, 1);
-    }
+    REFERENCE_TIME start = get_sample_timestamp(camera->grabber, sample,
+        camera->use_video_device_timestamp != 0, camera->next_pts);
+    REFERENCE_TIME end = start + std::max<REFERENCE_TIME>(camera->frame_interval, 1);
     camera->next_pts = end;
 
     if (camera->decoder) {
@@ -386,8 +423,11 @@ static void STDMETHODCALLTYPE audio_sample_callback(void* opaque, IMediaSample* 
     BYTE* data = NULL;
     long size = sample->GetActualDataLength();
     if (size <= 0 || FAILED(sample->GetPointer(&data)) || !data) return;
-    REFERENCE_TIME start = 0, end = 0;
-    if (FAILED(sample->GetTime(&start, &end))) start = camera->audio_next_pts;
+    WAVEFORMATEX* format = audio_header(&camera->audio_media_type);
+    REFERENCE_TIME start = get_sample_timestamp(camera->audio_grabber, sample,
+        camera->use_audio_device_timestamp != 0, camera->audio_next_pts);
+    if (format && format->nAvgBytesPerSec > 0)
+        camera->audio_next_pts = start + av_rescale(size, 10000000, format->nAvgBytesPerSec);
     if (camera->audio_decoder) {
         AVPacket* packet = av_packet_alloc();
         AVFrame* frame = av_frame_alloc();
@@ -410,7 +450,6 @@ static void STDMETHODCALLTYPE audio_sample_callback(void* opaque, IMediaSample* 
         return;
     }
 
-    WAVEFORMATEX* format = audio_header(&camera->audio_media_type);
     AVSampleFormat sample_format = pcm_sample_format(format);
     int bytes_per_sample = av_get_bytes_per_sample(sample_format);
     if (!format || sample_format == AV_SAMPLE_FMT_NONE || bytes_per_sample <= 0 || format->nChannels == 0) return;
@@ -457,6 +496,8 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
     camera->width = camera->height = 0;
     camera->frame_interval = 333333;
     camera->next_pts = 0;
+    camera->use_video_device_timestamp = options ? options->use_video_device_timestamp != 0 : 0;
+    camera->use_audio_device_timestamp = options ? options->use_audio_device_timestamp != 0 : 0;
     camera->callback = callback;
     camera->audio_callback = audio_callback;
     camera->audio_next_pts = 0;
@@ -527,6 +568,8 @@ dshow_camera* dshow_camera_open(const dshow_camera_options* options,
         if (FAILED(hr)) { set_error(error, error_size, "audio output pin not found", hr); goto failed; }
         hr = select_format(camera->audio_source_pin, options->audio_format_index, &camera->audio_media_type);
         if (FAILED(hr)) { set_error(error, error_size, "select audio format failed", hr); goto failed; }
+        // This is intentionally best effort, like FFmpeg's dshow audio_buffer_size.
+        set_audio_buffer_size(camera->audio_source_pin, options->audio_buffer_size);
         WAVEFORMATEX* wave = audio_header(&camera->audio_media_type);
         if (!wave) { set_error(error, error_size, "selected format is not audio"); goto failed; }
         if (pcm_sample_format(wave) == AV_SAMPLE_FMT_NONE) {
