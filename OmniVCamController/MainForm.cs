@@ -2832,7 +2832,7 @@ namespace OmniVCamController
             playlist.Add(new PlaylistItem
             {
                 Path = itemPath,
-                Title = GetAttribute(itemElement, "title", System.IO.Path.GetFileNameWithoutExtension(itemPath)),
+                Title = GetAttribute(itemElement, "title", GetInputTitle(itemPath)),
                 DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : 0,
                 Options = GetAttribute(itemElement, "options", string.Empty),
                 IsBumper = GetAttribute(itemElement, "isBumper", "0") == "1"
@@ -2905,7 +2905,7 @@ namespace OmniVCamController
             playlist.Add(new PlaylistItem
             {
                 Path = itemPath,
-                Title = parts.Length > 1 ? Unescape(parts[1]) : System.IO.Path.GetFileNameWithoutExtension(itemPath),
+                Title = parts.Length > 1 ? Unescape(parts[1]) : GetInputTitle(itemPath),
                 DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : 0,
                 Options = parts.Length > 3 ? Unescape(parts[3]) : string.Empty,
                 IsBumper = parts.Length > 4 && parts[4] == "1"
@@ -2994,7 +2994,7 @@ namespace OmniVCamController
                     playlist.Add(new PlaylistItem
                     {
                         Path = Unescape(parts[0]),
-                        Title = parts.Length > 1 ? Unescape(parts[1]) : System.IO.Path.GetFileNameWithoutExtension(Unescape(parts[0])),
+                        Title = parts.Length > 1 ? Unescape(parts[1]) : GetInputTitle(Unescape(parts[0])),
                         DurationSeconds = parts.Length > 2 && int.TryParse(parts[2], out int duration) ? duration : 0,
                         Options = parts.Length > 3 ? Unescape(parts[3]) : string.Empty,
                         IsBumper = parts.Length > 4 && parts[4] == "1"
