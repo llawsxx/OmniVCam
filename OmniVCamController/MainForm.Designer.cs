@@ -1,5 +1,6 @@
 ﻿using System.Drawing;
 using System.Windows.Forms;
+using AboControls.ExtendedControls;
 
 namespace OmniVCamController
 {
@@ -23,7 +24,7 @@ namespace OmniVCamController
         private NumericUpDown seekBox;
         private Label positionLabel;
         private Label deliverLabel;
-        private TrackBar progressBar;
+        private Slider progressBar;
         private CheckBox byteSeekBox;
         private TextBox logBox;
         private ListView favoriteInputView;
@@ -76,7 +77,7 @@ namespace OmniVCamController
             seekBox = new NumericUpDown();
             positionLabel = new Label();
             deliverLabel = new Label();
-            progressBar = new TrackBar();
+            progressBar = new Slider();
             byteSeekBox = new CheckBox();
             logBox = new TextBox();
             favoriteInputView = new ListView();
@@ -118,12 +119,11 @@ namespace OmniVCamController
             ((System.ComponentModel.ISupportInitialize)(audioIndexBox)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(shiftBox)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(seekBox)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(progressBar)).BeginInit();
             SuspendLayout();
 
             Text = "OmniVCam Controller";
             MinimumSize = new Size(820, 600);
-            Size = new Size(980, 750);
+            Size = new Size(1000, 750);
             Font = new Font("Segoe UI", 9F);
 
             hostBox.Text = "127.0.0.1";
@@ -159,20 +159,18 @@ namespace OmniVCamController
             positionLabel.AutoSize = true;
             positionLabel.Anchor = AnchorStyles.Left;
             positionLabel.Padding = new Padding(0, 4, 0, 0);
-            deliverLabel.Text = Resources.AppStrings.ResourceManager.GetString("FrameDeliverBlockTimeEmpty") ?? "Frame deliver block time: -- / -- ms";
+            deliverLabel.Text = "Frame deliver block time: -- / -- ms";
             deliverLabel.AutoSize = true;
             deliverLabel.Anchor = AnchorStyles.Left;
             deliverLabel.Padding = new Padding(12, 4, 0, 0);
-            progressBar.Minimum = 0;
-            progressBar.Maximum = 10000;
-            progressBar.TickFrequency = 1000;
-            progressBar.SmallChange = 10;
-            progressBar.LargeChange = 500;
-            progressBar.Dock = DockStyle.Fill;
-            byteSeekBox.Text = Resources.AppStrings.ResourceManager.GetString("ByteSeek") ?? "Byte seek";
+            progressBar.AllowQuickTracking = true;
+            progressBar.UseHandCursorForKnob = true;
+            progressBar.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            progressBar.Margin = new Padding(3, 4, 3, 3);
+            byteSeekBox.Text = "Byte seek";
             byteSeekBox.AutoSize = true;
             byteSeekBox.Anchor = AnchorStyles.Left;
-            byteSeekBox.Padding = new Padding(0, 4, 0, 0);
+            byteSeekBox.Padding = Padding.Empty;
             logBox.Multiline = true;
             logBox.ReadOnly = true;
             logBox.ScrollBars = ScrollBars.Vertical;
@@ -192,7 +190,7 @@ namespace OmniVCamController
             playlistView.FullRowSelect = true;
             playlistView.GridLines = true;
             playlistView.HideSelection = false;
-            playoutStatusLabel.Text = Resources.AppStrings.ResourceManager.GetString("PlayoutStatusStopped") ?? "Playout: stopped";
+            playoutStatusLabel.Text = "Playout: stopped";
             playoutStatusLabel.AutoSize = true;
             playoutStatusLabel.Padding = new Padding(6, 5, 0, 0);
             playoutModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -203,13 +201,13 @@ namespace OmniVCamController
             scheduleTimePicker.Format = DateTimePickerFormat.Time;
             scheduleTimePicker.ShowUpDown = true;
             scheduleTimePicker.Width = 90;
-            mondayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekMonday") ?? "Mon";
-            tuesdayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekTuesday") ?? "Tue";
-            wednesdayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekWednesday") ?? "Wed";
-            thursdayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekThursday") ?? "Thu";
-            fridayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekFriday") ?? "Fri";
-            saturdayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekSaturday") ?? "Sat";
-            sundayBox.Text = Resources.AppStrings.ResourceManager.GetString("WeekSunday") ?? "Sun";
+            mondayBox.Text = "Mon";
+            tuesdayBox.Text = "Tue";
+            wednesdayBox.Text = "Wed";
+            thursdayBox.Text = "Thu";
+            fridayBox.Text = "Fri";
+            saturdayBox.Text = "Sat";
+            sundayBox.Text = "Sun";
             mondayBox.AutoSize = true;
             tuesdayBox.AutoSize = true;
             wednesdayBox.AutoSize = true;
@@ -217,22 +215,22 @@ namespace OmniVCamController
             fridayBox.AutoSize = true;
             saturdayBox.AutoSize = true;
             sundayBox.AutoSize = true;
-            scheduleEndBox.Text = Resources.AppStrings.ResourceManager.GetString("UseEndTime") ?? "Use end time";
+            scheduleEndBox.Text = "Use end time";
             scheduleEndBox.AutoSize = true;
             scheduleEndPicker.Format = DateTimePickerFormat.Custom;
             scheduleEndPicker.CustomFormat = "yyyy-MM-dd HH:mm:ss";
             scheduleEndPicker.Width = 150;
             scheduledTitleBox.Width = 220;
             scheduledOptionsBox.Width = 260;
-            writeNowPlayingXmlBox.Text = Resources.AppStrings.ResourceManager.GetString("WriteNowPlayingXml") ?? "Write now playing XML";
+            writeNowPlayingXmlBox.Text = "Write now playing XML";
             writeNowPlayingXmlBox.Checked = true;
             writeNowPlayingXmlBox.AutoSize = true;
             scheduleEndActionBox.DropDownStyle = ComboBoxStyle.DropDownList;
             scheduleStartActionBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            autoAdvanceBox.Text = Resources.AppStrings.ResourceManager.GetString("NormalAutoNext") ?? "Normal auto next";
+            autoAdvanceBox.Text = "Normal auto next";
             autoAdvanceBox.Checked = true;
             autoAdvanceBox.AutoSize = true;
-            scheduledStartBox.Text = Resources.AppStrings.ResourceManager.GetString("StartAt") ?? "Start at";
+            scheduledStartBox.Text = "Start at";
             scheduledStartBox.AutoSize = true;
             scheduledStartPicker.Format = DateTimePickerFormat.Time;
             scheduledStartPicker.ShowUpDown = true;
@@ -259,7 +257,6 @@ namespace OmniVCamController
             ((System.ComponentModel.ISupportInitialize)(audioIndexBox)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(shiftBox)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(seekBox)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(progressBar)).EndInit();
             ResumeLayout(false);
         }
     }

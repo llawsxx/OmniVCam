@@ -6,7 +6,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -80,6 +79,7 @@ namespace OmniVCamController
         public MainForm()
         {
             InitializeComponent();
+            ApplyLocalizedDesignerText();
             commandClient = new TcpCommandClient(AppendRemoteLog);
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
@@ -118,6 +118,24 @@ namespace OmniVCamController
                 commandClient.Dispose();
                 SaveAutoConfig();
             };
+        }
+
+        private void ApplyLocalizedDesignerText()
+        {
+            deliverLabel.Text = T("FrameDeliverBlockTimeEmpty");
+            byteSeekBox.Text = T("ByteSeek");
+            playoutStatusLabel.Text = T("PlayoutStatusStopped");
+            mondayBox.Text = T("WeekMonday");
+            tuesdayBox.Text = T("WeekTuesday");
+            wednesdayBox.Text = T("WeekWednesday");
+            thursdayBox.Text = T("WeekThursday");
+            fridayBox.Text = T("WeekFriday");
+            saturdayBox.Text = T("WeekSaturday");
+            sundayBox.Text = T("WeekSunday");
+            scheduleEndBox.Text = T("UseEndTime");
+            writeNowPlayingXmlBox.Text = T("WriteNowPlayingXml");
+            autoAdvanceBox.Text = T("NormalAutoNext");
+            scheduledStartBox.Text = T("StartAt");
         }
 
         private void InitializeConnectionTabs()
@@ -366,7 +384,7 @@ namespace OmniVCamController
             activeState.LastAutoAdvanceAt = lastAutoAdvanceAt;
             activeState.PendingSeekSeconds = pendingSeekSeconds;
             activeState.PendingSeekUntil = pendingSeekUntil;
-            activeState.ProgressValue = progressBar.Value;
+            activeState.ProgressValue = GetProgressValue();
             FlushPendingLog();
             activeState.LogText = logBox.Text;
             activeState.SelectedPlaylistIndices = GetSelectedIndices(playlistView);
@@ -429,7 +447,7 @@ namespace OmniVCamController
             SetSelectedWeekDays(state.WeekDays);
             logBox.Text = state.LogText;
             positionLabel.Text = FormatSeconds(currentPositionSeconds) + " / " + (currentDurationSeconds > 0 ? FormatSeconds(currentDurationSeconds) : "--:--:--");
-            progressBar.Value = Math.Max(progressBar.Minimum, Math.Min(progressBar.Maximum, state.ProgressValue));
+            SetProgressValue(state.ProgressValue);
             controlsReady = true;
 
             RefreshPlaylistView();
@@ -533,7 +551,6 @@ namespace OmniVCamController
             AddRow(grid, T("Position"), CreatePositionControl(), T("SeekSeconds"), seekBox);
             AddProgressRow(grid);
             progressBar.MouseDown += ProgressBar_MouseDown;
-            progressBar.MouseMove += ProgressBar_MouseMove;
             progressBar.MouseUp += async (_, e) => await ProgressBar_MouseUpAsync(e);
             shiftBox.ValueChanged += async (_, __) =>
             {
@@ -869,10 +886,14 @@ namespace OmniVCamController
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
             panel.Controls.Add(CreateProgressControl(), 0, 0);
-            panel.Controls.Add(new Label { Text = T("SeekMode"), AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 4, 0, 0) }, 1, 0);
+            panel.Controls.Add(new Label { Text = T("SeekMode"), AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 0, 0, 0), Margin = Padding.Empty }, 1, 0);
             panel.Controls.Add(byteSeekBox, 2, 0);
 
-            AddWideRow(grid, T("Progress"), panel);
+            int row = grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grid.Controls.Add(new Label { Text = T("Progress"), AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(6, 4, 0, 0), Margin = Padding.Empty }, 0, row);
+            grid.Controls.Add(panel, 1, row);
+            grid.SetColumnSpan(panel, grid.ColumnCount - 1);
         }
 
         private static Button MakeButton(string text, EventHandler handler)
@@ -886,7 +907,7 @@ namespace OmniVCamController
         {
             var panel = new TableLayoutPanel
             {
-                ColumnCount = 3,
+                ColumnCount = 4,
                 Dock = DockStyle.Fill,
                 Margin = Padding.Empty,
                 AutoSize = true
@@ -894,6 +915,7 @@ namespace OmniVCamController
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             shiftBox.Dock = DockStyle.Fill;
             var minusButton = MakeStepButton("-", () => AdjustShift(-shiftBox.Increment));
@@ -902,6 +924,7 @@ namespace OmniVCamController
             panel.Controls.Add(shiftBox, 0, 0);
             panel.Controls.Add(minusButton, 1, 0);
             panel.Controls.Add(plusButton, 2, 0);
+            panel.Controls.Add(new Label { Text = T("ShiftUsHint"), AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(6, 0, 0, 0) }, 3, 0);
 
             return panel;
         }
@@ -1449,7 +1472,7 @@ namespace OmniVCamController
             {
                 ColumnCount = 3,
                 Dock = DockStyle.Fill,
-                Margin = new Padding(0, 4, 0, 0),
+                Margin = Padding.Empty,
                 AutoSize = true
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1459,7 +1482,10 @@ namespace OmniVCamController
             var backButton = MakeButton("-5s", async (_, __) => await SeekRelativeAsync(-5));
             var forwardButton = MakeButton("+5s", async (_, __) => await SeekRelativeAsync(5));
 
-            progressBar.Dock = DockStyle.Fill;
+            progressBar.Dock = DockStyle.None;
+            progressBar.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            backButton.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            forwardButton.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             panel.Controls.Add(progressBar, 0, 0);
             panel.Controls.Add(backButton, 1, 0);
             panel.Controls.Add(forwardButton, 2, 0);
@@ -3249,9 +3275,9 @@ namespace OmniVCamController
                 deliverLabel.Text = TF("FrameDeliverBlockTime", currentDeliverNs / 1000000.0, currentDeliverAvgNs / 1000000.0);
                 if (!ignoreStaleSeekStatus && !updatingProgress && !draggingProgress && currentDurationSeconds > 0)
                 {
-                    int progress = (int)Math.Max(0, Math.Min(progressBar.Maximum, seconds * progressBar.Maximum / currentDurationSeconds));
+                    int progress = (int)Math.Max(0, Math.Min(ProgressMaximum, seconds * ProgressMaximum / currentDurationSeconds));
                     updatingProgress = true;
-                    progressBar.Value = progress;
+                    SetProgressValue(progress);
                     updatingProgress = false;
                 }
                 WriteNowPlayingXml();
@@ -3527,19 +3553,12 @@ namespace OmniVCamController
             SetProgressFromMouse(e.X);
         }
 
-        private void ProgressBar_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (!draggingProgress || e.Button != MouseButtons.Left) return;
-            SetProgressFromMouse(e.X);
-        }
-
         private async Task ProgressBar_MouseUpAsync(MouseEventArgs e)
         {
             if (!draggingProgress || e.Button != MouseButtons.Left) return;
-            SetProgressFromMouse(e.X);
             draggingProgress = false;
             progressBar.Capture = false;
-            await SeekByProgressAsync(progressBar.Value);
+            await SeekByProgressAsync(GetProgressValue());
         }
 
         private void SetProgressFromMouse(int mouseX)
@@ -3548,28 +3567,27 @@ namespace OmniVCamController
             int progress = ProgressFromMouseX(mouseX);
 
             updatingProgress = true;
-            progressBar.Value = progress;
+            SetProgressValue(progress);
             updatingProgress = false;
         }
 
         private int ProgressFromMouseX(int mouseX)
         {
-            Rectangle channel = GetTrackBarChannelRectangle(progressBar);
-            int left = channel.Left;
-            int right = Math.Max(channel.Left + 1, channel.Right);
-            double ratio = (double)(Math.Max(left, Math.Min(right, mouseX)) - left) / (right - left);
-            return progressBar.Minimum + (int)Math.Round(ratio * (progressBar.Maximum - progressBar.Minimum));
+            int width = Math.Max(1, progressBar.ClientSize.Width);
+            double ratio = (double)Math.Max(0, Math.Min(width, mouseX)) / width;
+            return (int)Math.Round(ratio * ProgressMaximum);
         }
 
-        private static Rectangle GetTrackBarChannelRectangle(TrackBar trackBar)
+        private const int ProgressMaximum = 10000;
+
+        private int GetProgressValue()
         {
-            if (trackBar.IsHandleCreated)
-            {
-                RECT rect = new RECT();
-                SendMessage(trackBar.Handle, TBM_GETCHANNELRECT, IntPtr.Zero, ref rect);
-                if (rect.Right > rect.Left) return Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
-            }
-            return trackBar.ClientRectangle;
+            return (int)Math.Round(progressBar.Value * ProgressMaximum);
+        }
+
+        private void SetProgressValue(int value)
+        {
+            progressBar.Value = Math.Max(0, Math.Min(ProgressMaximum, value)) / (float)ProgressMaximum;
         }
 
         private async Task SeekByProgressAsync(int progress)
@@ -3586,7 +3604,7 @@ namespace OmniVCamController
                 AppendLog(T("DurationUnknownByteSeek"));
                 return;
             }
-            long seconds = currentDurationSeconds * progress / progressBar.Maximum;
+            long seconds = currentDurationSeconds * progress / ProgressMaximum;
             suppressSeekValueEvent = true;
             seekBox.Value = Math.Max(seekBox.Minimum, Math.Min(seekBox.Maximum, seconds));
             suppressSeekValueEvent = false;
@@ -3610,20 +3628,6 @@ namespace OmniVCamController
             seekBox.Value = Math.Max(seekBox.Minimum, Math.Min(seekBox.Maximum, targetSeconds));
             suppressSeekValueEvent = false;
             await SeekBySecondsAsync(targetSeconds);
-        }
-
-        private const int TBM_GETCHANNELRECT = 0x041A;
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref RECT lParam);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct RECT
-        {
-            public int Left;
-            public int Top;
-            public int Right;
-            public int Bottom;
         }
 
         private void AppendRemoteLog(string text, int generation)

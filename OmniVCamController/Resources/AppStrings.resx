@@ -113,6 +113,7 @@
   <data name="SetTitle" xml:space="preserve"><value>Set title</value></data>
   <data name="SetVideoIndex" xml:space="preserve"><value>Set video index</value></data>
   <data name="ShiftUs" xml:space="preserve"><value>Shift us</value></data>
+  <data name="ShiftUsHint" xml:space="preserve"><value>Adjust if video stutters</value></data>
   <data name="StartAt" xml:space="preserve"><value>Start at</value></data>
   <data name="StartImmediately" xml:space="preserve"><value>Start immediately</value></data>
   <data name="StartPlayout" xml:space="preserve"><value>Start playout</value></data>
@@ -148,9 +149,9 @@
   <data name="CameraButton" xml:space="preserve"><value>Camera...</value></data>
   <data name="UseVideoDeviceTimestamp" xml:space="preserve"><value>Use video device timestamp</value></data>
   <data name="UseAudioDeviceTimestamp" xml:space="preserve"><value>Use audio device timestamp</value></data>
-  <data name="QueueLeft" xml:space="preserve"><value>Left (-1=off)</value></data>
-  <data name="QueueRight" xml:space="preserve"><value>Right</value></data>
-  <data name="QueueCenter" xml:space="preserve"><value>Center (-1=auto)</value></data>
+  <data name="QueueLeft" xml:space="preserve"><value>Left (minimum buffered frames, -1=off)</value></data>
+  <data name="QueueRight" xml:space="preserve"><value>Right (maximum buffered frames)</value></data>
+  <data name="QueueCenter" xml:space="preserve"><value>Center (start output at this frame count, -1=auto)</value></data>
   <data name="NoDirectShowDevices" xml:space="preserve"><value>No DirectShow devices found.</value></data>
   <data name="DirectShowCamera" xml:space="preserve"><value>DirectShow Camera</value></data>
   <data name="NoVideo" xml:space="preserve"><value>No video</value></data>

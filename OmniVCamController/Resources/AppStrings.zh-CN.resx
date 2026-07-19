@@ -330,6 +330,9 @@
   <data name="ShiftUs" xml:space="preserve">
     <value>偏移 us</value>
   </data>
+  <data name="ShiftUsHint" xml:space="preserve">
+    <value>画面卡顿时调整</value>
+  </data>
   <data name="StartAt" xml:space="preserve">
     <value>开始于</value>
   </data>
@@ -434,9 +437,9 @@
   <data name="CameraButton" xml:space="preserve"><value>摄像头...</value></data>
   <data name="UseVideoDeviceTimestamp" xml:space="preserve"><value>使用视频设备时间戳</value></data>
   <data name="UseAudioDeviceTimestamp" xml:space="preserve"><value>使用音频设备时间戳</value></data>
-  <data name="QueueLeft" xml:space="preserve"><value>左（-1=关闭）</value></data>
-  <data name="QueueRight" xml:space="preserve"><value>右</value></data>
-  <data name="QueueCenter" xml:space="preserve"><value>中（-1=自动）</value></data>
+  <data name="QueueLeft" xml:space="preserve"><value>左（最小缓存帧数，-1=关闭）</value></data>
+  <data name="QueueRight" xml:space="preserve"><value>右（最大缓存帧数）</value></data>
+  <data name="QueueCenter" xml:space="preserve"><value>中（达到此帧数时开始输出，-1=自动）</value></data>
   <data name="NoDirectShowDevices" xml:space="preserve"><value>未找到 DirectShow 设备。</value></data>
   <data name="DirectShowCamera" xml:space="preserve"><value>DirectShow 摄像头</value></data>
   <data name="NoVideo" xml:space="preserve"><value>无视频</value></data>
