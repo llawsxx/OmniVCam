@@ -137,11 +137,15 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 
 关闭播出窗口只是隐藏窗口；关闭主控制器会退出程序。
 
+每个连接标签页切换时都会取消旧标签页尚未完成的 TCP 建连。TCP 建连最多等待 3 秒，`STATUS` 轮询不会重入；旧标签页迟到的连接结果或状态回复会被忽略，因此不可达的标签页不会长期阻塞切回其他标签页。
+
 顶部控件：
 
 - `Start playout`：开始播出调度。播出计时器只在播出启动后运行。
 - `Next`：手动播放下一条普通列表项。`Random` 模式下随机选择。
-- `Stop playout`：停止播出、停止播放并清除计划触发标记。
+- `Stop automatic playout`：只停止定时/自动切换，当前画面继续播放，便于直播中修改编排。主窗口的 `Stop` 仍会真正停止画面。
+- 计划列表没有单独的全局“应用编排”步骤；添加、删除、排序以及对选中行执行 `Apply` 后会立即影响后续调度。
+- OBS 控制：填写 OBS WebSocket 地址（OBS 28+ 默认 `ws://127.0.0.1:4455`）和密码。可刷新 OBS 场景并点选来源；每条计划可分别保存开始与结束时要切换的场景以及要显示/隐藏的源。OBS 操作结果会写入日志框。
 - `Save XML`：保存控制器设置和两个播放列表到 `OmniVCamController.xml`。
 - `Write now playing XML`：启用或禁用正在播放 XML 输出。
 
@@ -156,6 +160,7 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 - `End`：显式结束时间，未设置时显示下一计划。
 - `Start`：开始行为。
 - `End action`：媒体早于结束时间结束时的行为。
+- `OBS start` / `OBS end`：计划开始与结束时的场景和来源显示/隐藏动作。
 - `Last triggered`：上次触发的计划窗口开始时间。停止播出会清除。
 - `Path`：输入路径、URL、设备或特殊输入。
 
@@ -164,7 +169,7 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 - `Add current`：把主窗口当前输入添加为计划项。
 - `Add files`：添加一个或多个媒体文件。
 - `Add folder`：递归添加文件夹内媒体文件。
-- `Apply`：把当前计划设置写入选中的计划项，播放中也可使用。
+- `Apply`：把当前计划设置写入选中的计划项并立即用于后续调度，播放中也可使用。它只应用当前行，不会创建整份编排快照。
 - `Remove`、`Up`、`Down`：编辑列表顺序。
 - `Refresh durations`：只探测计划列表项时长。
 
@@ -178,7 +183,8 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 - `Input options`：计划项选项。留空时回退到主 `Options`。
 - `Use end time`：启用显式结束时间。
 - `End time`：一次性项目使用日期时间；每周项目只使用一天内时间。
-- `If media ends early`：`Replay until end` 重播到结束时间，`Wait until end` 等待到结束时间，`Continue immediately` 立即离开计划项。
+- `OBS at start` / `OBS at end`：分别设置计划开始和真正结束时执行的 OBS 场景、显示来源及隐藏来源动作。结束动作在输入完全结束并完成计划切换时执行，不在仅收到输入 EOF 时提前执行。
+- `If media ends early`：`Replay until end` 重播到结束时间；`Wait until end` 即使输入已 EOF/ended 也会占用当前计划时段、保持最后输出，并在设定结束时间到达前阻止其他计划或普通列表接管；`Continue immediately` 立即离开计划项。
 - `At scheduled time`：`Start immediately` 到点立即切入，`Wait current item` 等当前播放结束后再检查。
 
 调度行为：
@@ -187,7 +193,10 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 - 启用 `Use end time` 时窗口为 `start -> end`。
 - 未启用 `Use end time` 时窗口为 `start -> next scheduled task start`；没有下一计划时窗口保持开放。
 - 较晚的 `Start immediately` 计划项可以切入当前正在播放的计划项。
-- `Stop playout` 会清除所有 `Last triggered` 标记，因此重新开始播出时仍在窗口内的任务可以再次触发。
+- `Wait until end` 的时段占用优先于较晚计划项的 `Start immediately`，只有到达当前计划的显式结束时间后才执行结束动作和后续切换。
+- `Stop automatic playout` 会清除所有 `Last triggered` 标记，因此重新开始自动播出时仍在窗口内的任务可以再次触发，但不会暂停当前画面。
+
+可靠性保护：OBS WebSocket 的连接、发送和接收均有 5 秒超时，OBS 无响应时会记录失败并继续播出流程。`PLAY_NEXT` 只有在源状态已经变成 `ended` 或 `error`、待切换状态仍超过 15 秒未完成时，才会取消待切换并用普通 `PLAY` 重新打开目标；源仍在 `playing`、`paused` 或 `opening` 时不会因为等待时间较长而回退。正在执行及已经排队的计划项使用独立快照，编辑、删除或重排列表不会改变该次执行；切换连接标签页时会清除旧连接的瞬时事件和待切换状态，避免污染新标签页。
 
 ## 普通播放列表
 
@@ -339,6 +348,7 @@ OmniVCamController.xml
 - `STATUS`：返回 `seconds`、`duration`、`size`、`state`、`scale_mode`、`display_aspect`、`input`、`deliver_ns`、`deliver_avg_ns` 和 `controller_connected`。
 - `DURATION <input>[\toptions]`：探测输入时长。
 - `PLAY <input>[\toptions]`：播放输入。
+- `PLAY_NEXT <input>[\toptions]`：登记下一个输入。当前输入发出 EOF 后，控制器用此命令提前交付下一输入；后端等待当前输入相关线程结束后打开新输入，并在输出边界重置时间状态。
 - `PAUSE`：暂停输出但不关闭输入。
 - `RESUME`：恢复暂停输出。
 - `STOP`：停止播放。
@@ -356,6 +366,11 @@ OmniVCamController.xml
 - `DSHOW_CROSSBAR <device-moniker>`：列出可用 Crossbar 路由，以及电视调谐器/电视音频能力。
 - `SEEK <seconds>`：按秒定位。
 - `SEEK_BYTE_PERCENT <0-10000>`：按字节百分比定位，`10000` 表示 100%。
+
+后端还会在同一 TCP 连接上主动发送事件行：
+
+- `EVENT INPUT_EOF frame_id=<id>`：输入读取到 EOF，控制器可据此发送 `PLAY_NEXT`；这不代表旧输入的所有解码和输出工作已经结束。
+- `EVENT INPUT_ENDED frame_id=<id>`：该输入的读取、解码和输出已经结束。控制器在此时确认待切换项目，并执行对应的计划 OBS 结束处理。
 
 ## 构建
 

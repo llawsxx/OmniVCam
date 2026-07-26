@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,6 +20,7 @@ namespace OmniVCamController
     {
         private const string AutoConfigFileName = "OmniVCamController.xml";
         private const string NowPlayingFileName = "OmniVCamNowPlaying.xml";
+        private const string ObsSourceSeparator = "␟";
         private static string T(string name) => AppStrings.ResourceManager.GetString(name, CultureInfo.CurrentUICulture) ?? name;
         private static string TF(string name, params object[] args) => string.Format(CultureInfo.CurrentCulture, T(name), args);
 
@@ -36,8 +38,10 @@ namespace OmniVCamController
         private readonly Random random = new Random();
         private int currentIndex = -1;
         private int currentScheduledIndex = -1;
+        private ScheduledPlaylistItem currentScheduledItem;
         private bool playoutRunning;
         private bool playingScheduled;
+        private bool scheduledObsEndApplied;
         private bool waitingForScheduledStart;
         private DateTime scheduledSlotEndAt = DateTime.MinValue;
         private DateTime currentStartedAt;
@@ -49,7 +53,23 @@ namespace OmniVCamController
 		private string currentStatusState = "stopped";
         private string currentStatusInput = string.Empty;
         private bool advancingPlayout;
+        private bool processingPlayoutTick;
         private DateTime lastAutoAdvanceAt = DateTime.MinValue;
+        private static readonly TimeSpan PendingPlaybackTimeout = TimeSpan.FromSeconds(15);
+        private int queuedNextScheduledIndex = -1;
+        private string queuedNextCommand = string.Empty;
+        private ScheduledPlaylistItem queuedNextScheduledItem;
+        private bool eofSourceScheduled;
+        private int eofSourceIndex = -1;
+        private ScheduledPlaylistItem eofSourceScheduledItem;
+        private readonly Queue<PendingPlaybackActivation> pendingPlaybackActivations = new Queue<PendingPlaybackActivation>();
+        private readonly Queue<long> pendingInputEndedFrameIds = new Queue<long>();
+        private bool handlingInputEnded;
+        private readonly Queue<long> pendingInputEofFrameIds = new Queue<long>();
+        private readonly Queue<ScheduledObsAction> pendingScheduledObsEnds = new Queue<ScheduledObsAction>();
+        private Task pendingScheduledObsEndTask = Task.CompletedTask;
+        private bool handlingInputEof;
+        private int playbackStateGeneration;
         private long pendingSeekSeconds = -1;
         private DateTime pendingSeekUntil = DateTime.MinValue;
         private bool updatingProgress;
@@ -58,6 +78,7 @@ namespace OmniVCamController
         private bool suppressInputTitleUpdate;
         private bool controlsReady;
         private bool syncingInitialCameraSettings;
+        private bool refreshingStatus;
         private Button manualPlayButton;
         private Button dshowConfigureButton;
         private CheckBox dshowDeviceTimestampBox;
@@ -80,7 +101,7 @@ namespace OmniVCamController
         {
             InitializeComponent();
             ApplyLocalizedDesignerText();
-            commandClient = new TcpCommandClient(AppendRemoteLog);
+            commandClient = new TcpCommandClient(AppendRemoteLog, HandleBackendEvent);
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
@@ -112,11 +133,11 @@ namespace OmniVCamController
             FormClosing += (_, __) =>
             {
                 closingMainForm = true;
-                if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
                 FlushPendingLog();
                 SaveActiveConnectionState();
-                commandClient.Dispose();
                 SaveAutoConfig();
+                if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
+                commandClient.Dispose();
             };
         }
 
@@ -269,6 +290,14 @@ namespace OmniVCamController
                 ScheduleEnd = scheduleEndPicker.Value,
                 ScheduledTitle = scheduledTitleBox.Text,
                 ScheduledOptions = scheduledOptionsBox.Text,
+                ObsUrl = obsUrlBox.Text,
+                ObsPassword = obsPasswordBox.Text,
+                ObsScene = obsSceneBox.Text,
+                ObsShowSources = obsShowSourcesBox.Text,
+                ObsHideSources = obsHideSourcesBox.Text,
+                ObsEndScene = obsEndSceneBox.Text,
+                ObsEndShowSources = obsEndShowSourcesBox.Text,
+                ObsEndHideSources = obsEndHideSourcesBox.Text,
                 ScheduleEndAction = GetComboValue(scheduleEndActionBox),
                 ScheduleStartAction = GetComboValue(scheduleStartActionBox),
                 WeekDays = GetSelectedWeekDays(),
@@ -319,6 +348,7 @@ namespace OmniVCamController
             try
             {
                 if (activeState != null) SaveActiveConnectionState();
+                ClearQueuedPlaybackState(true);
                 commandClient.Reset();
                 activeState = connectionTabs.SelectedTab.Tag as ConnectionTabState;
                 if (activeState == null) return;
@@ -362,6 +392,14 @@ namespace OmniVCamController
             activeState.ScheduleEnd = scheduleEndPicker.Value;
             activeState.ScheduledTitle = scheduledTitleBox.Text;
             activeState.ScheduledOptions = scheduledOptionsBox.Text;
+            activeState.ObsUrl = obsUrlBox.Text;
+            activeState.ObsPassword = obsPasswordBox.Text;
+            activeState.ObsScene = obsSceneBox.Text;
+            activeState.ObsShowSources = obsShowSourcesBox.Text;
+            activeState.ObsHideSources = obsHideSourcesBox.Text;
+            activeState.ObsEndScene = obsEndSceneBox.Text;
+            activeState.ObsEndShowSources = obsEndShowSourcesBox.Text;
+            activeState.ObsEndHideSources = obsEndHideSourcesBox.Text;
             activeState.ScheduleEndAction = GetComboValue(scheduleEndActionBox);
             activeState.ScheduleStartAction = GetComboValue(scheduleStartActionBox);
             activeState.WeekDays = GetSelectedWeekDays();
@@ -370,8 +408,10 @@ namespace OmniVCamController
             activeState.FavoriteInputs = favoriteInputs;
             activeState.CurrentIndex = currentIndex;
             activeState.CurrentScheduledIndex = currentScheduledIndex;
+            activeState.CurrentScheduledItem = CloneScheduledItem(currentScheduledItem);
             activeState.PlayoutRunning = playoutRunning;
             activeState.PlayingScheduled = playingScheduled;
+            activeState.ScheduledObsEndApplied = scheduledObsEndApplied;
             activeState.WaitingForScheduledStart = waitingForScheduledStart;
             activeState.ScheduledSlotEndAt = scheduledSlotEndAt;
             activeState.CurrentStartedAt = currentStartedAt;
@@ -401,8 +441,10 @@ namespace OmniVCamController
             favoriteInputs = state.FavoriteInputs;
             currentIndex = state.CurrentIndex;
             currentScheduledIndex = state.CurrentScheduledIndex;
+            currentScheduledItem = CloneScheduledItem(state.CurrentScheduledItem);
             playoutRunning = state.PlayoutRunning;
             playingScheduled = state.PlayingScheduled;
+            scheduledObsEndApplied = state.ScheduledObsEndApplied;
             waitingForScheduledStart = state.WaitingForScheduledStart;
             scheduledSlotEndAt = state.ScheduledSlotEndAt;
             currentStartedAt = state.CurrentStartedAt;
@@ -442,6 +484,14 @@ namespace OmniVCamController
             scheduleEndBox.Checked = state.ScheduleEndEnabled;
             scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, state.ScheduleEnd);
             SetScheduledInputFields(state.ScheduledTitle, state.ScheduledOptions);
+            obsUrlBox.Text = state.ObsUrl;
+            obsPasswordBox.Text = state.ObsPassword;
+            obsSceneBox.Text = state.ObsScene;
+            obsShowSourcesBox.Text = state.ObsShowSources;
+            obsHideSourcesBox.Text = state.ObsHideSources;
+            obsEndSceneBox.Text = state.ObsEndScene;
+            obsEndShowSourcesBox.Text = state.ObsEndShowSources;
+            obsEndHideSourcesBox.Text = state.ObsEndHideSources;
             if (ComboContainsValue(scheduleEndActionBox, state.ScheduleEndAction)) SetComboValue(scheduleEndActionBox, state.ScheduleEndAction);
             if (ComboContainsValue(scheduleStartActionBox, state.ScheduleStartAction)) SetComboValue(scheduleStartActionBox, state.ScheduleStartAction);
             SetSelectedWeekDays(state.WeekDays);
@@ -513,6 +563,7 @@ namespace OmniVCamController
         private void BuildManualPanel(Control parent)
         {
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -610,7 +661,177 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton(T("SaveXml"), (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton(T("OpenPlayout"), (_, __) => OpenPlayoutWindow()));
             root.Controls.Add(buttons, 0, 1);
-            root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 2);
+
+            var obsDebug = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(0, 0, 0, 6) };
+            var obsDebugConnectionRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty };
+            obsDebugConnectionRow.Controls.Add(new Label { Text = T("ObsDebug"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 6, 0) });
+            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsUrl")));
+            obsDebugConnectionRow.Controls.Add(mainObsUrlBox);
+            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsPassword")));
+            obsDebugConnectionRow.Controls.Add(mainObsPasswordBox);
+            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsScene")));
+            obsDebugConnectionRow.Controls.Add(mainObsSceneBox);
+            obsDebugConnectionRow.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(true)));
+            obsDebugConnectionRow.Controls.Add(MakeButton(T("ObsTest"), async (_, __) => await TestObsAsync()));
+            var obsDebugSourceRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty, Padding = new Padding(70, 0, 0, 0) };
+            obsDebugSourceRow.Controls.Add(MakeInlineLabel(T("ObsShowSources")));
+            obsDebugSourceRow.Controls.Add(mainObsShowSourcesBox);
+            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, true)));
+            obsDebugSourceRow.Controls.Add(MakeInlineLabel(T("ObsHideSources")));
+            obsDebugSourceRow.Controls.Add(mainObsHideSourcesBox);
+            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, false)));
+            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsApply"), async (_, __) => await ApplyObsDebugAsync()));
+            obsDebug.Controls.Add(obsDebugConnectionRow, 0, 0);
+            obsDebug.Controls.Add(obsDebugSourceRow, 0, 1);
+            root.Controls.Add(obsDebug, 0, 2);
+            root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 3);
+        }
+
+        private async Task TestObsAsync()
+        {
+            await RefreshObsCatalogAsync(true);
+        }
+
+        private async Task RefreshObsCatalogAsync(bool mainPanel)
+        {
+            ComboBox sceneBox = mainPanel ? mainObsSceneBox : obsSceneBox;
+            TextBox urlBox = mainPanel ? mainObsUrlBox : obsUrlBox;
+            TextBox passwordBox = mainPanel ? mainObsPasswordBox : obsPasswordBox;
+            string selectedScene = sceneBox.Text.Trim();
+            try
+            {
+                using (var client = new ObsWebSocketClient(urlBox.Text.Trim(), passwordBox.Text))
+                {
+                    await client.ConnectAsync();
+                    string currentScene = await client.GetCurrentProgramSceneAsync();
+                    List<string> scenes = await client.GetSceneListAsync();
+                    sceneBox.BeginUpdate();
+                    sceneBox.Items.Clear();
+                    sceneBox.Items.AddRange(scenes.Cast<object>().ToArray());
+                    if (!mainPanel)
+                    {
+                        string selectedEndScene = obsEndSceneBox.Text.Trim();
+                        obsEndSceneBox.BeginUpdate();
+                        obsEndSceneBox.Items.Clear();
+                        obsEndSceneBox.Items.AddRange(scenes.Cast<object>().ToArray());
+                        obsEndSceneBox.EndUpdate();
+                        if (scenes.Contains(selectedEndScene)) obsEndSceneBox.Text = selectedEndScene;
+                    }
+                    sceneBox.EndUpdate();
+                    if (scenes.Contains(selectedScene)) sceneBox.Text = selectedScene;
+                    else if (scenes.Contains(currentScene)) sceneBox.Text = currentScene;
+                    else if (scenes.Count > 0) sceneBox.SelectedIndex = 0;
+                    AppendLog(TF("ObsScenesLoaded", scenes.Count, currentScene));
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog(TF("ObsActionFailed", ex.Message));
+            }
+        }
+
+        private async Task SelectObsSourcesAsync(bool mainPanel, bool showSources)
+        {
+            ComboBox sceneBox = mainPanel ? mainObsSceneBox : obsSceneBox;
+            TextBox targetBox = mainPanel
+                ? (showSources ? mainObsShowSourcesBox : mainObsHideSourcesBox)
+                : (showSources ? obsShowSourcesBox : obsHideSourcesBox);
+            TextBox urlBox = mainPanel ? mainObsUrlBox : obsUrlBox;
+            TextBox passwordBox = mainPanel ? mainObsPasswordBox : obsPasswordBox;
+            string sceneName = sceneBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(sceneName))
+            {
+                await RefreshObsCatalogAsync(mainPanel);
+                sceneName = sceneBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(sceneName)) return;
+            }
+
+            try
+            {
+                List<string> sources;
+                using (var client = new ObsWebSocketClient(urlBox.Text.Trim(), passwordBox.Text))
+                {
+                    await client.ConnectAsync();
+                    sources = await client.GetSceneItemListAsync(sceneName);
+                }
+                ShowObsSourcePicker(targetBox, sceneName, sources, showSources);
+            }
+            catch (Exception ex)
+            {
+                AppendLog(TF("ObsActionFailed", ex.Message));
+            }
+        }
+
+        private async Task SelectObsEndSourcesAsync(bool showSources)
+        {
+            string sceneName = obsEndSceneBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(sceneName))
+            {
+                await RefreshObsCatalogAsync(false);
+                sceneName = obsEndSceneBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(sceneName)) return;
+            }
+            try
+            {
+                List<string> sources;
+                using (var client = new ObsWebSocketClient(obsUrlBox.Text.Trim(), obsPasswordBox.Text))
+                {
+                    await client.ConnectAsync();
+                    sources = await client.GetSceneItemListAsync(sceneName);
+                }
+                ShowObsSourcePicker(showSources ? obsEndShowSourcesBox : obsEndHideSourcesBox, sceneName, sources, showSources);
+            }
+            catch (Exception ex)
+            {
+                AppendLog(TF("ObsActionFailed", ex.Message));
+            }
+        }
+
+        private void ShowObsSourcePicker(TextBox targetBox, string sceneName, IList<string> sources, bool showSources)
+        {
+            var selected = new HashSet<string>(SplitObsSources(targetBox.Text), StringComparer.Ordinal);
+            using (var dialog = new Form
+            {
+                Text = TF("ObsSourcesTitle", sceneName),
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowIcon = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(360, 430)
+            })
+            {
+                var list = new CheckedListBox { Dock = DockStyle.Fill, CheckOnClick = true };
+                foreach (string source in sources) list.Items.Add(source, selected.Contains(source));
+                var buttons = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Bottom,
+                    Height = 42,
+                    FlowDirection = FlowDirection.RightToLeft,
+                    Padding = new Padding(6)
+                };
+                var cancel = MakeButton(T("Cancel"), (_, __) => dialog.DialogResult = DialogResult.Cancel);
+                var apply = MakeButton(T("Apply"), (_, __) => dialog.DialogResult = DialogResult.OK);
+                buttons.Controls.Add(cancel);
+                buttons.Controls.Add(apply);
+                dialog.Controls.Add(list);
+                dialog.Controls.Add(buttons);
+                dialog.AcceptButton = apply;
+                dialog.CancelButton = cancel;
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                    targetBox.Text = FormatObsSources(list.CheckedItems.Cast<object>().Select(value => Convert.ToString(value)));
+            }
+        }
+
+        private Task ApplyObsDebugAsync()
+        {
+            var item = new ScheduledPlaylistItem
+            {
+                ObsScene = mainObsSceneBox.Text.Trim(),
+                ObsShowSources = mainObsShowSourcesBox.Text.Trim(),
+                ObsHideSources = mainObsHideSourcesBox.Text.Trim()
+            };
+            return ApplyObsActionsAsync(item, mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text);
         }
 
         private Control CreatePositionControl()
@@ -690,6 +911,7 @@ namespace OmniVCamController
         {
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             parent.Controls.Add(root);
 
@@ -703,13 +925,20 @@ namespace OmniVCamController
             header.Controls.Add(writeNowPlayingXmlBox);
             root.Controls.Add(header, 0, 0);
 
+            var obsSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
+            obsSettings.Controls.Add(MakeInlineLabel(T("ObsUrl")));
+            obsSettings.Controls.Add(obsUrlBox);
+            obsSettings.Controls.Add(MakeInlineLabel(T("ObsPassword")));
+            obsSettings.Controls.Add(obsPasswordBox);
+            root.Controls.Add(obsSettings, 0, 1);
+
             var split = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterDistance = 50
+                SplitterDistance = 60
             };
-            root.Controls.Add(split, 0, 1);
+            root.Controls.Add(split, 0, 2);
 
             split.Panel1.Controls.Add(CreateScheduledPlaylistPanel());
             split.Panel2.Controls.Add(CreateNormalPlaylistPanel());
@@ -718,6 +947,8 @@ namespace OmniVCamController
         private Control CreateScheduledPlaylistPanel()
         {
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -756,6 +987,32 @@ namespace OmniVCamController
             startSettings.Controls.Add(scheduledOptionsBox);
             root.Controls.Add(startSettings, 0, 1);
 
+            var obsStartSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty, Padding = new Padding(0, 0, 0, 3) };
+            obsStartSettings.Controls.Add(new Label { Text = T("ObsAtStart"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 5, 0) });
+            obsStartSettings.Controls.Add(MakeInlineLabel(T("ObsScene")));
+            obsStartSettings.Controls.Add(obsSceneBox);
+            obsStartSettings.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(false)));
+            obsStartSettings.Controls.Add(MakeInlineLabel(T("ObsShowSources")));
+            obsStartSettings.Controls.Add(obsShowSourcesBox);
+            obsStartSettings.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(false, true)));
+            obsStartSettings.Controls.Add(MakeInlineLabel(T("ObsHideSources")));
+            obsStartSettings.Controls.Add(obsHideSourcesBox);
+            obsStartSettings.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(false, false)));
+            root.Controls.Add(obsStartSettings, 0, 2);
+
+            var obsEndSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty, Padding = new Padding(0, 0, 0, 3) };
+            obsEndSettings.Controls.Add(new Label { Text = T("ObsAtEnd"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 5, 0) });
+            obsEndSettings.Controls.Add(MakeInlineLabel(T("ObsScene")));
+            obsEndSettings.Controls.Add(obsEndSceneBox);
+            obsEndSettings.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(false)));
+            obsEndSettings.Controls.Add(MakeInlineLabel(T("ObsShowSources")));
+            obsEndSettings.Controls.Add(obsEndShowSourcesBox);
+            obsEndSettings.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsEndSourcesAsync(true)));
+            obsEndSettings.Controls.Add(MakeInlineLabel(T("ObsHideSources")));
+            obsEndSettings.Controls.Add(obsEndHideSourcesBox);
+            obsEndSettings.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsEndSourcesAsync(false)));
+            root.Controls.Add(obsEndSettings, 0, 3);
+
             var endSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
             endSettings.Controls.Add(scheduleEndBox);
             endSettings.Controls.Add(MakeInlineLabel(T("EndTime")));
@@ -764,7 +1021,7 @@ namespace OmniVCamController
             endSettings.Controls.Add(scheduleEndActionBox);
             endSettings.Controls.Add(MakeInlineLabel(T("AtScheduledTime")));
             endSettings.Controls.Add(scheduleStartActionBox);
-            root.Controls.Add(endSettings, 0, 2);
+            root.Controls.Add(endSettings, 0, 4);
 
             scheduledPlaylistView.Columns.Add("#", 38);
             scheduledPlaylistView.Columns.Add(T("ColumnStatus"), 78);
@@ -774,11 +1031,13 @@ namespace OmniVCamController
             scheduledPlaylistView.Columns.Add(T("ColumnEnd"), 150);
             scheduledPlaylistView.Columns.Add(T("ColumnStart"), 120);
             scheduledPlaylistView.Columns.Add(T("ColumnEndAction"), 150);
+            scheduledPlaylistView.Columns.Add(T("ColumnObsStart"), 260);
+            scheduledPlaylistView.Columns.Add(T("ColumnObsEnd"), 260);
             scheduledPlaylistView.Columns.Add(T("ColumnLastTriggered"), 150);
             scheduledPlaylistView.Columns.Add(T("ColumnPath"), 360);
             scheduledPlaylistView.SelectedIndexChanged += (_, __) => LoadSelectedScheduledItemToInputs();
             scheduledPlaylistView.DoubleClick += async (_, __) => await PlaySelectedScheduledAsync();
-            root.Controls.Add(scheduledPlaylistView, 0, 3);
+            root.Controls.Add(scheduledPlaylistView, 0, 5);
 
             return root;
         }
@@ -1781,7 +2040,35 @@ namespace OmniVCamController
                 return;
             }
             options = NormalizeQueueOptions(input, options, false);
+            ClearQueuedPlaybackState();
             await SendCommandAsync(string.IsNullOrWhiteSpace(options) ? "PLAY " + input : "PLAY " + input + "\t" + options);
+        }
+
+        private async Task<bool> QueueNextInputAsync(string input, string options, bool logCommand = false)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return false;
+            options = NormalizeQueueOptions(input, options, false);
+            string command = string.IsNullOrWhiteSpace(options) ? "PLAY_NEXT " + input : "PLAY_NEXT " + input + "\t" + options;
+            string reply = await SendRawCommandAsync(command);
+            if (logCommand) AppendLog($"> {command}\r\n< {reply}");
+            return reply != null && reply.StartsWith("OK", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ClearQueuedPlaybackState(bool clearEvents = false)
+        {
+            queuedNextScheduledIndex = -1;
+            queuedNextCommand = string.Empty;
+            queuedNextScheduledItem = null;
+            pendingPlaybackActivations.Clear();
+            eofSourceScheduled = false;
+            eofSourceIndex = -1;
+            eofSourceScheduledItem = null;
+            if (!clearEvents) return;
+            playbackStateGeneration++;
+            pendingInputEofFrameIds.Clear();
+            pendingInputEndedFrameIds.Clear();
+            pendingScheduledObsEnds.Clear();
+            pendingScheduledObsEndTask = Task.CompletedTask;
         }
 
         private static void ConfigureFileDrop(Control control, Func<string[], Task> dropAction)
@@ -2043,6 +2330,12 @@ namespace OmniVCamController
                 EndAt = scheduleEndPicker.Value,
                 EndAction = GetSelectedEndAction(),
                 StartAction = GetSelectedStartAction()
+                ,ObsScene = obsSceneBox.Text.Trim()
+                ,ObsShowSources = obsShowSourcesBox.Text.Trim()
+                ,ObsHideSources = obsHideSourcesBox.Text.Trim()
+                ,ObsEndScene = obsEndSceneBox.Text.Trim()
+                ,ObsEndShowSources = obsEndShowSourcesBox.Text.Trim()
+                ,ObsEndHideSources = obsEndHideSourcesBox.Text.Trim()
             };
             if (item.ScheduleKind == ScheduleKind.Weekly && item.WeekDays == 0) item.WeekDays = WeekDayMaskFromDay(DateTime.Now.DayOfWeek);
             return item;
@@ -2053,9 +2346,8 @@ namespace OmniVCamController
             foreach (int index in scheduledPlaylistView.SelectedIndices.Cast<int>().OrderByDescending(i => i))
             {
                 scheduledPlaylist.RemoveAt(index);
-                if (currentScheduledIndex == index) currentScheduledIndex = -1;
-                else if (currentScheduledIndex > index) currentScheduledIndex--;
             }
+            RefreshCurrentScheduledIndex();
             RefreshScheduledPlaylistView();
         }
 
@@ -2068,7 +2360,7 @@ namespace OmniVCamController
             ScheduledPlaylistItem item = scheduledPlaylist[index];
             scheduledPlaylist.RemoveAt(index);
             scheduledPlaylist.Insert(target, item);
-            if (currentScheduledIndex == index) currentScheduledIndex = target;
+            RefreshCurrentScheduledIndex();
             RefreshScheduledPlaylistView();
             scheduledPlaylistView.Items[target].Selected = true;
         }
@@ -2090,6 +2382,12 @@ namespace OmniVCamController
             scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, item.EndAt);
             SetComboValue(scheduleEndActionBox, EndActionValue(item.EndAction));
             SetComboValue(scheduleStartActionBox, StartActionValue(item.StartAction));
+            obsSceneBox.Text = item.ObsScene;
+            obsShowSourcesBox.Text = item.ObsShowSources;
+            obsHideSourcesBox.Text = item.ObsHideSources;
+            obsEndSceneBox.Text = item.ObsEndScene;
+            obsEndShowSourcesBox.Text = item.ObsEndShowSources;
+            obsEndHideSourcesBox.Text = item.ObsEndHideSources;
             UpdateScheduleEndControls();
         }
 
@@ -2115,10 +2413,12 @@ namespace OmniVCamController
             item.EndAt = updated.EndAt;
             item.EndAction = updated.EndAction;
             item.StartAction = updated.StartAction;
-            if (playingScheduled && index == currentScheduledIndex)
-            {
-                scheduledSlotEndAt = GetScheduleWindow(index, DateTime.Now).End;
-            }
+            item.ObsScene = updated.ObsScene;
+            item.ObsShowSources = updated.ObsShowSources;
+            item.ObsHideSources = updated.ObsHideSources;
+            item.ObsEndScene = updated.ObsEndScene;
+            item.ObsEndShowSources = updated.ObsEndShowSources;
+            item.ObsEndHideSources = updated.ObsEndHideSources;
             RefreshScheduledPlaylistView();
             scheduledPlaylistView.Items[index].Selected = true;
         }
@@ -2185,6 +2485,7 @@ namespace OmniVCamController
         private async Task PlaySelectedScheduledAsync()
         {
             if (scheduledPlaylistView.SelectedIndices.Count == 0) return;
+            await ApplyScheduledObsEndAsync();
             currentScheduledIndex = scheduledPlaylistView.SelectedIndices[0];
             await PlayScheduledCurrentAsync();
         }
@@ -2258,6 +2559,7 @@ namespace OmniVCamController
         private async Task PlaySelectedAsync()
         {
             if (playlistView.SelectedIndices.Count == 0) return;
+            await ApplyScheduledObsEndAsync();
             currentIndex = playlistView.SelectedIndices[0];
             await PlayCurrentAsync();
         }
@@ -2265,7 +2567,6 @@ namespace OmniVCamController
         private async Task StartPlayoutAsync()
         {
             if (playlist.Count == 0 && scheduledPlaylist.Count == 0) return;
-            if (!ValidateScheduledPlaylistForUser()) return;
             playoutRunning = true;
             SetPlayoutTimerRunning(true);
             waitingForScheduledStart = scheduledStartBox.Checked;
@@ -2284,12 +2585,14 @@ namespace OmniVCamController
 
         private async Task StopPlayoutAsync()
         {
+            await ApplyScheduledObsEndAsync();
+            ClearQueuedPlaybackState();
             playoutRunning = false;
             waitingForScheduledStart = false;
             playingScheduled = false;
             currentScheduledIndex = -1;
+            currentScheduledItem = null;
             ResetScheduledTriggers();
-            await SendCommandAsync("STOP");
             SetPlayoutTimerRunning(false);
             UpdatePlayoutStatusLabel();
             WriteNowPlayingXml();
@@ -2298,10 +2601,13 @@ namespace OmniVCamController
 
         private async Task StopAllAsync()
         {
+            await ApplyScheduledObsEndAsync();
+            ClearQueuedPlaybackState();
             playoutRunning = false;
             waitingForScheduledStart = false;
             playingScheduled = false;
             currentScheduledIndex = -1;
+            currentScheduledItem = null;
             ResetScheduledTriggers();
             await SendCommandAsync("STOP");
             SetPlayoutTimerRunning(false);
@@ -2333,8 +2639,28 @@ namespace OmniVCamController
 
         private async Task PlayoutTickAsync()
         {
-            if (!playoutRunning || (playlist.Count == 0 && scheduledPlaylist.Count == 0)) return;
+            if (processingPlayoutTick) return;
+            processingPlayoutTick = true;
+            try
+            {
+                await PlayoutTickCoreAsync();
+            }
+            finally
+            {
+                processingPlayoutTick = false;
+            }
+        }
+
+        private async Task PlayoutTickCoreAsync()
+        {
+            if (!playoutRunning) return;
             if (advancingPlayout) return;
+            if (pendingPlaybackActivations.Count > 0)
+            {
+                await RecoverTimedOutPendingPlaybackAsync();
+                return;
+            }
+            if (playlist.Count == 0 && scheduledPlaylist.Count == 0) return;
 
             if (waitingForScheduledStart)
             {
@@ -2352,7 +2678,14 @@ namespace OmniVCamController
                 return;
             }
 
+            if (IsWaitingScheduledSlotActive(DateTime.Now))
+            {
+                await HandleScheduledEndAsync();
+                return;
+            }
+
             await StartDueScheduledItemAsync();
+            await PrepareWaitingScheduledPlaybackAsync();
             await HandleScheduledEndAsync();
             await AutoAdvanceIfNeededAsync();
         }
@@ -2370,7 +2703,7 @@ namespace OmniVCamController
 
             PlaylistItem current = playlist[currentIndex];
             bool statusMatchesCurrent = PathsEqual(current.Path, GetStatusInputPath(currentStatusInput));
-            bool reachedPlaylistDuration = current.DurationSeconds > 0 && (DateTime.Now - currentStartedAt).TotalSeconds >= current.DurationSeconds;
+            bool reachedPlaylistDuration = current.DurationSeconds > 0 && currentPositionSeconds >= current.DurationSeconds;
             bool playbackFailed = statusMatchesCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
             bool playbackEnded = statusMatchesCurrent && string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
 
@@ -2428,6 +2761,7 @@ namespace OmniVCamController
             PlaylistItem item = playlist[currentIndex];
             playingScheduled = false;
             currentScheduledIndex = -1;
+            currentScheduledItem = null;
             scheduledSlotEndAt = DateTime.MinValue;
             currentStartedAt = DateTime.Now;
             currentPositionSeconds = 0;
@@ -2439,35 +2773,475 @@ namespace OmniVCamController
             UpdatePlayoutStatusLabel();
         }
 
+        private int GetNextPlaylistIndex(int fromIndex)
+        {
+            if (playlist.Count == 0) return -1;
+            if (GetComboValue(playoutModeBox) == "Random")
+            {
+                int nextIndex = random.Next(playlist.Count);
+                if (playlist.Count > 1)
+                    while (nextIndex == fromIndex) nextIndex = random.Next(playlist.Count);
+                return nextIndex;
+            }
+            return fromIndex < 0 ? 0 : (fromIndex + 1) % playlist.Count;
+        }
+
+        private void HandleBackendEvent(string eventLine, int generation)
+        {
+            if (IsDisposed || generation != commandClient.Generation) return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<string, int>(HandleBackendEvent), eventLine, generation);
+                return;
+            }
+            AppendLog("[vcam event] " + eventLine);
+            if (eventLine.StartsWith("INPUT_EOF", StringComparison.OrdinalIgnoreCase))
+                QueueInputEofHandling(ParseStatusLong(eventLine, "frame_id="));
+            else if (eventLine.StartsWith("INPUT_ENDED", StringComparison.OrdinalIgnoreCase))
+                QueueInputEndedHandling(ParseStatusLong(eventLine, "frame_id="));
+        }
+
+        private void QueueInputEofHandling(long frameId)
+        {
+            pendingInputEofFrameIds.Enqueue(frameId);
+            if (!handlingInputEof) _ = HandleInputEofEventsAsync();
+        }
+
+        private async Task HandleInputEofEventsAsync()
+        {
+            if (handlingInputEof) return;
+            handlingInputEof = true;
+            int stateGeneration = playbackStateGeneration;
+            try
+            {
+                while (stateGeneration == playbackStateGeneration && pendingInputEofFrameIds.Count > 0)
+                    await AdvanceOnInputEofAsync(pendingInputEofFrameIds.Dequeue());
+            }
+            finally
+            {
+                handlingInputEof = false;
+            }
+        }
+
+        private async Task AdvanceOnInputEofAsync(long frameId = 0)
+        {
+            if (!playoutRunning) return;
+            if (advancingPlayout) return;
+            advancingPlayout = true;
+            lastAutoAdvanceAt = DateTime.Now;
+            try
+            {
+                bool sourceScheduled = pendingPlaybackActivations.Count > 0 ? eofSourceScheduled : playingScheduled;
+                int sourceIndex = pendingPlaybackActivations.Count > 0
+                    ? eofSourceIndex : (sourceScheduled ? currentScheduledIndex : currentIndex);
+                if (sourceScheduled)
+                {
+                    ScheduledPlaylistItem sourceItem = pendingPlaybackActivations.Count > 0
+                        ? eofSourceScheduledItem : currentScheduledItem;
+                    await HandleScheduledEndAsync(true, frameId, sourceIndex, sourceItem);
+                    return;
+                }
+                if (await QueueWaitingScheduledActivationAsync(frameId)) return;
+                if (!autoAdvanceBox.Checked || playlist.Count == 0) return;
+                int nextIndex = GetNextPlaylistIndex(sourceIndex);
+                if (nextIndex < 0 || nextIndex >= playlist.Count) return;
+                PlaylistItem next = playlist[nextIndex];
+                if (!await QueueNextInputAsync(next.Path, next.Options, true)) return;
+                pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForPlaylist(nextIndex, next, frameId));
+                eofSourceScheduled = false;
+                eofSourceIndex = nextIndex;
+                eofSourceScheduledItem = null;
+            }
+            finally
+            {
+                advancingPlayout = false;
+            }
+        }
+
         private async Task PlayScheduledCurrentAsync()
         {
-            if (currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
-            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            List<ScheduledPlaylistItem> active = scheduledPlaylist;
+            if (currentScheduledIndex < 0 || currentScheduledIndex >= active.Count) return;
+            ScheduledPlaylistItem liveItem = active[currentScheduledIndex];
+            ScheduledPlaylistItem item = CloneScheduledItem(liveItem);
+            currentScheduledItem = item;
             playingScheduled = true;
+            scheduledObsEndApplied = false;
             currentStartedAt = DateTime.Now;
             currentPositionSeconds = 0;
             currentDurationSeconds = 0;
             currentStatusState = "playing";
             currentStatusInput = item.Path;
-            ScheduleWindow window = GetScheduleWindow(currentScheduledIndex, DateTime.Now);
+            ScheduleWindow window = GetScheduleWindow(item, DateTime.Now);
             scheduledSlotEndAt = window.End;
             SelectCurrentRow();
             SelectCurrentScheduledRow();
             SetInputFields(item.Path, item.Title, item.Options);
             item.LastTriggeredAt = window.Start;
+            liveItem.LastTriggeredAt = window.Start;
+            await ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources);
             await PlayInputAsync(item.Path, item.Options);
             UpdatePlayoutStatusLabel();
+        }
+
+        private async Task PrepareWaitingScheduledPlaybackAsync()
+        {
+            if (!playoutRunning || !IsCurrentPlaybackActive()) return;
+            DateTime now = DateTime.Now;
+            if (IsWaitingScheduledSlotActive(now)) return;
+            int selectedIndex = -1;
+            DateTime selectedStart = DateTime.MinValue;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                if (playingScheduled && i == currentScheduledIndex) continue;
+                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                ScheduleWindow window = GetScheduleWindow(i, now);
+                if (!window.IsActive || (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End)) continue;
+                if (selectedIndex < 0 || window.Start > selectedStart)
+                {
+                    selectedIndex = i;
+                    selectedStart = window.Start;
+                }
+            }
+
+            if (selectedIndex < 0) return;
+            ScheduledPlaylistItem next = scheduledPlaylist[selectedIndex];
+            string options = NormalizeQueueOptions(next.Path, next.Options, false);
+            string command = string.IsNullOrWhiteSpace(options) ? "PLAY_NEXT " + next.Path : "PLAY_NEXT " + next.Path + "\t" + options;
+            if (queuedNextScheduledIndex == selectedIndex && string.Equals(queuedNextCommand, command, StringComparison.Ordinal)) return;
+            queuedNextScheduledIndex = selectedIndex;
+            queuedNextCommand = command;
+            queuedNextScheduledItem = CloneScheduledItem(next);
+            await Task.CompletedTask;
+        }
+
+        private async Task<bool> QueueWaitingScheduledActivationAsync(long endingFrameId = 0,
+            ScheduledPlaylistItem endingScheduledItem = null)
+        {
+            int index = queuedNextScheduledIndex;
+            ScheduledPlaylistItem item = CloneScheduledItem(queuedNextScheduledItem);
+            if (item == null) return false;
+            index = FindScheduledItemIndex(item.RuntimeId);
+            ScheduleWindow window = GetScheduleWindow(item, DateTime.Now);
+            if (!window.IsActive ||
+                (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End))
+            {
+                queuedNextScheduledIndex = -1;
+                queuedNextCommand = string.Empty;
+                queuedNextScheduledItem = null;
+                return false;
+            }
+
+            if (!await QueueNextInputAsync(item.Path, item.Options, true)) return false;
+            queuedNextScheduledIndex = -1;
+            queuedNextCommand = string.Empty;
+            queuedNextScheduledItem = null;
+            if (endingScheduledItem != null) QueueScheduledObsEnd(endingScheduledItem, endingFrameId);
+            pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForScheduled(index, item, endingFrameId, window.Start, true));
+            eofSourceScheduled = true;
+            eofSourceIndex = index;
+            eofSourceScheduledItem = CloneScheduledItem(item);
+            return true;
+        }
+
+        private void QueueInputEndedHandling(long frameId)
+        {
+            pendingInputEndedFrameIds.Enqueue(frameId);
+            if (!handlingInputEnded) _ = HandleInputEndedEventsAsync();
+        }
+
+        private async Task HandleInputEndedEventsAsync()
+        {
+            if (handlingInputEnded) return;
+            handlingInputEnded = true;
+            int stateGeneration = playbackStateGeneration;
+            try
+            {
+                while (stateGeneration == playbackStateGeneration && pendingInputEndedFrameIds.Count > 0)
+                {
+                    long frameId = pendingInputEndedFrameIds.Dequeue();
+                    await ApplyPendingScheduledObsEndsAsync(false, frameId);
+                    if (stateGeneration != playbackStateGeneration) return;
+                    await ActivatePendingPlaybackAsync(frameId);
+                }
+            }
+            finally
+            {
+                handlingInputEnded = false;
+            }
+        }
+
+        private async Task ActivatePendingPlaybackAsync(long frameId)
+        {
+            if (pendingPlaybackActivations.Count == 0) return;
+            PendingPlaybackActivation activation = pendingPlaybackActivations.Peek();
+            if (activation.FrameId != 0 && frameId != 0 && activation.FrameId != frameId) return;
+            pendingPlaybackActivations.Dequeue();
+
+            currentStartedAt = DateTime.Now;
+            currentPositionSeconds = 0;
+            currentDurationSeconds = 0;
+            currentStatusState = "playing";
+            if (activation.Scheduled)
+            {
+                ScheduledPlaylistItem item = CloneScheduledItem(activation.ScheduledItem);
+                if (item == null) return;
+                int liveIndex = FindScheduledItemIndex(item.RuntimeId);
+                if (activation.WindowStart != DateTime.MinValue)
+                {
+                    item.LastTriggeredAt = activation.WindowStart;
+                    if (liveIndex >= 0) scheduledPlaylist[liveIndex].LastTriggeredAt = activation.WindowStart;
+                }
+                playingScheduled = true;
+                currentScheduledIndex = liveIndex;
+                currentScheduledItem = item;
+                scheduledObsEndApplied = false;
+                currentStatusInput = item.Path;
+                scheduledSlotEndAt = GetScheduleWindow(item, DateTime.Now).End;
+                SelectCurrentRow();
+                SelectCurrentScheduledRow();
+                SetInputFields(item.Path, item.Title, item.Options);
+                if (activation.ApplyObsStart)
+                    await ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources);
+                RefreshScheduledPlaylistView();
+            }
+            else
+            {
+                PlaylistItem item = ClonePlaylistItem(activation.PlaylistItem);
+                if (item == null) return;
+                currentIndex = FindPlaylistItemIndex(item.RuntimeId);
+                playingScheduled = false;
+                currentScheduledIndex = -1;
+                currentScheduledItem = null;
+                scheduledSlotEndAt = DateTime.MinValue;
+                currentStatusInput = item.Path;
+                SelectCurrentRow();
+            }
+            UpdatePlayoutStatusLabel();
+        }
+
+        private async Task RecoverTimedOutPendingPlaybackAsync()
+        {
+            if (pendingPlaybackActivations.Count == 0) return;
+            bool sourceEnded = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
+            bool sourceFailed = string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
+            if (!sourceEnded && !sourceFailed) return;
+            PendingPlaybackActivation activation = pendingPlaybackActivations.Peek();
+            if (DateTime.UtcNow - activation.QueuedAtUtc < PendingPlaybackTimeout) return;
+
+            pendingPlaybackActivations.Dequeue();
+            AppendLog("PLAY_NEXT transition timed out; reopening the target with PLAY.");
+            await ApplyPendingScheduledObsEndsAsync(false, activation.FrameId);
+            ClearQueuedPlaybackState();
+
+            if (activation.Scheduled)
+            {
+                ScheduledPlaylistItem item = CloneScheduledItem(activation.ScheduledItem);
+                if (item == null) return;
+                int liveIndex = FindScheduledItemIndex(item.RuntimeId);
+                if (activation.WindowStart != DateTime.MinValue)
+                {
+                    item.LastTriggeredAt = activation.WindowStart;
+                    if (liveIndex >= 0) scheduledPlaylist[liveIndex].LastTriggeredAt = activation.WindowStart;
+                }
+                currentScheduledIndex = liveIndex;
+                currentScheduledItem = item;
+                playingScheduled = true;
+                scheduledObsEndApplied = false;
+                scheduledSlotEndAt = GetScheduleWindow(item, DateTime.Now).End;
+                currentStatusInput = item.Path;
+                currentStatusState = "opening";
+                if (activation.ApplyObsStart)
+                    await ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources);
+                await PlayInputAsync(item.Path, item.Options);
+            }
+            else
+            {
+                PlaylistItem item = ClonePlaylistItem(activation.PlaylistItem);
+                if (item == null) return;
+                currentIndex = FindPlaylistItemIndex(item.RuntimeId);
+                playingScheduled = false;
+                currentScheduledIndex = -1;
+                currentScheduledItem = null;
+                scheduledSlotEndAt = DateTime.MinValue;
+                currentStatusState = "opening";
+                currentStatusInput = item.Path;
+                await PlayInputAsync(item.Path, item.Options);
+            }
+            RefreshScheduledPlaylistView();
+            SelectCurrentRow();
+            SelectCurrentScheduledRow();
+            UpdatePlayoutStatusLabel();
+        }
+
+        private Task ApplyObsActionsAsync(ScheduledPlaylistItem item)
+        {
+            return ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources, obsUrlBox.Text.Trim(), obsPasswordBox.Text);
+        }
+
+        private Task ApplyObsActionsAsync(ScheduledPlaylistItem item, string url, string password)
+        {
+            return ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources, url, password);
+        }
+
+        private Task ApplyObsActionsAsync(string scene, string showSources, string hideSources)
+        {
+            return ApplyObsActionsAsync(scene, showSources, hideSources, obsUrlBox.Text.Trim(), obsPasswordBox.Text);
+        }
+
+        private async Task ApplyObsActionsAsync(string scene, string showSources, string hideSources, string url, string password)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return;
+            if (string.IsNullOrWhiteSpace(scene) && string.IsNullOrWhiteSpace(showSources) && string.IsNullOrWhiteSpace(hideSources)) return;
+            try
+            {
+                using (var client = new ObsWebSocketClient(url, password))
+                {
+                    await client.ConnectAsync();
+                    if (!string.IsNullOrWhiteSpace(scene))
+                    {
+                        AppendLog("> OBS SetCurrentProgramScene scene=" + FormatObsLogValue(scene));
+                        await client.SendRequestAsync("SetCurrentProgramScene", new Dictionary<string, object> { ["sceneName"] = scene });
+                        AppendLog("< OBS OK SetCurrentProgramScene");
+                    }
+                    foreach (string source in SplitObsSources(showSources))
+                    {
+                        AppendLog("> OBS SetSceneItemEnabled scene=" + FormatObsLogValue(scene) +
+                            " source=" + FormatObsLogValue(source) + " enabled=true");
+                        await client.SetSceneItemEnabledAsync(scene, source, true);
+                        AppendLog("< OBS OK SetSceneItemEnabled");
+                    }
+                    foreach (string source in SplitObsSources(hideSources))
+                    {
+                        AppendLog("> OBS SetSceneItemEnabled scene=" + FormatObsLogValue(scene) +
+                            " source=" + FormatObsLogValue(source) + " enabled=false");
+                        await client.SetSceneItemEnabledAsync(scene, source, false);
+                        AppendLog("< OBS OK SetSceneItemEnabled");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog(TF("ObsActionFailed", ex.Message));
+            }
+        }
+
+        private static string FormatObsLogValue(string value)
+        {
+            return "\"" + (value ?? string.Empty)
+                .Replace("\\", "\\\\")
+                .Replace("\"", "\\\"")
+                .Replace("\r", "\\r")
+                .Replace("\n", "\\n") + "\"";
+        }
+
+        private async Task ApplyScheduledObsEndAsync()
+        {
+            await ApplyPendingScheduledObsEndsAsync();
+            if (!playingScheduled || scheduledObsEndApplied || currentScheduledItem == null) return;
+            scheduledObsEndApplied = true;
+            ScheduledPlaylistItem item = currentScheduledItem;
+            await ApplyObsActionsAsync(item.ObsEndScene, item.ObsEndShowSources, item.ObsEndHideSources);
+        }
+
+        private void QueueScheduledObsEnd(long frameId = 0)
+        {
+            if (!playingScheduled || scheduledObsEndApplied || currentScheduledItem == null) return;
+            scheduledObsEndApplied = true;
+            EnqueueScheduledObsEnd(currentScheduledItem, frameId);
+        }
+
+        private void QueueScheduledObsEnd(ScheduledPlaylistItem item, long frameId)
+        {
+            if (item == null) return;
+            if (playingScheduled && currentScheduledItem != null && item.RuntimeId == currentScheduledItem.RuntimeId)
+                scheduledObsEndApplied = true;
+            EnqueueScheduledObsEnd(item, frameId);
+        }
+
+        private void EnqueueScheduledObsEnd(ScheduledPlaylistItem item, long frameId)
+        {
+            pendingScheduledObsEnds.Enqueue(new ScheduledObsAction
+            {
+                Scene = item.ObsEndScene,
+                ShowSources = item.ObsEndShowSources,
+                HideSources = item.ObsEndHideSources,
+                Url = obsUrlBox.Text.Trim(),
+                Password = obsPasswordBox.Text,
+                FrameId = frameId
+            });
+        }
+
+        private Task ApplyPendingScheduledObsEndsAsync(bool applyAll = true, long frameId = 0)
+        {
+            int stateGeneration = playbackStateGeneration;
+            pendingScheduledObsEndTask = ApplyPendingScheduledObsEndsCoreAsync(
+                pendingScheduledObsEndTask, applyAll, frameId, stateGeneration);
+            return pendingScheduledObsEndTask;
+        }
+
+        private async Task ApplyPendingScheduledObsEndsCoreAsync(Task previousTask, bool applyAll, long frameId,
+            int stateGeneration)
+        {
+            try
+            {
+                await previousTask;
+            }
+            catch
+            {
+                // OBS errors are logged by ApplyObsActionsAsync. Keep later actions usable.
+            }
+            if (stateGeneration != playbackStateGeneration) return;
+
+            if (!applyAll && pendingScheduledObsEnds.Count > 0)
+            {
+                ScheduledObsAction next = pendingScheduledObsEnds.Peek();
+                if (next.FrameId != 0 && frameId != 0 && next.FrameId != frameId) return;
+            }
+            int count = applyAll ? pendingScheduledObsEnds.Count : Math.Min(1, pendingScheduledObsEnds.Count);
+            while (count-- > 0 && pendingScheduledObsEnds.Count > 0)
+            {
+                if (stateGeneration != playbackStateGeneration) return;
+                ScheduledObsAction action = pendingScheduledObsEnds.Dequeue();
+                await ApplyObsActionsAsync(action.Scene, action.ShowSources, action.HideSources, action.Url, action.Password);
+            }
+        }
+
+        private static IEnumerable<string> SplitObsSources(string text)
+        {
+            text = text ?? string.Empty;
+            return text.Split(new[] { ObsSourceSeparator }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(value => value.Length > 0);
+        }
+
+        private static string FormatObsSources(IEnumerable<string> sources)
+        {
+            string[] values = sources.Where(value => !string.IsNullOrEmpty(value)).ToArray();
+            return values.Length == 0 ? string.Empty : ObsSourceSeparator + string.Join(ObsSourceSeparator, values);
+        }
+
+        private static string FormatObsAction(string scene, string showSources, string hideSources)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(scene)) parts.Add(T("ObsScene") + ": " + scene);
+            string[] show = SplitObsSources(showSources).ToArray();
+            if (show.Length > 0) parts.Add(T("ObsShowSources") + ": " + string.Join(", ", show));
+            string[] hide = SplitObsSources(hideSources).ToArray();
+            if (hide.Length > 0) parts.Add(T("ObsHideSources") + ": " + string.Join(", ", hide));
+            return parts.Count == 0 ? "-" : string.Join("; ", parts);
         }
 
         private async Task<bool> StartDueScheduledItemAsync()
         {
             DateTime now = DateTime.Now;
+            if (IsWaitingScheduledSlotActive(now)) return false;
             int selectedIndex = -1;
             ScheduleWindow selectedWindow = ScheduleWindow.Empty;
 
-            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            List<ScheduledPlaylistItem> active = scheduledPlaylist;
+            for (int i = 0; i < active.Count; i++)
             {
-                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                ScheduledPlaylistItem item = active[i];
                 ScheduleWindow window = GetScheduleWindow(i, now);
                 if (!window.IsActive) continue;
                 if (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End) continue;
@@ -2483,53 +3257,90 @@ namespace OmniVCamController
             if (selectedIndex < 0) return false;
             if (playingScheduled && IsCurrentPlaybackActive())
             {
-                if (currentScheduledIndex >= 0 && currentScheduledIndex < scheduledPlaylist.Count)
+                if (currentScheduledItem != null)
                 {
-                    ScheduleWindow currentWindow = GetScheduleWindow(currentScheduledIndex, now);
+                    ScheduleWindow currentWindow = GetScheduleWindow(currentScheduledItem, now);
                     if (selectedWindow.Start <= currentWindow.Start) return false;
                 }
-                if (scheduledPlaylist[selectedIndex].StartAction != ScheduleStartAction.StartImmediately) return false;
+                if (active[selectedIndex].StartAction != ScheduleStartAction.StartImmediately) return false;
             }
 
+            await ApplyScheduledObsEndAsync();
             currentScheduledIndex = selectedIndex;
+            currentScheduledItem = CloneScheduledItem(active[selectedIndex]);
             await PlayScheduledCurrentAsync();
             return true;
         }
 
-        private async Task HandleScheduledEndAsync()
+        private async Task HandleScheduledEndAsync(bool inputEof = false, long eofFrameId = 0,
+            int scheduledIndex = -1, ScheduledPlaylistItem scheduledItem = null)
         {
-            if (!playingScheduled || currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
-            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            int index = scheduledIndex >= 0 ? scheduledIndex : currentScheduledIndex;
+            ScheduledPlaylistItem item = scheduledItem ?? currentScheduledItem;
+            if (item == null && index >= 0 && index < scheduledPlaylist.Count)
+                item = CloneScheduledItem(scheduledPlaylist[index]);
+            if (item == null) return;
             DateTime now = DateTime.Now;
 
-            if (scheduledSlotEndAt != DateTime.MinValue && now >= scheduledSlotEndAt)
+            bool isCurrentSource = currentScheduledItem != null && item.RuntimeId == currentScheduledItem.RuntimeId;
+            DateTime sourceSlotEndAt = isCurrentSource
+                ? scheduledSlotEndAt : GetScheduleWindow(item, now).End;
+            if (sourceSlotEndAt != DateTime.MinValue && now >= sourceSlotEndAt)
             {
-                await FinishScheduledSlotAsync();
+                if (inputEof)
+                    await QueueReturnToNormalPlaylistAsync(eofFrameId, item);
+                else
+                    await FinishScheduledSlotAsync();
                 return;
             }
 
             if (item.HasEndTime && item.EndAction == ScheduleEndAction.WaitUntilEnd) return;
-            bool ended = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase) || string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
-            bool durationReached = item.DurationSeconds > 0 && (now - currentStartedAt).TotalSeconds >= item.DurationSeconds;
+            bool ended = inputEof || string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase) || string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
+            bool durationReached = item.DurationSeconds > 0 && currentPositionSeconds >= item.DurationSeconds;
             if (!ended && !durationReached) return;
 
             if (item.HasEndTime && item.EndAction == ScheduleEndAction.ReplayUntilEnd)
             {
-                await PlayScheduledCurrentAsync();
+                if (inputEof)
+                {
+                    if (!await QueueNextInputAsync(item.Path, item.Options, true)) return;
+                    pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForScheduled(index, item, eofFrameId,
+                        item.LastTriggeredAt, false));
+                    eofSourceScheduled = true;
+                    eofSourceIndex = index;
+                    eofSourceScheduledItem = CloneScheduledItem(item);
+                }
+                else
+                {
+                    currentStartedAt = DateTime.Now;
+                    currentPositionSeconds = 0;
+                    currentDurationSeconds = 0;
+                    currentStatusState = "playing";
+                    currentStatusInput = item.Path;
+                    await PlayInputAsync(item.Path, item.Options);
+                }
                 return;
             }
 
-            await ReturnToNormalPlaylistAsync();
+            if (inputEof)
+            {
+                if (await QueueWaitingScheduledActivationAsync(eofFrameId, item)) return;
+            }
+
+            if (inputEof)
+                await QueueReturnToNormalPlaylistAsync(eofFrameId, item);
+            else
+                await ReturnToNormalPlaylistAsync();
         }
 
         private async Task AutoAdvanceScheduledIfNeededAsync()
         {
-            if (currentScheduledIndex < 0 || currentScheduledIndex >= scheduledPlaylist.Count) return;
+            if (currentScheduledItem == null) return;
             if ((DateTime.Now - lastAutoAdvanceAt).TotalSeconds < 2) return;
-            ScheduledPlaylistItem item = scheduledPlaylist[currentScheduledIndex];
+            ScheduledPlaylistItem item = currentScheduledItem;
             if (scheduledSlotEndAt != DateTime.MinValue) return;
             bool ended = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase) || string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
-            bool durationReached = item.DurationSeconds > 0 && (DateTime.Now - currentStartedAt).TotalSeconds >= item.DurationSeconds;
+            bool durationReached = item.DurationSeconds > 0 && currentPositionSeconds >= item.DurationSeconds;
             if (!ended && !durationReached) return;
             lastAutoAdvanceAt = DateTime.Now;
             await ReturnToNormalPlaylistAsync();
@@ -2537,9 +3348,11 @@ namespace OmniVCamController
 
         private async Task FinishScheduledSlotAsync()
         {
+            await ApplyScheduledObsEndAsync();
             await SendCommandAsync("STOP");
             playingScheduled = false;
             currentScheduledIndex = -1;
+            currentScheduledItem = null;
             scheduledSlotEndAt = DateTime.MinValue;
             currentStatusState = "stopped";
             currentStatusInput = string.Empty;
@@ -2551,19 +3364,36 @@ namespace OmniVCamController
             await PlayCurrentAsync();
         }
 
+        private async Task QueueReturnToNormalPlaylistAsync(long endingFrameId, ScheduledPlaylistItem scheduledItem)
+        {
+            if (playlist.Count == 0) return;
+            int returnIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            PlaylistItem item = playlist[returnIndex];
+            if (!await QueueNextInputAsync(item.Path, item.Options, true)) return;
+            QueueScheduledObsEnd(scheduledItem, endingFrameId);
+            pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForPlaylist(returnIndex, item, endingFrameId));
+            eofSourceScheduled = false;
+            eofSourceIndex = returnIndex;
+            eofSourceScheduledItem = null;
+        }
+
         private async Task ReturnToNormalPlaylistAsync()
         {
+            currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            Task obsEndTask = ApplyScheduledObsEndAsync();
             playingScheduled = false;
             currentScheduledIndex = -1;
+            currentScheduledItem = null;
             scheduledSlotEndAt = DateTime.MinValue;
             RefreshScheduledPlaylistView();
             if (playlist.Count == 0)
             {
+                await obsEndTask;
                 UpdatePlayoutStatusLabel();
                 return;
             }
-            currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
             await PlayCurrentAsync();
+            await obsEndTask;
         }
 
         private void SelectCurrentRow()
@@ -2649,6 +3479,14 @@ namespace OmniVCamController
                     new XAttribute("scheduleEnd", state.ScheduleEnd.ToString("o")),
                     new XAttribute("scheduledTitle", state.ScheduledTitle),
                     new XAttribute("scheduledOptions", state.ScheduledOptions),
+                    new XAttribute("obsUrl", state.ObsUrl),
+                    new XAttribute("obsPassword", state.ObsPassword),
+                    new XAttribute("obsScene", state.ObsScene),
+                    new XAttribute("obsShowSources", state.ObsShowSources),
+                    new XAttribute("obsHideSources", state.ObsHideSources),
+                    new XAttribute("obsEndScene", state.ObsEndScene),
+                    new XAttribute("obsEndShowSources", state.ObsEndShowSources),
+                    new XAttribute("obsEndHideSources", state.ObsEndHideSources),
                     new XAttribute("scheduleEndAction", state.ScheduleEndAction),
                     new XAttribute("scheduleStartAction", state.ScheduleStartAction),
                     new XAttribute("weekDays", state.WeekDays)),
@@ -2672,7 +3510,13 @@ namespace OmniVCamController
                         new XAttribute("hasEndTime", item.HasEndTime ? "1" : "0"),
                         new XAttribute("endAt", item.EndAt.ToString("o")),
                         new XAttribute("endAction", item.EndAction),
-                        new XAttribute("startAction", item.StartAction)))),
+                        new XAttribute("startAction", item.StartAction),
+                        new XAttribute("obsScene", item.ObsScene),
+                        new XAttribute("obsShowSources", item.ObsShowSources),
+                        new XAttribute("obsHideSources", item.ObsHideSources),
+                        new XAttribute("obsEndScene", item.ObsEndScene),
+                        new XAttribute("obsEndShowSources", item.ObsEndShowSources),
+                        new XAttribute("obsEndHideSources", item.ObsEndHideSources)))),
                 new XElement("FavoriteInputs",
                     state.FavoriteInputs.Select(item => new XElement("Item",
                         new XAttribute("input", item.Input),
@@ -2841,6 +3685,14 @@ namespace OmniVCamController
             if (DateTime.TryParse(GetAttribute(settings, "scheduleEnd", null), out dateValue)) scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, dateValue);
             scheduledTitleBox.Text = GetAttribute(settings, "scheduledTitle", scheduledTitleBox.Text);
             scheduledOptionsBox.Text = GetAttribute(settings, "scheduledOptions", scheduledOptionsBox.Text);
+            obsUrlBox.Text = GetAttribute(settings, "obsUrl", obsUrlBox.Text);
+            obsPasswordBox.Text = GetAttribute(settings, "obsPassword", obsPasswordBox.Text);
+            obsSceneBox.Text = GetAttribute(settings, "obsScene", obsSceneBox.Text);
+            obsShowSourcesBox.Text = GetAttribute(settings, "obsShowSources", obsShowSourcesBox.Text);
+            obsHideSourcesBox.Text = GetAttribute(settings, "obsHideSources", obsHideSourcesBox.Text);
+            obsEndSceneBox.Text = GetAttribute(settings, "obsEndScene", obsEndSceneBox.Text);
+            obsEndShowSourcesBox.Text = GetAttribute(settings, "obsEndShowSources", obsEndShowSourcesBox.Text);
+            obsEndHideSourcesBox.Text = GetAttribute(settings, "obsEndHideSources", obsEndHideSourcesBox.Text);
             string endAction = GetAttribute(settings, "scheduleEndAction", GetComboValue(scheduleEndActionBox));
             if (ComboContainsValue(scheduleEndActionBox, endAction)) SetComboValue(scheduleEndActionBox, endAction);
             string startAction = GetAttribute(settings, "scheduleStartAction", GetComboValue(scheduleStartActionBox));
@@ -2867,8 +3719,14 @@ namespace OmniVCamController
 
         private void LoadScheduledPlaylistElement(XElement itemElement)
         {
+            ScheduledPlaylistItem item = ParseScheduledPlaylistElement(itemElement);
+            if (item != null) scheduledPlaylist.Add(item);
+        }
+
+        private ScheduledPlaylistItem ParseScheduledPlaylistElement(XElement itemElement)
+        {
             string itemPath = GetAttribute(itemElement, "path", string.Empty);
-            if (string.IsNullOrWhiteSpace(itemPath)) return;
+            if (string.IsNullOrWhiteSpace(itemPath)) return null;
 
             int duration;
             DateTime startAt;
@@ -2887,7 +3745,7 @@ namespace OmniVCamController
             if (!Enum.TryParse(GetAttribute(itemElement, "endAction", "WaitUntilEnd"), out endAction)) endAction = ScheduleEndAction.WaitUntilEnd;
             if (!Enum.TryParse(GetAttribute(itemElement, "startAction", "StartImmediately"), out startAction)) startAction = ScheduleStartAction.StartImmediately;
 
-            scheduledPlaylist.Add(new ScheduledPlaylistItem
+            return new ScheduledPlaylistItem
             {
                 Path = itemPath,
                 Title = GetAttribute(itemElement, "title", GetInputTitle(itemPath)),
@@ -2901,7 +3759,13 @@ namespace OmniVCamController
                 EndAt = endAt,
                 EndAction = endAction,
                 StartAction = startAction
-            });
+                ,ObsScene = GetAttribute(itemElement, "obsScene", string.Empty)
+                ,ObsShowSources = GetAttribute(itemElement, "obsShowSources", string.Empty)
+                ,ObsHideSources = GetAttribute(itemElement, "obsHideSources", string.Empty)
+                ,ObsEndScene = GetAttribute(itemElement, "obsEndScene", string.Empty)
+                ,ObsEndShowSources = GetAttribute(itemElement, "obsEndShowSources", string.Empty)
+                ,ObsEndHideSources = GetAttribute(itemElement, "obsEndHideSources", string.Empty)
+            };
         }
 
         private void LoadFavoriteInputElement(XElement itemElement)
@@ -2993,7 +3857,7 @@ namespace OmniVCamController
         private string GetCurrentPlaybackTitle(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return string.Empty;
-            if (playingScheduled && currentScheduledIndex >= 0 && currentScheduledIndex < scheduledPlaylist.Count && PathsEqual(scheduledPlaylist[currentScheduledIndex].Path, path)) return scheduledPlaylist[currentScheduledIndex].Title;
+            if (playingScheduled && currentScheduledItem != null && PathsEqual(currentScheduledItem.Path, path)) return currentScheduledItem.Title;
             if (!playingScheduled && currentIndex >= 0 && currentIndex < playlist.Count && PathsEqual(playlist[currentIndex].Path, path)) return playlist[currentIndex].Title;
             if (PathsEqual(inputBox.Text.Trim(), path) && !string.IsNullOrWhiteSpace(titleBox.Text)) return titleBox.Text.Trim();
             ScheduledPlaylistItem scheduled = scheduledPlaylist.FirstOrDefault(item => PathsEqual(item.Path, path));
@@ -3062,8 +3926,7 @@ namespace OmniVCamController
 
         private void RefreshPlaylistView()
         {
-            playlistView.BeginUpdate();
-            playlistView.Items.Clear();
+            var rows = new List<ListViewItem>(playlist.Count);
             for (int i = 0; i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
@@ -3078,16 +3941,15 @@ namespace OmniVCamController
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
                 else if (isCurrent) row.BackColor = Color.FromArgb(225, 245, 225);
                 else if (item.IsBumper) row.BackColor = Color.FromArgb(245, 245, 230);
-                playlistView.Items.Add(row);
+                rows.Add(row);
             }
-            playlistView.EndUpdate();
+            SynchronizeListViewRows(playlistView, rows);
             SelectCurrentRow();
         }
 
         private void RefreshScheduledPlaylistView()
         {
-            scheduledPlaylistView.BeginUpdate();
-            scheduledPlaylistView.Items.Clear();
+            var rows = new List<ListViewItem>(scheduledPlaylist.Count);
             for (int i = 0; i < scheduledPlaylist.Count; i++)
             {
                 ScheduledPlaylistItem item = scheduledPlaylist[i];
@@ -3101,47 +3963,105 @@ namespace OmniVCamController
                 row.SubItems.Add(FormatScheduleEnd(item));
                 row.SubItems.Add(StartActionText(item.StartAction));
                 row.SubItems.Add(EndActionText(item.EndAction));
+                row.SubItems.Add(FormatObsAction(item.ObsScene, item.ObsShowSources, item.ObsHideSources));
+                row.SubItems.Add(FormatObsAction(item.ObsEndScene, item.ObsEndShowSources, item.ObsEndHideSources));
                 row.SubItems.Add(FormatLastTriggered(item.LastTriggeredAt));
                 row.SubItems.Add(item.Path);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
                 else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
                 else if (FormatScheduledIdleStatus(item, window) == T("Blocked")) row.BackColor = Color.FromArgb(255, 248, 220);
-                scheduledPlaylistView.Items.Add(row);
+                rows.Add(row);
             }
-            scheduledPlaylistView.EndUpdate();
+            SynchronizeListViewRows(scheduledPlaylistView, rows);
             SelectCurrentScheduledRow();
+            UpdatePlayoutStatusLabel();
+        }
+
+        private static void SynchronizeListViewRows(ListView view, IList<ListViewItem> desiredRows)
+        {
+            if (!ListViewRowsChanged(view, desiredRows)) return;
+            view.BeginUpdate();
+            try
+            {
+                int sharedCount = Math.Min(view.Items.Count, desiredRows.Count);
+                for (int i = 0; i < sharedCount; i++)
+                {
+                    ListViewItem current = view.Items[i];
+                    ListViewItem desired = desiredRows[i];
+                    while (current.SubItems.Count < desired.SubItems.Count) current.SubItems.Add(string.Empty);
+                    while (current.SubItems.Count > desired.SubItems.Count) current.SubItems.RemoveAt(current.SubItems.Count - 1);
+                    for (int column = 0; column < desired.SubItems.Count; column++)
+                    {
+                        string text = desired.SubItems[column].Text;
+                        if (!string.Equals(current.SubItems[column].Text, text, StringComparison.Ordinal))
+                            current.SubItems[column].Text = text;
+                    }
+                    if (current.BackColor != desired.BackColor) current.BackColor = desired.BackColor;
+                    if (current.ForeColor != desired.ForeColor) current.ForeColor = desired.ForeColor;
+                }
+                while (view.Items.Count > desiredRows.Count) view.Items.RemoveAt(view.Items.Count - 1);
+                for (int i = view.Items.Count; i < desiredRows.Count; i++) view.Items.Add(desiredRows[i]);
+            }
+            finally
+            {
+                view.EndUpdate();
+            }
+        }
+
+        private static bool ListViewRowsChanged(ListView view, IList<ListViewItem> desiredRows)
+        {
+            if (view.Items.Count != desiredRows.Count) return true;
+            for (int i = 0; i < desiredRows.Count; i++)
+            {
+                ListViewItem current = view.Items[i];
+                ListViewItem desired = desiredRows[i];
+                if (current.SubItems.Count != desired.SubItems.Count || current.BackColor != desired.BackColor ||
+                    current.ForeColor != desired.ForeColor) return true;
+                for (int column = 0; column < desired.SubItems.Count; column++)
+                {
+                    if (!string.Equals(current.SubItems[column].Text, desired.SubItems[column].Text, StringComparison.Ordinal)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static void SetListViewText(ListViewItem row, int column, string value)
+        {
+            value = value ?? string.Empty;
+            if (!string.Equals(row.SubItems[column].Text, value, StringComparison.Ordinal)) row.SubItems[column].Text = value;
+        }
+
+        private static void SetListViewBackColor(ListViewItem row, Color color)
+        {
+            if (row.BackColor != color) row.BackColor = color;
         }
 
         private void UpdatePlaylistStatusView()
         {
             string statusPath = GetStatusInputPath(currentStatusInput);
-            playlistView.BeginUpdate();
             for (int i = 0; i < playlistView.Items.Count && i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
                 bool isCurrent = !playingScheduled && PathsEqual(item.Path, statusPath);
                 ListViewItem row = playlistView.Items[i];
-                row.SubItems[1].Text = isCurrent ? FormatState(currentStatusState) : string.Empty;
-                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
-                else if (isCurrent) row.BackColor = Color.FromArgb(225, 245, 225);
-                else row.BackColor = item.IsBumper ? Color.FromArgb(245, 245, 230) : SystemColors.Window;
+                SetListViewText(row, 1, isCurrent ? FormatState(currentStatusState) : string.Empty);
+                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) SetListViewBackColor(row, Color.FromArgb(255, 230, 230));
+                else if (isCurrent) SetListViewBackColor(row, Color.FromArgb(225, 245, 225));
+                else SetListViewBackColor(row, item.IsBumper ? Color.FromArgb(245, 245, 230) : SystemColors.Window);
             }
-            playlistView.EndUpdate();
-            scheduledPlaylistView.BeginUpdate();
             for (int i = 0; i < scheduledPlaylistView.Items.Count && i < scheduledPlaylist.Count; i++)
             {
                 bool isCurrent = playingScheduled && i == currentScheduledIndex;
                 ListViewItem row = scheduledPlaylistView.Items[i];
                 ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
                 string idleStatus = FormatScheduledIdleStatus(scheduledPlaylist[i], window);
-                row.SubItems[1].Text = isCurrent ? FormatState(currentStatusState) : idleStatus;
-                row.SubItems[8].Text = FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt);
-                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
-                else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
-                else if (idleStatus == T("Blocked")) row.BackColor = Color.FromArgb(255, 248, 220);
-                else row.BackColor = SystemColors.Window;
+                SetListViewText(row, 1, isCurrent ? FormatState(currentStatusState) : idleStatus);
+                SetListViewText(row, 10, FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt));
+                if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) SetListViewBackColor(row, Color.FromArgb(255, 230, 230));
+                else if (isCurrent) SetListViewBackColor(row, Color.FromArgb(220, 238, 255));
+                else if (idleStatus == T("Blocked")) SetListViewBackColor(row, Color.FromArgb(255, 248, 220));
+                else SetListViewBackColor(row, SystemColors.Window);
             }
-            scheduledPlaylistView.EndUpdate();
         }
 
         private async Task SendCommandAsync(string command)
@@ -3228,8 +4148,15 @@ namespace OmniVCamController
 
         private async Task RefreshStatusAsync()
         {
-            string reply = await SendRawCommandAsync("STATUS");
-            if (reply == null || !reply.StartsWith("OK seconds=", StringComparison.OrdinalIgnoreCase)) return;
+            if (refreshingStatus) return;
+            refreshingStatus = true;
+            try
+            {
+                int statusGeneration = commandClient.Generation;
+                ConnectionTabState statusState = activeState;
+                string reply = await SendRawCommandAsync("STATUS");
+                if (statusGeneration != commandClient.Generation || !ReferenceEquals(statusState, activeState)) return;
+                if (reply == null || !reply.StartsWith("OK seconds=", StringComparison.OrdinalIgnoreCase)) return;
             string value = reply.Substring("OK seconds=".Length);
             int space = value.IndexOf(' ');
             if (space >= 0) value = value.Substring(0, space);
@@ -3281,6 +4208,11 @@ namespace OmniVCamController
                     updatingProgress = false;
                 }
                 WriteNowPlayingXml();
+            }
+            }
+            finally
+            {
+                refreshingStatus = false;
             }
         }
         private static long ParseStatusLong(string reply, string key)
@@ -3344,7 +4276,8 @@ namespace OmniVCamController
             string source = playingScheduled ? T("Scheduled") : T("NormalPlaylist");
             playoutStatusLabel.Text = TF("PlayoutStatus", running, source, FormatState(currentStatusState));
             playoutStatusLabel.ForeColor = playoutRunning ? Color.DarkGreen : SystemColors.ControlText;
-            playoutStatusLabel.Font = new Font(playoutStatusLabel.Font, playoutRunning ? FontStyle.Bold : FontStyle.Regular);
+            playoutStatusLabel.Font = new Font(playoutStatusLabel.Font,
+                playoutRunning ? FontStyle.Bold : FontStyle.Regular);
         }
 
         private bool IsCurrentPlaybackActive()
@@ -3352,6 +4285,16 @@ namespace OmniVCamController
             return string.Equals(currentStatusState, "playing", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(currentStatusState, "paused", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(currentStatusState, "opening", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsWaitingScheduledSlotActive(DateTime now)
+        {
+            if (!playingScheduled || currentScheduledItem == null) return false;
+            ScheduledPlaylistItem item = currentScheduledItem;
+            return item.HasEndTime &&
+                   item.EndAction == ScheduleEndAction.WaitUntilEnd &&
+                   scheduledSlotEndAt != DateTime.MinValue &&
+                   now < scheduledSlotEndAt;
         }
 
         private void UpdateManualPlayButtonText()
@@ -3373,8 +4316,14 @@ namespace OmniVCamController
 
         private ScheduleWindow GetScheduleWindow(int index, DateTime now)
         {
-            if (index < 0 || index >= scheduledPlaylist.Count) return ScheduleWindow.Empty;
-            ScheduledPlaylistItem item = scheduledPlaylist[index];
+            List<ScheduledPlaylistItem> active = scheduledPlaylist;
+            if (index < 0 || index >= active.Count) return ScheduleWindow.Empty;
+            return GetScheduleWindow(active[index], now);
+        }
+
+        private ScheduleWindow GetScheduleWindow(ScheduledPlaylistItem item, DateTime now)
+        {
+            if (item == null) return ScheduleWindow.Empty;
             DateTime start = GetCurrentScheduleStart(item, now);
             if (start == DateTime.MinValue) return ScheduleWindow.Empty;
             if (!string.IsNullOrEmpty(GetScheduledItemValidationError(item))) return ScheduleWindow.Empty;
@@ -3382,6 +4331,70 @@ namespace OmniVCamController
             DateTime end = item.HasEndTime ? GetExplicitScheduleEnd(item, start) : GetNextScheduleStart(start);
             if (end <= start) end = DateTime.MaxValue;
             return new ScheduleWindow(start, end, now >= start && now < end);
+        }
+
+        private int FindScheduledItemIndex(Guid runtimeId)
+        {
+            if (runtimeId == Guid.Empty) return -1;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+                if (scheduledPlaylist[i].RuntimeId == runtimeId) return i;
+            return -1;
+        }
+
+        private void RefreshCurrentScheduledIndex()
+        {
+            currentScheduledIndex = currentScheduledItem == null
+                ? -1 : FindScheduledItemIndex(currentScheduledItem.RuntimeId);
+        }
+
+        private int FindPlaylistItemIndex(Guid runtimeId)
+        {
+            if (runtimeId == Guid.Empty) return -1;
+            for (int i = 0; i < playlist.Count; i++)
+                if (playlist[i].RuntimeId == runtimeId) return i;
+            return -1;
+        }
+
+        private static PlaylistItem ClonePlaylistItem(PlaylistItem item)
+        {
+            if (item == null) return null;
+            return new PlaylistItem
+            {
+                RuntimeId = item.RuntimeId,
+                Path = item.Path,
+                Title = item.Title,
+                DurationSeconds = item.DurationSeconds,
+                Options = item.Options,
+                IsBumper = item.IsBumper
+            };
+        }
+
+        private static ScheduledPlaylistItem CloneScheduledItem(ScheduledPlaylistItem item)
+        {
+            if (item == null) return null;
+            return new ScheduledPlaylistItem
+            {
+                RuntimeId = item.RuntimeId,
+                Path = item.Path,
+                Title = item.Title,
+                DurationSeconds = item.DurationSeconds,
+                Options = item.Options,
+                ScheduleKind = item.ScheduleKind,
+                StartAt = item.StartAt,
+                WeeklyTime = item.WeeklyTime,
+                WeekDays = item.WeekDays,
+                HasEndTime = item.HasEndTime,
+                EndAt = item.EndAt,
+                EndAction = item.EndAction,
+                StartAction = item.StartAction,
+                LastTriggeredAt = item.LastTriggeredAt,
+                ObsScene = item.ObsScene,
+                ObsShowSources = item.ObsShowSources,
+                ObsHideSources = item.ObsHideSources,
+                ObsEndScene = item.ObsEndScene,
+                ObsEndShowSources = item.ObsEndShowSources,
+                ObsEndHideSources = item.ObsEndHideSources
+            };
         }
 
         private DateTime GetCurrentScheduleStart(ScheduledPlaylistItem item, DateTime now)
@@ -3410,9 +4423,10 @@ namespace OmniVCamController
         private DateTime GetNextScheduleStart(DateTime start)
         {
             DateTime best = DateTime.MaxValue;
-            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            List<ScheduledPlaylistItem> active = scheduledPlaylist;
+            for (int i = 0; i < active.Count; i++)
             {
-                DateTime candidate = GetNextScheduleStartAfter(scheduledPlaylist[i], start);
+                DateTime candidate = GetNextScheduleStartAfter(active[i], start);
                 if (candidate > start && candidate < best) best = candidate;
             }
             return best;
@@ -3669,11 +4683,14 @@ namespace OmniVCamController
         private sealed class TcpCommandClient : IDisposable
         {
             private const int CommandTimeoutMs = 5000;
+            private const int ConnectTimeoutMs = 3000;
             private readonly Action<string, int> logCallback;
+            private readonly Action<string, int> eventCallback;
             private readonly SemaphoreSlim writeLock = new SemaphoreSlim(1, 1);
             private readonly ConcurrentQueue<TaskCompletionSource<string>> pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
             private readonly object sync = new object();
             private TcpClient client;
+            private TcpClient connectingClient;
             private NetworkStream stream;
             private CancellationTokenSource cts = new CancellationTokenSource();
             private Task readTask;
@@ -3682,9 +4699,10 @@ namespace OmniVCamController
             private bool disposed;
             private int generation;
 
-            public TcpCommandClient(Action<string, int> logCallback)
+            public TcpCommandClient(Action<string, int> logCallback, Action<string, int> eventCallback)
             {
                 this.logCallback = logCallback;
+                this.eventCallback = eventCallback;
             }
 
             public int Generation { get { return generation; } }
@@ -3698,14 +4716,15 @@ namespace OmniVCamController
             public async Task<string> SendAsync(string host, int port, string command)
             {
                 if (disposed) return "ERR client disposed";
+                int requestGeneration = generation;
                 try
                 {
                     await EnsureConnectedAsync(host, port);
                     var tcs = new TaskCompletionSource<string>();
-                    pendingReplies.Enqueue(tcs);
                     await writeLock.WaitAsync();
                     try
                     {
+                        pendingReplies.Enqueue(tcs);
                         byte[] data = Encoding.UTF8.GetBytes(command + "\n");
                         await stream.WriteAsync(data, 0, data.Length, cts.Token);
                         await stream.FlushAsync(cts.Token);
@@ -3718,13 +4737,13 @@ namespace OmniVCamController
                     if (finished != tcs.Task)
                     {
                         tcs.TrySetResult("ERR command timeout");
-                        Disconnect();
+                        DisconnectIfGeneration(requestGeneration);
                     }
                     return await tcs.Task;
                 }
                 catch (Exception ex)
                 {
-                    Disconnect();
+                    DisconnectIfGeneration(requestGeneration);
                     return "ERR " + ex.Message;
                 }
             }
@@ -3746,9 +4765,24 @@ namespace OmniVCamController
                     Disconnect();
                     cts = new CancellationTokenSource();
                     var newClient = new TcpClient();
-                    await newClient.ConnectAsync(host, port);
+                    int connectGeneration = generation;
+                    lock (sync) connectingClient = newClient;
+                    Task connectTask = newClient.ConnectAsync(host, port);
+                    Task finished = await Task.WhenAny(connectTask, Task.Delay(ConnectTimeoutMs));
+                    if (finished != connectTask)
+                    {
+                        try { newClient.Close(); } catch { }
+                        throw new TimeoutException("connection timeout");
+                    }
+                    await connectTask;
                     lock (sync)
                     {
+                        if (connectGeneration != generation)
+                        {
+                            newClient.Close();
+                            throw new OperationCanceledException("connection was cancelled");
+                        }
+                        connectingClient = null;
                         client = newClient;
                         stream = client.GetStream();
                         this.host = host;
@@ -3759,6 +4793,14 @@ namespace OmniVCamController
                 }
                 finally
                 {
+                    lock (sync)
+                    {
+                        if (connectingClient != null && !ReferenceEquals(connectingClient, client))
+                        {
+                            try { connectingClient.Close(); } catch { }
+                            connectingClient = null;
+                        }
+                    }
                     writeLock.Release();
                 }
             }
@@ -3776,6 +4818,11 @@ namespace OmniVCamController
                             if (line.StartsWith("LOG ", StringComparison.OrdinalIgnoreCase))
                             {
                                 logCallback(ParseLogLine(line), readGeneration);
+                                continue;
+                            }
+                            if (line.StartsWith("EVENT ", StringComparison.OrdinalIgnoreCase))
+                            {
+                                eventCallback?.Invoke(line.Substring(6).TrimStart(), readGeneration);
                                 continue;
                             }
                             if (pendingReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult(line);
@@ -3803,16 +4850,25 @@ namespace OmniVCamController
             private void Disconnect()
             {
                 TcpClient oldClient = null;
+                TcpClient oldConnectingClient = null;
                 lock (sync)
                 {
                     if (cts != null && !cts.IsCancellationRequested) cts.Cancel();
                     oldClient = client;
+                    oldConnectingClient = connectingClient;
                     client = null;
+                    connectingClient = null;
                     stream = null;
                     host = null;
                     port = 0;
                 }
+                try { oldConnectingClient?.Close(); } catch { }
                 try { oldClient?.Close(); } catch { }
+            }
+
+            private void DisconnectIfGeneration(int expectedGeneration)
+            {
+                if (expectedGeneration == generation) Disconnect();
             }
 
             public void Dispose()
@@ -3825,6 +4881,7 @@ namespace OmniVCamController
         }
         private sealed class PlaylistItem
         {
+            public Guid RuntimeId { get; set; } = Guid.NewGuid();
             public string Path { get; set; } = string.Empty;
             public string Title { get; set; } = string.Empty;
             public int DurationSeconds { get; set; }
@@ -3834,6 +4891,7 @@ namespace OmniVCamController
 
         private sealed class ScheduledPlaylistItem
         {
+            public Guid RuntimeId { get; set; } = Guid.NewGuid();
             public string Path { get; set; } = string.Empty;
             public string Title { get; set; } = string.Empty;
             public int DurationSeconds { get; set; }
@@ -3847,6 +4905,60 @@ namespace OmniVCamController
             public ScheduleEndAction EndAction { get; set; }
             public ScheduleStartAction StartAction { get; set; }
             public DateTime LastTriggeredAt { get; set; } = DateTime.MinValue;
+            public string ObsScene { get; set; } = string.Empty;
+            public string ObsShowSources { get; set; } = string.Empty;
+            public string ObsHideSources { get; set; } = string.Empty;
+            public string ObsEndScene { get; set; } = string.Empty;
+            public string ObsEndShowSources { get; set; } = string.Empty;
+            public string ObsEndHideSources { get; set; } = string.Empty;
+        }
+
+        private sealed class ScheduledObsAction
+        {
+            public string Scene { get; set; } = string.Empty;
+            public string ShowSources { get; set; } = string.Empty;
+            public string HideSources { get; set; } = string.Empty;
+            public string Url { get; set; } = string.Empty;
+            public string Password { get; set; } = string.Empty;
+            public long FrameId { get; set; }
+        }
+
+        private sealed class PendingPlaybackActivation
+        {
+            public bool Scheduled { get; private set; }
+            public int Index { get; private set; }
+            public long FrameId { get; private set; }
+            public DateTime WindowStart { get; private set; }
+            public bool ApplyObsStart { get; private set; }
+            public PlaylistItem PlaylistItem { get; private set; }
+            public ScheduledPlaylistItem ScheduledItem { get; private set; }
+            public DateTime QueuedAtUtc { get; private set; }
+
+            public static PendingPlaybackActivation ForPlaylist(int index, PlaylistItem item, long frameId)
+            {
+                return new PendingPlaybackActivation
+                {
+                    Index = index,
+                    PlaylistItem = ClonePlaylistItem(item),
+                    FrameId = frameId,
+                    QueuedAtUtc = DateTime.UtcNow
+                };
+            }
+
+            public static PendingPlaybackActivation ForScheduled(int index, ScheduledPlaylistItem item, long frameId,
+                DateTime windowStart, bool applyObsStart)
+            {
+                return new PendingPlaybackActivation
+                {
+                    Scheduled = true,
+                    Index = index,
+                    ScheduledItem = CloneScheduledItem(item),
+                    FrameId = frameId,
+                    WindowStart = windowStart,
+                    ApplyObsStart = applyObsStart,
+                    QueuedAtUtc = DateTime.UtcNow
+                };
+            }
         }
 
         private struct ScheduleWindow
@@ -3952,6 +5064,14 @@ namespace OmniVCamController
             public DateTime ScheduleEnd { get; set; } = DateTime.Now.AddMinutes(30);
             public string ScheduledTitle { get; set; } = string.Empty;
             public string ScheduledOptions { get; set; } = string.Empty;
+            public string ObsUrl { get; set; } = "ws://127.0.0.1:4455";
+            public string ObsPassword { get; set; } = string.Empty;
+            public string ObsScene { get; set; } = string.Empty;
+            public string ObsShowSources { get; set; } = string.Empty;
+            public string ObsHideSources { get; set; } = string.Empty;
+            public string ObsEndScene { get; set; } = string.Empty;
+            public string ObsEndShowSources { get; set; } = string.Empty;
+            public string ObsEndHideSources { get; set; } = string.Empty;
             public string ScheduleEndAction { get; set; } = "Wait until end";
             public string ScheduleStartAction { get; set; } = "Start immediately";
             public int WeekDays { get; set; }
@@ -3960,8 +5080,10 @@ namespace OmniVCamController
             public List<FavoriteInputItem> FavoriteInputs { get; set; } = new List<FavoriteInputItem>();
             public int CurrentIndex { get; set; } = -1;
             public int CurrentScheduledIndex { get; set; } = -1;
+            public ScheduledPlaylistItem CurrentScheduledItem { get; set; }
             public bool PlayoutRunning { get; set; }
             public bool PlayingScheduled { get; set; }
+            public bool ScheduledObsEndApplied { get; set; }
             public bool WaitingForScheduledStart { get; set; }
             public DateTime ScheduledSlotEndAt { get; set; } = DateTime.MinValue;
             public DateTime CurrentStartedAt { get; set; }

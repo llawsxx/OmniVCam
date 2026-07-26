@@ -17,6 +17,7 @@
 #include "global.h"
 
 #define FRAME_QUEUE_MAX_COUNT_LIMIT 256
+#define SEAMLESS_DRAIN_RESERVE_MS 750
 
 static int clamp_frame_queue_max_count(int64_t max_count)
 {
@@ -36,12 +37,10 @@ static int64_t universal_to_seconds(int64_t value)
 
 void frame_queue_wait_empty(frame_queue* q, int *exit) {
 	EnterCriticalSection(&q->mutex);
-
 	q->reached_center = 0;
 	q->center_count = -1;
 	q->left_count = -1;
 	q->right_count = -1;
-
 	while (q->count > 0 && !q->abort_request && !(*exit))
 	{
 		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
@@ -64,6 +63,15 @@ static int frame_queue_is_empty(frame_queue* q)
 	return empty;
 }
 
+static int frame_queue_count(frame_queue* q)
+{
+	int count;
+	EnterCriticalSection(&q->mutex);
+	count = q->count;
+	LeaveCriticalSection(&q->mutex);
+	return count;
+}
+
 static int inout_ctx_frame_queues_empty(inout_context* ctx)
 {
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
@@ -72,7 +80,7 @@ static int inout_ctx_frame_queues_empty(inout_context* ctx)
 	return 1;
 }
 
-static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit);
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int media_mask, int64_t input_fmt_start_time, int *exit);
 
 static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 {
@@ -83,7 +91,7 @@ static void enqueue_config_status_frame(inout_context* ctx, const char* text)
 	if (frame) {
 		int exit = 0;
 		if (ctx->input_frame_id == 0) ctx->input_frame_id = av_gettime_relative();
-		frame_enqueue(ctx->frame_queues[0], frame, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &exit);
+		frame_enqueue(ctx->frame_queues[0], frame, ctx->timeout, ctx->input_frame_id, INPUT_MEDIA_VIDEO, ctx->input_start_time, &exit);
 		av_frame_free(&frame);
 	}
 	test_card_free(card);
@@ -337,7 +345,7 @@ static void diagnostics_get_text(char* dst, size_t dst_size)
 		g_frame_diagnostics.audio_logic[0] ? g_frame_diagnostics.audio_logic : "audio.output_logic method=unknown");
 	LeaveCriticalSection(&g_frame_diagnostics.mutex);
 }
-static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int64_t input_fmt_start_time, int *exit) {
+static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t frame_id, int media_mask, int64_t input_fmt_start_time, int *exit) {
 	int ret = 0;
 	int wake = 0;
 	EnterCriticalSection(&q->mutex);
@@ -378,21 +386,10 @@ static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t
 		frame->pts -= input_fmt_start_time;
 	}
 
-	if (q->last_pts_value != AV_NOPTS_VALUE) {
-		if (frame->pts != AV_NOPTS_VALUE)
-		{
-			q->last_interval = frame->pts - q->last_pts_value;
-		}
-		else if (frame->pts == AV_NOPTS_VALUE && q->last_interval != AV_NOPTS_VALUE)
-		{
-			frame->pts = q->last_pts_value + q->last_interval;
-		}
-	}
-	q->last_pts_value = frame->pts;
-
 	av_frame_move_ref(node->frame, frame);
 	node->next = NULL;
 	node->frame_id = frame_id;
+	node->media_mask = media_mask;
 
 	if (q->rear == NULL)
 	{
@@ -418,24 +415,16 @@ static int frame_enqueue(frame_queue *q, AVFrame* frame,int64_t timeout, int64_t
 				q->front = q->rear = NULL;
 				break;
 			}
-			else {
-				q->front = temp;
-			}
-
+			q->front = temp;
 			if (q->count <= q->center_count) {
-				if (q->front) {
-					q->front->reset = 1;
-				}
+				if (q->front) q->front->reset = 1;
 				break;
 			}
 		}
 	}
-
 	if (q->center_count != -1 && q->count >= q->center_count && q->reached_center == 0) {
 		q->reached_center = 1;
-		if (q->front) {
-			q->front->reset = 1;
-		}
+		if (q->front) q->front->reset = 1;
 	}
 end:
 	LeaveCriticalSection(&q->mutex);
@@ -444,17 +433,15 @@ end:
 }
 
 
-int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int wait, int*reset) {
+int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int* media_mask, int wait, int*reset) {
 	av_frame_unref(frame);
 	int ret = -1;
 	EnterCriticalSection(&q->mutex);
 	*reset = 0;
 
 	while (1) {
-		if (q->left_count != -1 && q->center_count != -1 && q->count <= q->left_count && q->reached_center == 1) {
+		if (q->left_count != -1 && q->center_count != -1 && q->count <= q->left_count && q->reached_center == 1)
 			q->reached_center = 0;
-		}
-
 		if (q->front && (q->center_count == -1 || q->reached_center)) break;
 		if (!wait) {
 			LeaveCriticalSection(&q->mutex);
@@ -474,6 +461,7 @@ int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int wait, i
 	avframe_node* temp = q->front->next;
 	av_frame_move_ref(frame, q->front->frame);
 	*frame_id = q->front->frame_id;
+	if (media_mask) *media_mask = q->front->media_mask;
 	*reset = q->front->reset;
 	av_frame_free(&q->front->frame);
 	av_free(q->front);
@@ -503,8 +491,6 @@ frame_queue* frame_queue_alloc(int max_count)
 	q->left_count = -1;
 	q->center_count = -1;
 	q->right_count = -1;
-	q->last_pts_value = AV_NOPTS_VALUE;
-	q->last_interval = AV_NOPTS_VALUE;
 	return q;
 }
 
@@ -512,8 +498,6 @@ void frame_queue_clean(frame_queue* q)
 {
 	EnterCriticalSection(&q->mutex);
 	q->reached_center = 0;
-	q->last_interval = AV_NOPTS_VALUE;
-	q->last_pts_value = AV_NOPTS_VALUE;
 	if (!q->front)
 	{
 		LeaveCriticalSection(&q->mutex);
@@ -558,11 +542,9 @@ void frame_queue_free(frame_queue **q)
 
 void frame_queue_set(frame_queue *q, int left_count, int right_count, int center_count) {
 	EnterCriticalSection(&q->mutex);
-
 	q->reached_center = 0;
 	if (left_count == -1 || right_count == -1) {
-		if (center_count != -1)
-		{
+		if (center_count != -1) {
 			q->left_count = 0;
 			q->right_count = INT32_MAX;
 			q->center_count = center_count;
@@ -575,22 +557,41 @@ void frame_queue_set(frame_queue *q, int left_count, int right_count, int center
 		}
 		goto end;
 	}
-
 	if (left_count < 0) left_count = 0;
-
 	if (right_count - left_count < 2) right_count = left_count + 2;
 	if (right_count > FRAME_QUEUE_MAX_COUNT_LIMIT) right_count = FRAME_QUEUE_MAX_COUNT_LIMIT;
 	if (left_count > right_count - 2) left_count = right_count - 2;
 	if (left_count < 0) left_count = 0;
-
-	if (center_count > left_count && center_count < right_count)
-		q->center_count = center_count;
-	else
-		q->center_count = (right_count + left_count) / 2;
+	q->center_count = center_count > left_count && center_count < right_count
+		? center_count : (right_count + left_count) / 2;
 	q->left_count = left_count;
 	q->right_count = right_count;
 	q->max_count = clamp_frame_queue_max_count(right_count);
 end:
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
+}
+
+typedef struct frame_queue_drain_state {
+	int max_count;
+} frame_queue_drain_state;
+
+static void frame_queue_begin_natural_drain(frame_queue* q, int reserve_count, frame_queue_drain_state* state)
+{
+	if (!q || !state) return;
+	EnterCriticalSection(&q->mutex);
+	state->max_count = q->max_count;
+	/* Buffer enough old-input tail to hide the variable time spent opening the next input. */
+	q->max_count = FFMAX(q->max_count, clamp_frame_queue_max_count(reserve_count));
+	LeaveCriticalSection(&q->mutex);
+	WakeAllConditionVariable(&q->cond);
+}
+
+static void frame_queue_end_natural_drain(frame_queue* q, const frame_queue_drain_state* state)
+{
+	if (!q || !state) return;
+	EnterCriticalSection(&q->mutex);
+	q->max_count = state->max_count;
 	LeaveCriticalSection(&q->mutex);
 	WakeAllConditionVariable(&q->cond);
 }
@@ -945,7 +946,7 @@ static void reset_audio_after_stream_change(inout_context* ctx)
 	ctx->decoders[1].sent_eof = 0;
 	ctx->last_audio_decode_time = av_gettime_relative();
 }
-void inout_context_reset_input(inout_context* ctx)
+void inout_context_reset_input(inout_context* ctx, int preserve_output)
 {
 	if (!ctx) return;
 	free_thread(&ctx->reading_tid);
@@ -972,17 +973,21 @@ void inout_context_reset_input(inout_context* ctx)
 
 	EnterCriticalSection(&ctx->input_change_mutex);
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
-		frame_queue_clean(ctx->frame_queues[i]);
-		frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
+		if (!preserve_output) {
+			frame_queue_clean(ctx->frame_queues[i]);
+			frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
+		}
 	}
 	frame_queue_clean(ctx->decoded_video_frame_queue);
 	frame_queue_clean(ctx->decoded_audio_frame_queue);
-	ctx->output_time_offset = AV_NOPTS_VALUE;
-	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
-	ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
-	ctx->output_last_audio_nb_samples = 0;
-	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
-	av_audio_fifo_reset(ctx->output_audio_fifo);
+	if (!preserve_output) {
+		ctx->output_time_offset = AV_NOPTS_VALUE;
+		ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+		ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+		ctx->output_last_audio_nb_samples = 0;
+		ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+		av_audio_fifo_reset(ctx->output_audio_fifo);
+	}
 	LeaveCriticalSection(&ctx->input_change_mutex);
 
 	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++)
@@ -1022,6 +1027,7 @@ void inout_context_reset_input(inout_context* ctx)
 	ctx->force_exit = 0;
 	ctx->eof = 0;
 	ctx->input_start_time = AV_NOPTS_VALUE;
+	ctx->input_media_mask = 0;
 
 }
 
@@ -1282,11 +1288,20 @@ int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_conte
 	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<OBSVCAM>") == 0 || strcmp(name, "<DSHOW>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
+		ctx->input_media_mask = 0;
 		if (strcmp(name, "<OBSVCAM>") == 0){
+			ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 			frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count, queue_center_count);
 		}
 		else if (strcmp(name, "<DSHOW>") == 0 && dshow_source_open(ctx, dict_opts, queue_left_count, queue_right_count, queue_center_count) < 0) {
 			return -1;
+		}
+		else if (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0) {
+			ctx->input_media_mask = INPUT_MEDIA_VIDEO;
+		}
+		if (strcmp(name, "<DSHOW>") == 0) {
+			if (ctx->dshow_options.device && ctx->dshow_options.device[0]) ctx->input_media_mask |= INPUT_MEDIA_VIDEO;
+			if (ctx->dshow_options.audio_device && ctx->dshow_options.audio_device[0]) ctx->input_media_mask |= INPUT_MEDIA_AUDIO;
 		}
 		return 0;
 	}
@@ -1363,6 +1378,9 @@ int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_conte
 	}
 
 	ctx->input_frame_id = av_gettime_relative();
+	ctx->input_media_mask = 0;
+	if (ctx->decoders[0].avctx) ctx->input_media_mask |= INPUT_MEDIA_VIDEO;
+	if (ctx->decoders[1].avctx) ctx->input_media_mask |= INPUT_MEDIA_AUDIO;
 
 	if(ctx->decoders[0].index >= 0)
 		frame_queue_set(ctx->frame_queues[0], queue_left_count, queue_right_count, queue_center_count);
@@ -1382,6 +1400,8 @@ DWORD WINAPI reading_input(LPVOID p)
 {
 	inout_context* ctx = (inout_context*)p;
 	AVPacket* pkt = av_packet_alloc();
+	int64_t frame_id = ctx->input_frame_id;
+	int natural_eof = 0;
 
 	int ret;
 
@@ -1394,6 +1414,7 @@ DWORD WINAPI reading_input(LPVOID p)
 			else continue;
 		}
 		else if(ret < 0){
+			natural_eof = !ctx->force_exit;
 			break;
 		}
 
@@ -1427,6 +1448,8 @@ DWORD WINAPI reading_input(LPVOID p)
 	ctx->eof = 1;
 	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
 		packet_queue_set_abort(&ctx->queues[i], 1);
+	if (natural_eof && ctx->input_eof_callback)
+		ctx->input_eof_callback(ctx->input_eof_private, frame_id);
 	return 0;
 }
 
@@ -2039,7 +2062,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		}
 		diagnostics_record_video_logic("direct_pixel_copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 		diagnostics_record_video_frame(2, f);
-		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
 		}
@@ -2071,7 +2094,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 		av_frame_copy_props(f, frame);
 		diagnostics_record_video_logic(!filp && avframe_is_data_continuous(frame) ? "ref" : "copy", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 		diagnostics_record_video_frame(2, f);
-		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
+		if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 			ret = -1;
 			goto end;
 		}
@@ -2127,7 +2150,7 @@ int fill_output_video(inout_context* ctx, AVFrame* frame)
 
 	diagnostics_record_video_logic("sws_scale", need_letterbox, scale_x, scale_y, scale_width, scale_height, filp);
 	diagnostics_record_video_frame(2, f);
-	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
+	if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -2207,7 +2230,7 @@ int fill_output_audio(inout_context* ctx, AVFrame* frame)
 	diagnostics_record_audio_logic(ctx->swr_ctx ? "swr_convert" : "copy", frame, f);
 	diagnostics_record_audio_frame(2, f);
 
-	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
+	if (frame_enqueue(ctx->frame_queues[1], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 		ret = -1;
 	}
 end:
@@ -2221,6 +2244,7 @@ DWORD test_card_thread(LPVOID p) {
 	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
 	if (!card) return -1;
 	ctx->input_frame_id = av_gettime_relative();
+	ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 	char infoText[512] = { 0 };
 	AVFrame* f;
 	while (!ctx->force_exit) {
@@ -2247,7 +2271,7 @@ DWORD test_card_thread(LPVOID p) {
 			ctx->audio_filter_text);
 		LeaveCriticalSection(&ctx->filter_text_mutex);
 		if (f = test_card_draw(card, infoText)) {
-			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_start_time, &ctx->force_exit) < 0) {
+			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 				break;
 			}
 		}
@@ -2263,6 +2287,7 @@ DWORD obs_virtual_cam_thread(LPVOID p) {
 	OBSVirtualCamReader* reader = obs_virtual_cam_reader_create();
 	if (!reader) return -1;
 	ctx->input_frame_id = av_gettime_relative();
+	ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 	AVFrame* f = NULL;
 	int ret;
 	uint64_t interval = 166666; //由于计算精度问题，60帧情况下interval比OBS渲染视频使用的要小，理论上读取间隔会比写入间隔短，所以理想情况下read_idx只会相同和相差1，永远不会丢帧
@@ -2427,7 +2452,7 @@ int enqueue_decoded_video_frame(inout_context* ctx, AVFrame* frame)
 	// DirectShow's Receive callback must not wait for a slow filter. If the
 	// processing queue is full, drop this real-time frame instead of blocking.
 	return frame_enqueue(ctx->decoded_video_frame_queue, frame, -1,
-		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit);
+		ctx->input_frame_id, ctx->input_media_mask, AV_NOPTS_VALUE, &ctx->force_exit);
 }
 
 static int flush_video_filter(inout_context* ctx, AVFrame* filtered_frame, int* filter_sent_eof)
@@ -2462,7 +2487,7 @@ DWORD WINAPI process_video_thread(LPVOID p) {
 
 	while (1)
 	{
-		if (frame_dequeue(ctx->decoded_video_frame_queue, frame, &frame_id, 1, &reset) >= 0)
+		if (frame_dequeue(ctx->decoded_video_frame_queue, frame, &frame_id, NULL, 1, &reset) >= 0)
 		{
 			if (process_video_frame(ctx, frame, filtered_frame, &filter_sent_eof,
 				ctx->decoded_video_time_base) < 0) goto end;
@@ -2500,7 +2525,7 @@ DWORD WINAPI decode_video_thread(LPVOID p) {
 		if (decode_frame(ctx, frame, pkt, decoded, AVMEDIA_TYPE_VIDEO) >= 0)
 		{
 			ctx->last_video_decode_time = av_gettime_relative();
-			if (frame_enqueue(ctx->decoded_video_frame_queue, frame, ctx->timeout, ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit) < 0) goto end;
+			if (frame_enqueue(ctx->decoded_video_frame_queue, frame, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, AV_NOPTS_VALUE, &ctx->force_exit) < 0) goto end;
 		}
 		else {
 			if (!ctx->output_paused && av_gettime_relative() - ctx->last_video_decode_time >= ctx->timeout) {
@@ -2652,7 +2677,7 @@ int enqueue_decoded_audio_frame(inout_context* ctx, AVFrame* frame)
 {
 	if (!ctx || !frame || !ctx->decoded_audio_frame_queue || ctx->force_exit) return -1;
 	return frame_enqueue(ctx->decoded_audio_frame_queue, frame, -1,
-		ctx->input_frame_id, AV_NOPTS_VALUE, &ctx->force_exit);
+		ctx->input_frame_id, ctx->input_media_mask, AV_NOPTS_VALUE, &ctx->force_exit);
 }
 
 DWORD WINAPI process_input_audio_thread(LPVOID p)
@@ -2664,7 +2689,7 @@ DWORD WINAPI process_input_audio_thread(LPVOID p)
 	if (!ctx || !frame) goto end;
 	while (!ctx->force_exit)
 	{
-		if (frame_dequeue(ctx->decoded_audio_frame_queue, frame, &frame_id, 1, &reset) >= 0)
+		if (frame_dequeue(ctx->decoded_audio_frame_queue, frame, &frame_id, NULL, 1, &reset) >= 0)
 		{
 			if (process_input_audio_frame(ctx, frame, ctx->decoded_audio_time_base) < 0)
 				break;
@@ -2968,8 +2993,10 @@ int update_offset_if_needed(inout_context* ctx, int64_t timestamp,int is_video)
 	if (timestamp == AV_NOPTS_VALUE)
 		return 0;
 
-	if (is_video && ctx->output_current_video_frame_id < ctx->output_current_audio_frame_id) return 0;
-	if (!is_video && ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
+	if (is_video && (ctx->output_current_video_media_mask & INPUT_MEDIA_AUDIO) &&
+		ctx->output_current_video_frame_id != ctx->output_current_audio_frame_id) return 0;
+	if (!is_video && (ctx->output_current_audio_media_mask & INPUT_MEDIA_VIDEO) &&
+		ctx->output_current_audio_frame_id != ctx->output_current_video_frame_id) return 0;
 	int ret = 0;
 	int64_t output_pts_time = (is_video ? ctx->output_video_pts_time : ctx->output_audio_pts_time);
 	int64_t current_time;
@@ -3003,7 +3030,11 @@ int is_in_sync(inout_context* ctx, int64_t timestamp)//1:刚好，2:快了，0�
 {
 	if (timestamp == AV_NOPTS_VALUE || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
 
-	if (ctx->output_current_video_frame_id < ctx->output_current_audio_frame_id) return 0;
+	/* Keep a new video frame pending until new audio reaches the same input.
+	 * When audio arrived first, the remaining old video continues using the
+	 * previous input's clock offset. */
+	if ((ctx->output_current_video_media_mask & INPUT_MEDIA_AUDIO) &&
+		ctx->output_current_video_frame_id > ctx->output_current_audio_frame_id) return 2;
 
 	int64_t output_pts_time = ctx->output_video_pts_time;
 	int64_t interval = ctx->output_time_per_video_frame;
@@ -3031,7 +3062,13 @@ int is_audio_in_sync(inout_context* ctx,int *shift_samples)//1:刚好，2:快了
 
 	*shift_samples = 0;
 
-	if (ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
+	/* Hold audio until the first video frame of a newly opened input is ready. */
+	if ((ctx->output_current_audio_media_mask & INPUT_MEDIA_VIDEO) &&
+		ctx->output_current_audio_frame_id > ctx->output_current_video_frame_id) return 2;
+	if (!(ctx->output_current_video_media_mask & INPUT_MEDIA_AUDIO) &&
+		ctx->output_current_audio_frame_id < ctx->output_current_video_frame_id) return 0;
+
+	if (ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
 
 	get_audio_fifo_pts(ctx, &fifo_pts, &fifo_end_pts,0);
 	if (fifo_pts == AV_NOPTS_VALUE) return 0;
@@ -3130,6 +3167,41 @@ void reset_audio_fifo(inout_context* ctx) {
 	av_audio_fifo_reset(ctx->output_audio_fifo);
 }
 
+static int reset_output_at_input_boundary(inout_context* ctx, int64_t frame_id, int media_mask)
+{
+	int64_t ended_frame_id;
+	if (frame_id <= 0 || frame_id <= ctx->output_boundary_frame_id) return 0;
+	/* Audio may reach the new input first. Drop any old-input FIFO tail once,
+	 * retain the new audio in the FIFO, and keep the old clock active until
+	 * video reaches the same frame id. */
+	if ((media_mask & INPUT_MEDIA_VIDEO) && ctx->output_current_video_frame_id < frame_id) {
+		if (ctx->output_audio_boundary_frame_id < frame_id) {
+			ctx->output_audio_boundary_frame_id = frame_id;
+			ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+			ctx->output_last_audio_nb_samples = 0;
+			ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+			av_audio_fifo_reset(ctx->output_audio_fifo);
+		}
+		return 0;
+	}
+	/* A leading video frame is retained by is_in_sync() until audio catches up. */
+	if ((media_mask & INPUT_MEDIA_AUDIO) && ctx->output_current_audio_frame_id < frame_id) return 0;
+	ended_frame_id = ctx->output_boundary_frame_id;
+	ctx->output_boundary_frame_id = frame_id;
+	ctx->output_time_offset = AV_NOPTS_VALUE;
+	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
+	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+	if (ctx->output_audio_boundary_frame_id < frame_id) {
+		ctx->output_audio_boundary_frame_id = frame_id;
+		ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+		ctx->output_last_audio_nb_samples = 0;
+		av_audio_fifo_reset(ctx->output_audio_fifo);
+	}
+	if (ended_frame_id > 0 && ctx->input_ended_callback)
+		ctx->input_ended_callback(ctx->input_ended_private, ended_frame_id);
+	return 1;
+}
+
 HRESULT WINAPI output_thread(LPVOID p)
 {
 	int ret = 0;
@@ -3217,6 +3289,16 @@ HRESULT WINAPI output_thread(LPVOID p)
 			ctx->last_video_decode_time = now;
 			ctx->last_audio_decode_time = now;
 			ctx->output_time_offset = AV_NOPTS_VALUE;
+			if (ctx->output_refresh_paused_frame) {
+				ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id,
+					&ctx->output_current_video_media_mask, 0, &reset);
+				if (ret >= 0) {
+					if (video_frame->pts != AV_NOPTS_VALUE) ctx->output_status_time = video_frame->pts;
+					av_frame_unref(final_video_frame);
+					av_frame_move_ref(final_video_frame, video_frame);
+					ctx->output_refresh_paused_frame = 0;
+				}
+			}
 			if (av_frame_ref(final_audio_frame, empty_audio_frame) < 0) {
 				ret = -1;
 				goto unlock_end;
@@ -3248,10 +3330,16 @@ HRESULT WINAPI output_thread(LPVOID p)
 					goto sync_end;
 				}
 					
-				ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id, 0, &reset);
+				ret = frame_dequeue(ctx->frame_queues[1], audio_frame, &ctx->output_current_audio_frame_id,
+					&ctx->output_current_audio_media_mask, 0, &reset);
 
 				if (reset) {
 					ctx->output_time_offset = AV_NOPTS_VALUE;
+				}
+				if (ret >= 0 && reset_output_at_input_boundary(ctx, ctx->output_current_audio_frame_id,
+					ctx->output_current_audio_media_mask)) {
+					last_audio_sync_diff = AV_NOPTS_VALUE;
+					last_video_sync_diff = AV_NOPTS_VALUE;
 				}
 
 				if (ctx->output_exit) {
@@ -3308,10 +3396,16 @@ HRESULT WINAPI output_thread(LPVOID p)
 		{
 			in_sync_result = is_in_sync(ctx, video_frame->pts);
 			if (in_sync_result != 0) break;
-			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id, 0, &reset);
+			ret = frame_dequeue(ctx->frame_queues[0], video_frame, &ctx->output_current_video_frame_id,
+				&ctx->output_current_video_media_mask, 0, &reset);
 
 			if (reset) {
 				ctx->output_time_offset = AV_NOPTS_VALUE;
+			}
+			if (ret >= 0 && reset_output_at_input_boundary(ctx, ctx->output_current_video_frame_id,
+				ctx->output_current_video_media_mask)) {
+				last_audio_sync_diff = AV_NOPTS_VALUE;
+				last_video_sync_diff = AV_NOPTS_VALUE;
 			}
 
 			if (ctx->output_exit) {
@@ -3640,6 +3734,7 @@ char* av_dict_pop_value(AVDictionary** dict, char* key) {
 typedef enum tcp_control_command_type {
 	TCP_CONTROL_NONE = 0,
 	TCP_CONTROL_PLAY,
+	TCP_CONTROL_PLAY_NEXT,
 	TCP_CONTROL_SET_FILTER,
 	TCP_CONTROL_SET_AUDIO_FILTER,
 	TCP_CONTROL_SET_INDEX,
@@ -3732,15 +3827,29 @@ end:
 }
 
 #define TCP_CONTROL_QUEUE_SIZE 32
+#define TCP_CONTROL_EVENT_QUEUE_SIZE 32
 #define TCP_CONTROL_BUFFER_SIZE 65536
 #define TCP_CONTROL_SEND_TIMEOUT_MS 500
 #define TCP_CONTROL_RECV_TIMEOUT_MS 500
 #define TCP_CONTROL_RECV_IDLE_TIMEOUT_MS 5000
 
+typedef enum tcp_control_event_type {
+	TCP_CONTROL_EVENT_INPUT_EOF = 1,
+	TCP_CONTROL_EVENT_INPUT_ENDED
+} tcp_control_event_type;
+
+typedef struct tcp_control_event {
+	tcp_control_event_type type;
+	int64_t frame_id;
+} tcp_control_event;
+
 typedef struct tcp_control_server {
 	CRITICAL_SECTION mutex;
 	CRITICAL_SECTION send_mutex;
+	CRITICAL_SECTION event_mutex;
+	CONDITION_VARIABLE event_cond;
 	HANDLE thread;
+	HANDLE event_thread;
 	SOCKET listen_socket;
 	SOCKET client_socket;
 	int port;
@@ -3756,6 +3865,10 @@ typedef struct tcp_control_server {
 	char status_state[32];
 	int scale_mode;
 	AVRational display_aspect;
+	tcp_control_event event_queue[TCP_CONTROL_EVENT_QUEUE_SIZE];
+	int event_queue_head;
+	int event_queue_count;
+	int dropped_event_count;
 	tcp_control_command queue[TCP_CONTROL_QUEUE_SIZE];
 	int queue_head;
 	int queue_count;
@@ -3764,6 +3877,9 @@ typedef struct tcp_control_server {
 static tcp_control_server* g_tcp_log_server = NULL;
 
 static void tcp_trim_right(char* s);
+static void tcp_control_stop(tcp_control_server* server);
+static int tcp_control_push_event(tcp_control_server* server,
+	tcp_control_event_type type, int64_t frame_id);
 
 static void tcp_control_sanitize_log_line(char* s)
 {
@@ -3837,6 +3953,87 @@ static void tcp_control_av_log_callback(void* ptr, int level, const char* fmt, v
 	tcp_control_send_line(server, line);
 }
 
+static void tcp_control_notify_input_eof(void* priv, int64_t frame_id)
+{
+	tcp_control_server* server = (tcp_control_server*)priv;
+	tcp_control_push_event(server, TCP_CONTROL_EVENT_INPUT_EOF, frame_id);
+}
+
+static void tcp_control_notify_input_ended(void* priv, int64_t frame_id)
+{
+	tcp_control_server* server = (tcp_control_server*)priv;
+	tcp_control_push_event(server, TCP_CONTROL_EVENT_INPUT_ENDED, frame_id);
+}
+
+static int tcp_control_push_event(tcp_control_server* server,
+	tcp_control_event_type type, int64_t frame_id)
+{
+	int tail;
+	if (!server) return 0;
+	EnterCriticalSection(&server->event_mutex);
+	if (server->exit) {
+		LeaveCriticalSection(&server->event_mutex);
+		return 0;
+	}
+	if (server->event_queue_count >= TCP_CONTROL_EVENT_QUEUE_SIZE) {
+		server->event_queue_head = (server->event_queue_head + 1) % TCP_CONTROL_EVENT_QUEUE_SIZE;
+		server->event_queue_count--;
+		server->dropped_event_count++;
+	}
+	tail = (server->event_queue_head + server->event_queue_count) % TCP_CONTROL_EVENT_QUEUE_SIZE;
+	server->event_queue[tail].type = type;
+	server->event_queue[tail].frame_id = frame_id;
+	server->event_queue_count++;
+	WakeConditionVariable(&server->event_cond);
+	LeaveCriticalSection(&server->event_mutex);
+	return 1;
+}
+
+static int tcp_control_pop_event(tcp_control_server* server, tcp_control_event* event)
+{
+	if (!server || !event) return 0;
+	EnterCriticalSection(&server->event_mutex);
+	while (server->event_queue_count == 0 && !server->exit)
+		SleepConditionVariableCS(&server->event_cond, &server->event_mutex, INFINITE);
+	if (server->exit) {
+		LeaveCriticalSection(&server->event_mutex);
+		return 0;
+	}
+	*event = server->event_queue[server->event_queue_head];
+	server->event_queue_head = (server->event_queue_head + 1) % TCP_CONTROL_EVENT_QUEUE_SIZE;
+	server->event_queue_count--;
+	LeaveCriticalSection(&server->event_mutex);
+	return 1;
+}
+
+static void tcp_control_send_event(tcp_control_server* server, const tcp_control_event* event)
+{
+	char line[128];
+	if (!server || !event || server->exit) return;
+	line[0] = '\0';
+	switch (event->type) {
+	case TCP_CONTROL_EVENT_INPUT_EOF:
+		snprintf(line, sizeof(line), "EVENT INPUT_EOF frame_id=%I64d\n", event->frame_id);
+		break;
+	case TCP_CONTROL_EVENT_INPUT_ENDED:
+		snprintf(line, sizeof(line), "EVENT INPUT_ENDED frame_id=%I64d\n", event->frame_id);
+		break;
+	default:
+		break;
+	}
+	if (line[0]) tcp_control_send_line(server, line);
+}
+
+static DWORD WINAPI tcp_control_event_thread(LPVOID priv)
+{
+	tcp_control_server* server = (tcp_control_server*)priv;
+	tcp_control_event event;
+	if (!server) return 0;
+	while (tcp_control_pop_event(server, &event))
+		tcp_control_send_event(server, &event);
+	return 0;
+}
+
 static void tcp_control_log(tcp_control_server* server, int level, const char* fmt, ...)
 {
 	va_list args;
@@ -3883,6 +4080,35 @@ static int tcp_control_pop(tcp_control_server* server, tcp_control_command* cmd)
 	return got;
 }
 
+static int input_threads_finished(inout_context* ctx)
+{
+	HANDLE threads[] = {
+		ctx->reading_tid,
+		ctx->special_source_tid,
+		ctx->decode_video_tid,
+		ctx->process_video_tid,
+		ctx->decode_audio_tid
+	};
+	for (int i = 0; i < ARRAY_ELEMS(threads); i++) {
+		if (threads[i] && WaitForSingleObject(threads[i], 0) != WAIT_OBJECT_0) return 0;
+	}
+	return 1;
+}
+
+static char* tcp_control_take_next_input_if_ready(tcp_control_server* server,
+	inout_context* ctx, char** next_input)
+{
+	char* input = NULL;
+	if (!server || !ctx || !next_input) return NULL;
+	EnterCriticalSection(&server->mutex);
+	if (server->queue_count == 0 && *next_input && input_threads_finished(ctx)) {
+		input = *next_input;
+		*next_input = NULL;
+	}
+	LeaveCriticalSection(&server->mutex);
+	return input;
+}
+
 static char* tcp_trim_left(char* s)
 {
 	while (s && (*s == ' ' || *s == '\t')) s++;
@@ -3916,6 +4142,12 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 
 	if (line[0] == '\0' || starts_with_command(line, "PING")) {
 		strcpy_s(reply, reply_size, "OK PONG\n");
+		return;
+	}
+	if (starts_with_command(line, "PLAY_NEXT")) {
+		arg = tcp_trim_left(line + 9);
+		cmd->type = TCP_CONTROL_PLAY_NEXT;
+		cmd->text = arg && arg[0] ? av_strdup(arg) : NULL;
 		return;
 	}
 	if (starts_with_command(line, "PLAY")) {
@@ -4184,21 +4416,32 @@ static int tcp_control_start(tcp_control_server* server, int port)
 	server->port = port > 0 ? port : 16999;
 	InitializeCriticalSection(&server->mutex);
 	InitializeCriticalSection(&server->send_mutex);
+	InitializeCriticalSection(&server->event_mutex);
+	InitializeConditionVariable(&server->event_cond);
 	server->client_socket = INVALID_SOCKET;
 	server->started = 1;
 	g_tcp_log_server = server;
 	av_log_set_callback(tcp_control_av_log_callback);
-	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
-	return open_thread(&server->thread, tcp_control_thread, server);
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0 ||
+		open_thread(&server->thread, tcp_control_thread, server) < 0 ||
+		open_thread(&server->event_thread, tcp_control_event_thread, server) < 0) {
+		tcp_control_stop(server);
+		return -1;
+	}
+	return 0;
 }
 
 static void tcp_control_stop(tcp_control_server* server)
 {
 	if (!server || !server->started) return;
+	EnterCriticalSection(&server->event_mutex);
 	server->exit = 1;
+	WakeAllConditionVariable(&server->event_cond);
+	LeaveCriticalSection(&server->event_mutex);
 	EnterCriticalSection(&server->send_mutex);
 	tcp_control_disconnect_client_locked(server);
 	LeaveCriticalSection(&server->send_mutex);
+	free_thread(&server->event_thread);
 	if (server->listen_socket != INVALID_SOCKET) shutdown(server->listen_socket, SD_BOTH);
 	if (server->thread) {
 		DWORD wait_result = WaitForSingleObject(server->thread, 2000);
@@ -4221,9 +4464,11 @@ static void tcp_control_stop(tcp_control_server* server)
 		g_tcp_log_server = NULL;
 	}
 	for (int i = 0; i < TCP_CONTROL_QUEUE_SIZE; i++) tcp_control_command_free(&server->queue[i]);
+	DeleteCriticalSection(&server->event_mutex);
 	DeleteCriticalSection(&server->send_mutex);
 	DeleteCriticalSection(&server->mutex);
 	WSACleanup();
+	server->started = 0;
 }
 
 DWORD main_thread(LPVOID p) {
@@ -4250,6 +4495,9 @@ DWORD main_thread(LPVOID p) {
 	char auto_deinterlace_filter[32] = "bwdif";
 	int auto_deinterlace = 1;
 	char* current_input = NULL;
+	char* next_input = NULL;
+	frame_queue_drain_state next_queue_states[2] = { 0 };
+	int next_queue_expanded = 0;
 	char* global_video_filter = av_strdup("");
 	char* global_audio_filter = av_strdup("");
 	tcp_control_server control_server = { 0 };
@@ -4338,6 +4586,10 @@ DWORD main_thread(LPVOID p) {
 	ctx->video_callback = opts->video_callback;
 	ctx->audio_callback = opts->audio_callback;
 	ctx->callback_private = opts->callback_private;
+	ctx->input_eof_callback = tcp_control_notify_input_eof;
+	ctx->input_eof_private = &control_server;
+	ctx->input_ended_callback = tcp_control_notify_input_ended;
+	ctx->input_ended_private = &control_server;
 	ctx->output_scale_mode = output_scale_mode;
 	ctx->output_display_aspect = output_display_aspect;
 	set_auto_deinterlace_config(ctx, auto_deinterlace, auto_deinterlace_filter);
@@ -4350,11 +4602,13 @@ DWORD main_thread(LPVOID p) {
 	start_output(ctx);
 	enqueue_config_status_frame(ctx, config_status_text);
 	while (1) {
-		int processed_command = 0;
-		int should_exit_main = 0;
-		while (1) {
+			int processed_command = 0;
+			int should_exit_main = 0;
+			while (1) {
 			tcp_control_command command;
 			int should_open = 0;
+			int preserve_output = 0;
+			int opening_next = 0;
 			char* play_filename = NULL;
 			AVDictionary* play_dict = NULL;
 			AVDictionary* temp_dict = NULL;
@@ -4408,13 +4662,59 @@ DWORD main_thread(LPVOID p) {
 			else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
 			LeaveCriticalSection(&control_server.mutex);
 			memset(&command, 0, sizeof(command));
-			if (!tcp_control_pop(&control_server, &command)) break;
+			if (!tcp_control_pop(&control_server, &command)) {
+				play_filename = tcp_control_take_next_input_if_ready(&control_server, ctx, &next_input);
+				if (!play_filename) break;
+				should_open = 1;
+				preserve_output = 1;
+				opening_next = 1;
+			}
 			processed_command = 1;
 
-			switch (command.type) {
+			if (opening_next) {
+				stop_read(ctx, 0);
+				inout_context_reset_input(ctx, 1);
+				av_freep(&current_input);
+				current_input = av_strdup(play_filename);
+				if (next_queue_expanded) {
+					for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+					next_queue_expanded = 0;
+				}
+				EnterCriticalSection(&control_server.mutex);
+				ctx->output_paused = 0;
+				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
+				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+				LeaveCriticalSection(&control_server.mutex);
+			}
+			else switch (command.type) {
+			case TCP_CONTROL_PLAY_NEXT:
+				av_freep(&next_input);
+				next_input = command.text ? av_strdup(command.text) : NULL;
+				if (next_input && !next_queue_expanded) {
+					int video_reserve = (int)av_rescale_rnd(SEAMLESS_DRAIN_RESERVE_MS, ctx->output_fps.num,
+						1000LL * FFMAX(ctx->output_fps.den, 1), AV_ROUND_UP);
+					int audio_reserve = (int)av_rescale_rnd(SEAMLESS_DRAIN_RESERVE_MS, ctx->output_audio_sample_rate,
+						1000LL * FFMAX(ctx->output_audio_nb_samples, 1), AV_ROUND_UP);
+					frame_queue_begin_natural_drain(ctx->frame_queues[0], FFMAX(video_reserve, 1), &next_queue_states[0]);
+					frame_queue_begin_natural_drain(ctx->frame_queues[1], FFMAX(audio_reserve, 1), &next_queue_states[1]);
+					next_queue_expanded = 1;
+				}
+				else if (!next_input && next_queue_expanded) {
+					for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+					next_queue_expanded = 0;
+				}
+				break;
 			case TCP_CONTROL_PLAY:
 				av_freep(&current_input);
 				current_input = av_strdup(command.text);
+				av_freep(&next_input);
+				if (next_queue_expanded) {
+					for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+					next_queue_expanded = 0;
+				}
 				EnterCriticalSection(&control_server.mutex);
 				ctx->output_paused = 0;
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
@@ -4480,11 +4780,14 @@ DWORD main_thread(LPVOID p) {
 				break;
 			case TCP_CONTROL_SEEK:
 				if (ctx->fmt_ctx) {
+					int was_paused = ctx->output_paused;
 					int64_t start_time = ctx->fmt_ctx->start_time == AV_NOPTS_VALUE ? 0 : ctx->fmt_ctx->start_time;
 					int64_t seek_time_int64 = av_rescale_q(command.number, (AVRational) { 1, 1 }, (AVRational) { 1, AV_TIME_BASE }) + start_time;
 					stop_read(ctx, 1);
 					reset_after_seek(ctx);
 					if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, seek_time_int64, seek_time_int64, 0) >= 0) {
+						ctx->output_status_time = av_rescale_q(command.number, (AVRational) { 1, 1 }, UNIVERSAL_TB);
+						ctx->output_refresh_paused_frame = was_paused;
 						start_read(ctx);
 						av_log(NULL, AV_LOG_INFO, "seek seconds: %I64d\n", command.number);
 					}
@@ -4502,9 +4805,11 @@ DWORD main_thread(LPVOID p) {
 						if (percent < 0) percent = 0;
 						if (percent > 10000) percent = 10000;
 						int64_t target = size * percent / 10000;
+						int was_paused = ctx->output_paused;
 						stop_read(ctx, 1);
 						reset_after_seek(ctx);
 						if (avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN, target, target, AVSEEK_FLAG_BYTE) >= 0) {
+							ctx->output_refresh_paused_frame = was_paused;
 							start_read(ctx);
 							av_log(NULL, AV_LOG_INFO, "seek byte percent: %I64d\n", percent);
 						}
@@ -4517,6 +4822,12 @@ DWORD main_thread(LPVOID p) {
 				break;
 			case TCP_CONTROL_SET_HW_DECODE:
 				if (strcmp(hw_decode, command.text ? command.text : "") != 0) {
+					av_freep(&next_input);
+					if (next_queue_expanded) {
+						for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+							frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+						next_queue_expanded = 0;
+					}
 					strcpy_s(hw_decode, sizeof(hw_decode), command.text ? command.text : "");
 					av_log(NULL, AV_LOG_INFO, "hw_decode:\"%s\"\n", hw_decode);
 					if (current_input) {
@@ -4528,10 +4839,16 @@ DWORD main_thread(LPVOID p) {
 			case TCP_CONTROL_STOP:
 				ctx->output_paused = 1;
 				stop_read(ctx, 1);
-				inout_context_reset_input(ctx);
+				inout_context_reset_input(ctx, 0);
 				diagnostics_reset();
 				ctx->output_paused = 0;
 				av_freep(&current_input);
+				av_freep(&next_input);
+				if (next_queue_expanded) {
+					for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+					next_queue_expanded = 0;
+				}
 				EnterCriticalSection(&control_server.mutex);
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
 				control_server.status_input[0] = '\0';
@@ -4551,6 +4868,12 @@ DWORD main_thread(LPVOID p) {
 				break;
 			case TCP_CONTROL_REOPEN:
 				ctx->output_paused = 0;
+				av_freep(&next_input);
+				if (next_queue_expanded) {
+					for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+					next_queue_expanded = 0;
+				}
 				if (current_input) {
 					play_filename = av_strdup(current_input);
 					should_open = 1;
@@ -4567,8 +4890,10 @@ DWORD main_thread(LPVOID p) {
 					av_dict_parse_string(&play_dict, tab_pos + 1, "=", ",", 0);
 				}
 
-				stop_read(ctx, 1);
-				inout_context_reset_input(ctx);
+				if (!preserve_output) {
+					stop_read(ctx, 1);
+					inout_context_reset_input(ctx, 0);
+				}
 				diagnostics_reset();
 
 				if (play_dict && av_dict_copy(&temp_dict, play_dict, 0) >= 0) {
@@ -4601,7 +4926,11 @@ DWORD main_thread(LPVOID p) {
 				if (queue_center) queue_center_int = atoi(queue_center);
 				if (auto_deinterlace_filter_opt) strcpy_s(auto_deinterlace_filter_current, sizeof(auto_deinterlace_filter_current), normalize_deinterlace_filter(auto_deinterlace_filter_opt));
 
+				int64_t open_started_us = av_gettime_relative();
 				if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
+					av_log(NULL, AV_LOG_INFO, "input open elapsed_ms=%I64d video_tail=%d audio_tail=%d\n",
+						(av_gettime_relative() - open_started_us) / 1000,
+						frame_queue_count(ctx->frame_queues[0]), frame_queue_count(ctx->frame_queues[1]));
 					set_auto_deinterlace_config(ctx, auto_deinterlace_opt ? (atoi(auto_deinterlace_opt) != 0) : auto_deinterlace, auto_deinterlace_filter_current);
 					set_input_filter(ctx, video_filter ? video_filter : global_video_filter);
 					configure_auto_deinterlace_for_input(ctx, video_filter, global_video_filter);
@@ -4624,6 +4953,8 @@ DWORD main_thread(LPVOID p) {
 					av_log(NULL, AV_LOG_INFO, "%s", str2);
 				}
 				else {
+					av_log(NULL, AV_LOG_WARNING, "input open failed elapsed_ms=%I64d\n",
+						(av_gettime_relative() - open_started_us) / 1000);
 					EnterCriticalSection(&control_server.mutex);
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
 					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
@@ -4667,6 +4998,7 @@ end:
 	paremeter_table_free(&table);
 	if (config_file_name) av_free(config_file_name);
 	av_freep(&current_input);
+	av_freep(&next_input);
 	av_freep(&global_video_filter);
 	av_freep(&global_audio_filter);
 
@@ -4782,7 +5114,7 @@ int main11() {
 		inout_context* ctx = inout_context_alloc(640, 480, AV_PIX_FMT_YUV420P, (AVRational) { 25, 1 }, 48000, AV_SAMPLE_FMT_S16, & ch_layout, 1024, 30 * 1000000, 50 * 1000000, 5000, 10, 10,1,0,3000000);
 		av_channel_layout_uninit(&ch_layout);
 		open_input(NULL, "D:\\develop\\videogen\\2.mp4", NULL, ctx, -1, -1, -1, "", 0, 0, -1, -1,-1,NULL, NULL, NULL, NULL);
-		inout_context_reset_input(ctx);
+		inout_context_reset_input(ctx, 0);
 		inout_context_free(&ctx);
 	}
 }

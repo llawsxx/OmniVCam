@@ -137,11 +137,15 @@ Click `Open playout` in the main window. The playout window contains two lists:
 
 Closing the playout window hides it. Closing the main controller exits the application.
 
+Switching connection tabs cancels any unfinished TCP connection attempt for the old tab. TCP connection attempts time out after 3 seconds, `STATUS` polling does not overlap, and late connection results or status replies from the old tab are ignored so an unreachable tab cannot keep other tabs blocked.
+
 Top controls:
 
 - `Start playout`: start playout scheduling. The playout timer only runs while playout is started.
 - `Next`: manually play the next normal playlist item. In `Random` mode it chooses a random item.
-- `Stop playout`: stop playout, stop playback, and clear scheduled trigger marks.
+- `Stop automatic playout`: stop only scheduling/automatic switching while current playback continues. Use the main-window `Stop` button to stop the picture itself.
+- There is no separate global “Apply schedule” step. Add/remove/reorder operations and `Apply` on the selected row affect subsequent scheduler decisions immediately.
+- OBS control: configure the OBS WebSocket URL (OBS 28+ defaults to `ws://127.0.0.1:4455`) and password. The controller can refresh OBS scenes and provide source pickers. Each scheduled item stores separate scene and source show/hide actions for start and end. OBS results are written to the log box.
 - `Save XML`: save controller settings and both playlists to `OmniVCamController.xml`.
 - `Write now playing XML`: enable or disable now-playing XML output.
 
@@ -156,6 +160,7 @@ Scheduled playlist columns:
 - `End`: explicit end time, or `Next schedule` when no end time is set.
 - `Start`: start behavior.
 - `End action`: behavior if media ends before the end time.
+- `OBS start` / `OBS end`: scene and source show/hide actions for scheduled start and end.
 - `Last triggered`: last schedule-window start that triggered this item. Stop clears it.
 - `Path`: input path/URL/device/special input.
 
@@ -164,7 +169,7 @@ Scheduled item controls:
 - `Add current`: add current main `Input` as a scheduled item.
 - `Add files`: add one or more media files as scheduled items.
 - `Add folder`: recursively add media files from a folder.
-- `Apply`: write the current scheduled settings into the selected scheduled item. This also works while the item is playing.
+- `Apply`: write the current settings into the selected scheduled item and use them for subsequent scheduler decisions immediately. This also works while the item is playing; it does not create a whole-schedule snapshot.
 - `Remove`, `Up`, `Down`: edit list order.
 - `Refresh durations`: probe durations for scheduled items only.
 
@@ -176,11 +181,12 @@ Scheduled settings:
 - `Days`: weekly day mask.
 - `Input title`: title used for scheduled items. If blank, it falls back to main `Title`, then input-derived title.
 - `Input options`: options used for scheduled items. If blank, it falls back to main `Options`.
+- `OBS at start` / `OBS at end`: configure the scene and sources to show or hide when the task starts and when it actually finishes. End actions run when the input/transition has completed, not merely when input EOF is first reported.
 - `Use end time`: enable explicit end time.
 - `End time`: for one-time items this is date/time; for weekly items only the time of day is meaningful.
 - `If media ends early`:
   - `Replay until end`: replay the same item until the end time.
-  - `Wait until end`: do not play another item until the end time.
+  - `Wait until end`: retain ownership of the scheduled slot even after input EOF/ended, keep the last output, and prevent scheduled or normal items from taking over until the explicit end time.
   - `Continue immediately`: leave the scheduled item immediately.
 - `At scheduled time`:
   - `Start immediately`: cut in when this task becomes active, including over another scheduled item if this window starts later.
@@ -192,7 +198,10 @@ Scheduling behavior:
 - With `Use end time`, the window is `start -> end`.
 - Without `Use end time`, the window is `start -> next scheduled task start`. If no next task exists, the window is open-ended.
 - A later `Start immediately` scheduled task can cut into the currently playing scheduled task.
-- `Stop playout` clears all `Last triggered` marks, so restarting playout can trigger tasks that are still inside their windows.
+- An explicit `Wait until end` slot takes precedence over a later task's `Start immediately`; end actions and the next transition occur only after the current slot reaches its end time.
+- `Stop automatic playout` clears all `Last triggered` marks, so restarting automatic playout can trigger tasks still inside their windows without pausing the current picture.
+
+Reliability safeguards: OBS WebSocket connect, send, and receive operations have a 5-second timeout; an unresponsive OBS endpoint is logged and playout continues. A `PLAY_NEXT` fallback is allowed only after the source state is already `ended` or `error` and the pending transition has still not completed for 15 seconds; a source that remains `playing`, `paused`, or `opening` is never reopened merely because it has waited a long time. Running and queued scheduled items use execution snapshots, so editing, removing, or reordering the list does not mutate that activation. Switching connection tabs clears transient events and pending transitions from the old connection so they cannot affect the new tab.
 
 ## Normal Playlist
 
@@ -345,6 +354,7 @@ Supported commands include:
 - `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`.
 - `DURATION <input>[\toptions]`: probe input duration.
 - `PLAY <input>[\toptions]`: play input.
+- `PLAY_NEXT <input>[\toptions]`: register the next input. The controller sends it after the current input reports EOF; the backend opens it after all threads belonging to the current input finish and resets timing state at the output boundary.
 - `PAUSE`: pause output without closing the input.
 - `RESUME`: resume paused output.
 - `STOP`: stop playback.
@@ -362,6 +372,11 @@ Supported commands include:
 - `DSHOW_CROSSBAR <device-moniker>`: list available Crossbar routes and TV-tuner/TV-audio capabilities.
 - `SEEK <seconds>`: seek by seconds.
 - `SEEK_BYTE_PERCENT <0-10000>`: seek by byte percentage; `10000` means 100%.
+
+The backend also sends unsolicited event lines over the same TCP connection:
+
+- `EVENT INPUT_EOF frame_id=<id>`: input reading reached EOF. The controller may respond by sending `PLAY_NEXT`; decoding/output for the old input may still be active.
+- `EVENT INPUT_ENDED frame_id=<id>`: reading, decoding, and output for that input have finished. The controller confirms the pending activation and performs the corresponding scheduled OBS end handling at this point.
 
 ## Build
 

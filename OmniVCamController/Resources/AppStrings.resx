@@ -84,7 +84,7 @@
   <data name="PlayoutStarted" xml:space="preserve"><value>Playout started.</value></data>
   <data name="PlayoutStatus" xml:space="preserve"><value>Playout: {0} / {1} / {2}</value></data>
   <data name="PlayoutStatusStopped" xml:space="preserve"><value>Playout: stopped</value></data>
-  <data name="PlayoutStopped" xml:space="preserve"><value>Playout stopped.</value></data>
+  <data name="PlayoutStopped" xml:space="preserve"><value>Automatic playout stopped; current playback continues.</value></data>
   <data name="Port" xml:space="preserve"><value>Port</value></data>
   <data name="Position" xml:space="preserve"><value>Position</value></data>
   <data name="Program" xml:space="preserve"><value>Program</value></data>
@@ -125,7 +125,7 @@
   <data name="StateStopped" xml:space="preserve"><value>Stopped</value></data>
   <data name="Stop" xml:space="preserve"><value>Stop</value></data>
   <data name="Stopped" xml:space="preserve"><value>stopped</value></data>
-  <data name="StopPlayout" xml:space="preserve"><value>Stop playout</value></data>
+  <data name="StopPlayout" xml:space="preserve"><value>Stop automatic playout</value></data>
   <data name="Title" xml:space="preserve"><value>Title</value></data>
   <data name="Up" xml:space="preserve"><value>Up</value></data>
   <data name="UseEndTime" xml:space="preserve"><value>Use end time</value></data>
@@ -171,4 +171,22 @@
   <data name="AudioBufferSize" xml:space="preserve"><value>Audio buffer size</value></data>
   <data name="AudioBufferSizeMs" xml:space="preserve"><value>Audio buffer (ms)</value></data>
   <data name="MillisecondsDeviceDefault" xml:space="preserve"><value>ms (0 = device default)</value></data>
+  <data name="ObsUrl" xml:space="preserve"><value>OBS URL</value></data>
+  <data name="ObsPassword" xml:space="preserve"><value>Password</value></data>
+  <data name="ObsScene" xml:space="preserve"><value>Scene</value></data>
+  <data name="ObsShowSources" xml:space="preserve"><value>Show sources</value></data>
+  <data name="ObsHideSources" xml:space="preserve"><value>Hide sources</value></data>
+  <data name="ObsActionFailed" xml:space="preserve"><value>OBS action failed: {0}</value></data>
+  <data name="ObsDebug" xml:space="preserve"><value>OBS debug</value></data>
+  <data name="ObsTest" xml:space="preserve"><value>Test connection</value></data>
+  <data name="ObsApply" xml:space="preserve"><value>Apply OBS action</value></data>
+  <data name="ObsConnected" xml:space="preserve"><value>OBS connected. Current scene: {0}</value></data>
+  <data name="ObsRefresh" xml:space="preserve"><value>Refresh</value></data>
+  <data name="ObsSelect" xml:space="preserve"><value>Select...</value></data>
+  <data name="ObsScenesLoaded" xml:space="preserve"><value>Loaded {0} OBS scenes. Current scene: {1}</value></data>
+  <data name="ObsSourcesTitle" xml:space="preserve"><value>Select sources in scene: {0}</value></data>
+  <data name="ObsAtStart" xml:space="preserve"><value>OBS at start</value></data>
+  <data name="ObsAtEnd" xml:space="preserve"><value>OBS at end</value></data>
+  <data name="ColumnObsStart" xml:space="preserve"><value>OBS at start</value></data>
+  <data name="ColumnObsEnd" xml:space="preserve"><value>OBS at end</value></data>
 </root>

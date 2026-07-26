@@ -243,9 +243,7 @@
   <data name="PlayoutStatusStopped" xml:space="preserve">
     <value>播出：已停止</value>
   </data>
-  <data name="PlayoutStopped" xml:space="preserve">
-    <value>播出已停止。</value>
-  </data>
+  <data name="PlayoutStopped" xml:space="preserve"><value>自动播出已停止，当前画面继续播放。</value></data>
   <data name="Port" xml:space="preserve">
     <value>端口</value>
   </data>
@@ -366,9 +364,7 @@
   <data name="Stopped" xml:space="preserve">
     <value>已停止</value>
   </data>
-  <data name="StopPlayout" xml:space="preserve">
-    <value>停止播出</value>
-  </data>
+  <data name="StopPlayout" xml:space="preserve"><value>停止自动播出</value></data>
   <data name="Title" xml:space="preserve">
     <value>标题</value>
   </data>
@@ -459,4 +455,22 @@
   <data name="AudioBufferSize" xml:space="preserve"><value>音频缓冲大小</value></data>
   <data name="AudioBufferSizeMs" xml:space="preserve"><value>音频缓冲（毫秒）</value></data>
   <data name="MillisecondsDeviceDefault" xml:space="preserve"><value>毫秒（0 = 设备默认值）</value></data>
+  <data name="ObsUrl" xml:space="preserve"><value>OBS 地址</value></data>
+  <data name="ObsPassword" xml:space="preserve"><value>密码</value></data>
+  <data name="ObsScene" xml:space="preserve"><value>场景</value></data>
+  <data name="ObsShowSources" xml:space="preserve"><value>显示源</value></data>
+  <data name="ObsHideSources" xml:space="preserve"><value>隐藏源</value></data>
+  <data name="ObsActionFailed" xml:space="preserve"><value>OBS 操作失败：{0}</value></data>
+  <data name="ObsDebug" xml:space="preserve"><value>OBS 调试</value></data>
+  <data name="ObsTest" xml:space="preserve"><value>测试连接</value></data>
+  <data name="ObsApply" xml:space="preserve"><value>执行 OBS 操作</value></data>
+  <data name="ObsConnected" xml:space="preserve"><value>OBS 已连接，当前场景：{0}</value></data>
+  <data name="ObsRefresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="ObsSelect" xml:space="preserve"><value>选择...</value></data>
+  <data name="ObsScenesLoaded" xml:space="preserve"><value>已获取 {0} 个 OBS 场景，当前场景：{1}</value></data>
+  <data name="ObsSourcesTitle" xml:space="preserve"><value>选择场景“{0}”中的来源</value></data>
+  <data name="ObsAtStart" xml:space="preserve"><value>开始时 OBS</value></data>
+  <data name="ObsAtEnd" xml:space="preserve"><value>结束时 OBS</value></data>
+  <data name="ColumnObsStart" xml:space="preserve"><value>开始时 OBS</value></data>
+  <data name="ColumnObsEnd" xml:space="preserve"><value>结束时 OBS</value></data>
 </root>

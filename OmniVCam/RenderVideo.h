@@ -34,12 +34,15 @@ extern AVRational DSHOW_TB;
 #define DEBUG_LOG(format, ...) ;
 #endif // DEBUG
 
-#define MAX_AUTO_THREADS 16
+#define MAX_AUTO_THREADS 4
 #define VIDEO_PROCESS_QUEUE_COUNT 4
 #define AUDIO_PROCESS_QUEUE_COUNT 16
+#define INPUT_MEDIA_VIDEO 0x01
+#define INPUT_MEDIA_AUDIO 0x02
 
 typedef struct avframe_node {
 	AVFrame* frame;
+	int media_mask;
 	int64_t frame_id;//用于标记帧是否来自于同一个文件，open_input一次，此id更新。
 	int reset;
 	struct avframe_node* next;
@@ -53,9 +56,7 @@ typedef struct frame_queue {
 	int left_count;
 	int right_count;
 	int center_count;
-	int64_t last_pts_value;
-	int64_t last_interval;
-	int reached_center; //对实时流有用，当达到center时，reached_center设置为1，就可以一直读，读到数量left_count时reached_center重设为0，如果数量大于等于right_count，则清除到center位置
+	int reached_center;
 	CRITICAL_SECTION mutex;
 	CONDITION_VARIABLE cond;
 }frame_queue;
@@ -168,6 +169,7 @@ typedef struct inout_context {
 	CRITICAL_SECTION filter_text_mutex;
 
 	int64_t input_frame_id;
+	int input_media_mask;
 
 	AVRational last_sar;
 
@@ -182,6 +184,10 @@ typedef struct inout_context {
 	int test_card_style;
 	int force_exit;
 	int eof;
+	void (*input_eof_callback)(void* priv, int64_t frame_id);
+	void* input_eof_private;
+	void (*input_ended_callback)(void* priv, int64_t frame_id);
+	void* input_ended_private;
 
 	int output_frame_width;
 	int output_frame_height;
@@ -212,11 +218,16 @@ typedef struct inout_context {
 	int output_audio_nb_samples;
 	int64_t output_current_video_frame_id;   //这个用于识别帧是否来源于同一个视频，这个数值是递增的
 	int64_t output_current_audio_frame_id;
+	int output_current_video_media_mask;
+	int output_current_audio_media_mask;
+	int64_t output_boundary_frame_id;
+	int64_t output_audio_boundary_frame_id;
 	int64_t av_max_offset_time;
 	AVAudioFifo* output_audio_fifo;//用output audio的来初始化
 	HANDLE output_thread;
 	int output_exit;//强制退出标志
 	int output_paused;
+	int output_refresh_paused_frame;
 	int64_t output_first_start_clock_time;
 	int64_t output_start_clock_time;
 	int64_t output_start_shift_time;
