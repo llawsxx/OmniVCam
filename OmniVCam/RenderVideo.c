@@ -5,6 +5,7 @@
 #include <WinSock2.h>
 #include <Objbase.h>
 #include <stdarg.h>
+#include <libavutil/sha.h>
 #include "RenderVideo.h"
 #include "ParseConfig.h"
 #include "TestCard.h"
@@ -3828,6 +3829,8 @@ end:
 
 #define TCP_CONTROL_QUEUE_SIZE 32
 #define TCP_CONTROL_EVENT_QUEUE_SIZE 32
+#define TCP_CONTROL_INPUT_HISTORY_SIZE 32
+#define TCP_CONTROL_INPUT_SUMMARY_SIZE 65
 #define TCP_CONTROL_BUFFER_SIZE 65536
 #define TCP_CONTROL_SEND_TIMEOUT_MS 500
 #define TCP_CONTROL_RECV_TIMEOUT_MS 500
@@ -3841,7 +3844,13 @@ typedef enum tcp_control_event_type {
 typedef struct tcp_control_event {
 	tcp_control_event_type type;
 	int64_t frame_id;
+	char input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
 } tcp_control_event;
+
+typedef struct tcp_control_input_history_entry {
+	int64_t frame_id;
+	char input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
+} tcp_control_input_history_entry;
 
 typedef struct tcp_control_server {
 	CRITICAL_SECTION mutex;
@@ -3861,7 +3870,8 @@ typedef struct tcp_control_server {
 	int64_t status_size;
 	int64_t deliver_ns;
 	int64_t deliver_avg_ns;
-	char status_input[1024];
+	char status_input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
+	char status_actual_input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
 	char status_state[32];
 	int scale_mode;
 	AVRational display_aspect;
@@ -3869,6 +3879,9 @@ typedef struct tcp_control_server {
 	int event_queue_head;
 	int event_queue_count;
 	int dropped_event_count;
+	tcp_control_input_history_entry input_history[TCP_CONTROL_INPUT_HISTORY_SIZE];
+	int input_history_head;
+	int input_history_count;
 	tcp_control_command queue[TCP_CONTROL_QUEUE_SIZE];
 	int queue_head;
 	int queue_count;
@@ -3880,6 +3893,78 @@ static void tcp_trim_right(char* s);
 static void tcp_control_stop(tcp_control_server* server);
 static int tcp_control_push_event(tcp_control_server* server,
 	tcp_control_event_type type, int64_t frame_id);
+
+static void tcp_control_sha256(const char* input, char output[TCP_CONTROL_INPUT_SUMMARY_SIZE])
+{
+	static const char hex[] = "0123456789abcdef";
+	uint8_t digest[32];
+	struct AVSHA* sha = av_sha_alloc();
+	const char* value = input ? input : "";
+	if (!output) return;
+	output[0] = '\0';
+	if (!sha || av_sha_init(sha, 256) < 0) {
+		av_free(sha);
+		return;
+	}
+	av_sha_update(sha, (const uint8_t*)value, strlen(value));
+	av_sha_final(sha, digest);
+	av_free(sha);
+	for (int i = 0; i < 32; i++) {
+		output[i * 2] = hex[digest[i] >> 4];
+		output[i * 2 + 1] = hex[digest[i] & 0x0f];
+	}
+	output[64] = '\0';
+}
+
+static void tcp_control_register_input(tcp_control_server* server, int64_t frame_id, const char* input)
+{
+	int tail;
+	if (!server || frame_id <= 0) return;
+	EnterCriticalSection(&server->event_mutex);
+	if (server->input_history_count >= TCP_CONTROL_INPUT_HISTORY_SIZE) {
+		server->input_history_head = (server->input_history_head + 1) % TCP_CONTROL_INPUT_HISTORY_SIZE;
+		server->input_history_count--;
+	}
+	tail = (server->input_history_head + server->input_history_count) % TCP_CONTROL_INPUT_HISTORY_SIZE;
+	server->input_history[tail].frame_id = frame_id;
+	tcp_control_sha256(input, server->input_history[tail].input);
+	server->input_history_count++;
+	LeaveCriticalSection(&server->event_mutex);
+}
+
+static void tcp_control_find_input_locked(tcp_control_server* server, int64_t frame_id,
+	char* input, int input_size)
+{
+	if (!input || input_size <= 0) return;
+	input[0] = '\0';
+	for (int i = 0; i < server->input_history_count; i++) {
+		int index = (server->input_history_head + i) % TCP_CONTROL_INPUT_HISTORY_SIZE;
+		if (server->input_history[index].frame_id != frame_id) continue;
+		strcpy_s(input, input_size, server->input_history[index].input);
+		return;
+	}
+}
+
+static void tcp_control_advance_actual_input(tcp_control_server* server, int64_t ended_frame_id)
+{
+	char next_input[TCP_CONTROL_INPUT_SUMMARY_SIZE] = { 0 };
+	int64_t next_frame_id = INT64_MAX;
+	if (!server) return;
+	EnterCriticalSection(&server->event_mutex);
+	for (int i = 0; i < server->input_history_count; i++) {
+		int index = (server->input_history_head + i) % TCP_CONTROL_INPUT_HISTORY_SIZE;
+		int64_t frame_id = server->input_history[index].frame_id;
+		if (frame_id <= ended_frame_id || frame_id >= next_frame_id) continue;
+		next_frame_id = frame_id;
+		strcpy_s(next_input, sizeof(next_input), server->input_history[index].input);
+	}
+	LeaveCriticalSection(&server->event_mutex);
+
+	EnterCriticalSection(&server->mutex);
+	strcpy_s(server->status_actual_input, sizeof(server->status_actual_input),
+		next_input[0] ? next_input : server->status_input);
+	LeaveCriticalSection(&server->mutex);
+}
 
 static void tcp_control_sanitize_log_line(char* s)
 {
@@ -3962,6 +4047,7 @@ static void tcp_control_notify_input_eof(void* priv, int64_t frame_id)
 static void tcp_control_notify_input_ended(void* priv, int64_t frame_id)
 {
 	tcp_control_server* server = (tcp_control_server*)priv;
+	tcp_control_advance_actual_input(server, frame_id);
 	tcp_control_push_event(server, TCP_CONTROL_EVENT_INPUT_ENDED, frame_id);
 }
 
@@ -3983,6 +4069,8 @@ static int tcp_control_push_event(tcp_control_server* server,
 	tail = (server->event_queue_head + server->event_queue_count) % TCP_CONTROL_EVENT_QUEUE_SIZE;
 	server->event_queue[tail].type = type;
 	server->event_queue[tail].frame_id = frame_id;
+	tcp_control_find_input_locked(server, frame_id, server->event_queue[tail].input,
+		sizeof(server->event_queue[tail].input));
 	server->event_queue_count++;
 	WakeConditionVariable(&server->event_cond);
 	LeaveCriticalSection(&server->event_mutex);
@@ -4008,15 +4096,15 @@ static int tcp_control_pop_event(tcp_control_server* server, tcp_control_event* 
 
 static void tcp_control_send_event(tcp_control_server* server, const tcp_control_event* event)
 {
-	char line[128];
+	char line[TCP_CONTROL_INPUT_SUMMARY_SIZE + 128];
 	if (!server || !event || server->exit) return;
 	line[0] = '\0';
 	switch (event->type) {
 	case TCP_CONTROL_EVENT_INPUT_EOF:
-		snprintf(line, sizeof(line), "EVENT INPUT_EOF frame_id=%I64d\n", event->frame_id);
+		snprintf(line, sizeof(line), "EVENT INPUT_EOF frame_id=%I64d input=%s\n", event->frame_id, event->input);
 		break;
 	case TCP_CONTROL_EVENT_INPUT_ENDED:
-		snprintf(line, sizeof(line), "EVENT INPUT_ENDED frame_id=%I64d\n", event->frame_id);
+		snprintf(line, sizeof(line), "EVENT INPUT_ENDED frame_id=%I64d input=%s\n", event->frame_id, event->input);
 		break;
 	default:
 		break;
@@ -4178,7 +4266,7 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
 		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d deliver_ns=%I64d deliver_avg_ns=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->deliver_ns, server->deliver_avg_ns, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_input);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d deliver_ns=%I64d deliver_avg_ns=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d actual_input=%s input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->deliver_ns, server->deliver_avg_ns, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_actual_input, server->status_input);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
@@ -4657,7 +4745,8 @@ DWORD main_thread(LPVOID p) {
 			control_server.deliver_avg_ns = (int64_t)ctx->output_video_avg_block_time;
 			control_server.scale_mode = ctx->output_scale_mode;
 			control_server.display_aspect = ctx->output_display_aspect;
-			strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+			if (current_input) tcp_control_sha256(current_input, control_server.status_input);
+			else control_server.status_input[0] = '\0';
 			if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
 			else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
 			LeaveCriticalSection(&control_server.mutex);
@@ -4684,7 +4773,7 @@ DWORD main_thread(LPVOID p) {
 				EnterCriticalSection(&control_server.mutex);
 				ctx->output_paused = 0;
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
-				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+				tcp_control_sha256(current_input, control_server.status_input);
 				LeaveCriticalSection(&control_server.mutex);
 			}
 			else switch (command.type) {
@@ -4718,7 +4807,7 @@ DWORD main_thread(LPVOID p) {
 				EnterCriticalSection(&control_server.mutex);
 				ctx->output_paused = 0;
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
-				strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : "");
+				tcp_control_sha256(current_input, control_server.status_input);
 				LeaveCriticalSection(&control_server.mutex);
 				play_filename = command.text ? av_strdup(command.text) : NULL;
 				should_open = play_filename != NULL;
@@ -4852,6 +4941,7 @@ DWORD main_thread(LPVOID p) {
 				EnterCriticalSection(&control_server.mutex);
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
 				control_server.status_input[0] = '\0';
+				control_server.status_actual_input[0] = '\0';
 				LeaveCriticalSection(&control_server.mutex);
 				break;
 			case TCP_CONTROL_PAUSE:
@@ -4928,6 +5018,8 @@ DWORD main_thread(LPVOID p) {
 
 				int64_t open_started_us = av_gettime_relative();
 				if (open_input(format, play_filename, &temp_dict, ctx, video_index_int, audio_index_int, -1, hw_decode, probesize_int, analyze_duration_int, queue_left_int, queue_right_int, queue_center_int, vcodec_str, acodec_str, scodec_str, dcodec_str) >= 0) {
+					const char* input_summary = current_input ? current_input : play_filename;
+					tcp_control_register_input(&control_server, ctx->input_frame_id, input_summary);
 					av_log(NULL, AV_LOG_INFO, "input open elapsed_ms=%I64d video_tail=%d audio_tail=%d\n",
 						(av_gettime_relative() - open_started_us) / 1000,
 						frame_queue_count(ctx->frame_queues[0]), frame_queue_count(ctx->frame_queues[1]));
@@ -4947,7 +5039,9 @@ DWORD main_thread(LPVOID p) {
 					EnterCriticalSection(&control_server.mutex);
 					ctx->output_paused = 0;
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
-					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+					tcp_control_sha256(input_summary, control_server.status_input);
+					if (!preserve_output || control_server.status_actual_input[0] == '\0')
+						tcp_control_sha256(input_summary, control_server.status_actual_input);
 					LeaveCriticalSection(&control_server.mutex);
 					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 					av_log(NULL, AV_LOG_INFO, "%s", str2);
@@ -4957,7 +5051,7 @@ DWORD main_thread(LPVOID p) {
 						(av_gettime_relative() - open_started_us) / 1000);
 					EnterCriticalSection(&control_server.mutex);
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "error");
-					strcpy_s(control_server.status_input, sizeof(control_server.status_input), current_input ? current_input : play_filename);
+					tcp_control_sha256(current_input ? current_input : play_filename, control_server.status_input);
 					LeaveCriticalSection(&control_server.mutex);
 					av_log(NULL, AV_LOG_ERROR, "[%s] open:\"%s\" failed!\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 				}

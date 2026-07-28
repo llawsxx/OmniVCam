@@ -345,7 +345,7 @@ OmniVCamController.xml
 支持命令包括：
 
 - `PING`：返回 `OK PONG`。
-- `STATUS`：返回 `seconds`、`duration`、`size`、`state`、`scale_mode`、`display_aspect`、`input`、`deliver_ns`、`deliver_avg_ns` 和 `controller_connected`。
+- `STATUS`：返回 `seconds`、`duration`、`size`、`state`、`scale_mode`、`display_aspect`、`input`、`actual_input`、`deliver_ns`、`deliver_avg_ns` 和 `controller_connected`。`input` 是当前已请求输入的 `input + options` 的 SHA-256 摘要；`actual_input` 是输出端实际正在播出内容的 SHA-256 摘要。摘要使用 64 位小写十六进制表示。
 - `DURATION <input>[\toptions]`：探测输入时长。
 - `PLAY <input>[\toptions]`：播放输入。
 - `PLAY_NEXT <input>[\toptions]`：登记下一个输入。当前输入发出 EOF 后，控制器用此命令提前交付下一输入；后端等待当前输入相关线程结束后打开新输入，并在输出边界重置时间状态。
@@ -369,8 +369,8 @@ OmniVCamController.xml
 
 后端还会在同一 TCP 连接上主动发送事件行：
 
-- `EVENT INPUT_EOF frame_id=<id>`：输入读取到 EOF，控制器可据此发送 `PLAY_NEXT`；这不代表旧输入的所有解码和输出工作已经结束。
-- `EVENT INPUT_ENDED frame_id=<id>`：该输入的读取、解码和输出已经结束。控制器在此时确认待切换项目，并执行对应的计划 OBS 结束处理。
+- `EVENT INPUT_EOF frame_id=<id> input=<summary>`：输入读取到 EOF，控制器可据此发送 `PLAY_NEXT`；这不代表旧输入的所有解码和输出工作已经结束。
+- `EVENT INPUT_ENDED frame_id=<id> input=<summary>`：该输入的读取、解码和输出已经结束。控制器在此时确认待切换项目，并执行对应的计划 OBS 结束处理。
 
 ## 构建
 

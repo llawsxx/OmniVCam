@@ -21,6 +21,7 @@
   <data name="ByteSeek" xml:space="preserve"><value>Byte seek</value></data>
   <data name="Cancel" xml:space="preserve"><value>Cancel</value></data>
   <data name="ColumnDuration" xml:space="preserve"><value>Duration</value></data>
+  <data name="ColumnEnabled" xml:space="preserve"><value>Enabled</value></data>
   <data name="ColumnEnd" xml:space="preserve"><value>End</value></data>
   <data name="ColumnEndAction" xml:space="preserve"><value>End action</value></data>
   <data name="ColumnInput" xml:space="preserve"><value>Input</value></data>
@@ -39,6 +40,8 @@
   <data name="Down" xml:space="preserve"><value>Down</value></data>
   <data name="DurationUnknownByteSeek" xml:space="preserve"><value>Duration is unknown. Enable Byte seek to seek by file position.</value></data>
   <data name="EndTime" xml:space="preserve"><value>End time</value></data>
+  <data name="Enabled" xml:space="preserve"><value>Enabled</value></data>
+  <data name="Disabled" xml:space="preserve"><value>Disabled</value></data>
   <data name="Error" xml:space="preserve"><value>Error</value></data>
   <data name="FavoriteInputs" xml:space="preserve"><value>Favorite inputs</value></data>
   <data name="FrameDeliverBlockTime" xml:space="preserve"><value>Frame deliver block time: {0:0.###} / {1:0.###} ms</value></data>
@@ -69,6 +72,12 @@
   <data name="MediaFileFilter" xml:space="preserve"><value>Media files|*.mp4;*.mov;*.mkv;*.ts;*.m2ts;*.avi;*.flv;*.wmv;*.mxf;*.vob;*.dat;*.mpg;*.mpeg;*.asf;*.rm;*.rmvb;*.mp3;*.wav;*.aac|All files|*.*</value></data>
   <data name="Mode" xml:space="preserve"><value>Mode</value></data>
   <data name="Next" xml:space="preserve"><value>Next</value></data>
+  <data name="PlayNext" xml:space="preserve"><value>Play next</value></data>
+  <data name="LogNextPlayback" xml:space="preserve"><value>Next playback: {0}</value></data>
+  <data name="LogAdoptedScheduledPlayback" xml:space="preserve"><value>Adopted current input as scheduled playback: {0}</value></data>
+  <data name="LogAdoptedNormalPlayback" xml:space="preserve"><value>Adopted current input as normal playback: {0}</value></data>
+  <data name="LogIgnoredInputEnded" xml:space="preserve"><value>Ignored INPUT_ENDED frame_id={0}; pending frame_id={1}.</value></data>
+  <data name="LogPlayNextTransitionTimedOut" xml:space="preserve"><value>PLAY_NEXT transition timed out; reopening the target with PLAY.</value></data>
   <data name="NextSchedule" xml:space="preserve"><value>Next schedule</value></data>
   <data name="NoDays" xml:space="preserve"><value>No days</value></data>
   <data name="NormalAutoNext" xml:space="preserve"><value>Normal auto next</value></data>

@@ -84,6 +84,15 @@
   <data name="ColumnStatus" xml:space="preserve">
     <value>狀態</value>
   </data>
+  <data name="ColumnEnabled" xml:space="preserve">
+    <value>&#x555F;&#x7528;</value>
+  </data>
+  <data name="Enabled" xml:space="preserve">
+    <value>&#x555F;&#x7528;</value>
+  </data>
+  <data name="Disabled" xml:space="preserve">
+    <value>&#x5DF2;&#x505C;&#x7528;</value>
+  </data>
   <data name="ColumnTitle" xml:space="preserve">
     <value>標題</value>
   </data>
@@ -198,6 +207,12 @@
   <data name="Next" xml:space="preserve">
     <value>下一項</value>
   </data>
+  <data name="PlayNext" xml:space="preserve"><value>&#x4E0B;&#x4E00;&#x500B;&#x64AD;&#x653E;</value></data>
+  <data name="LogNextPlayback" xml:space="preserve"><value>&#x4E0B;&#x4E00;&#x500B;&#x64AD;&#x653E;&#xFF1A;{0}</value></data>
+  <data name="LogAdoptedScheduledPlayback" xml:space="preserve"><value>&#x5DF2;&#x5C07;&#x7576;&#x524D;&#x8F38;&#x5165;&#x63A5;&#x7BA1;&#x70BA;&#x5B9A;&#x6642;&#x64AD;&#x653E;&#xFF1A;{0}</value></data>
+  <data name="LogAdoptedNormalPlayback" xml:space="preserve"><value>&#x5DF2;&#x5C07;&#x7576;&#x524D;&#x8F38;&#x5165;&#x63A5;&#x7BA1;&#x70BA;&#x4E00;&#x822C;&#x64AD;&#x653E;&#xFF1A;{0}</value></data>
+  <data name="LogIgnoredInputEnded" xml:space="preserve"><value>&#x5DF2;&#x5FFD;&#x7565; INPUT_ENDED frame_id={0}&#xFF1B;&#x76EE;&#x524D;&#x7B49;&#x5F85; frame_id={1}&#x3002;</value></data>
+  <data name="LogPlayNextTransitionTimedOut" xml:space="preserve"><value>PLAY_NEXT &#x5207;&#x63DB;&#x903E;&#x6642;&#xFF1B;&#x6B63;&#x5728;&#x4F7F;&#x7528; PLAY &#x91CD;&#x65B0;&#x958B;&#x555F;&#x76EE;&#x6A19;&#x3002;</value></data>
   <data name="NextSchedule" xml:space="preserve">
     <value>下一排程</value>
   </data>

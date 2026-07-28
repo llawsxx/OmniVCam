@@ -351,7 +351,7 @@ The virtual camera accepts line-based TCP commands. Default port: `16999`.
 Supported commands include:
 
 - `PING`: returns `OK PONG`.
-- `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`.
+- `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `actual_input`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`. `input` is the SHA-256 digest of the requested `input + options`, while `actual_input` is the digest of the content currently reaching output. Digests use 64 lowercase hexadecimal characters.
 - `DURATION <input>[\toptions]`: probe input duration.
 - `PLAY <input>[\toptions]`: play input.
 - `PLAY_NEXT <input>[\toptions]`: register the next input. The controller sends it after the current input reports EOF; the backend opens it after all threads belonging to the current input finish and resets timing state at the output boundary.
@@ -375,8 +375,8 @@ Supported commands include:
 
 The backend also sends unsolicited event lines over the same TCP connection:
 
-- `EVENT INPUT_EOF frame_id=<id>`: input reading reached EOF. The controller may respond by sending `PLAY_NEXT`; decoding/output for the old input may still be active.
-- `EVENT INPUT_ENDED frame_id=<id>`: reading, decoding, and output for that input have finished. The controller confirms the pending activation and performs the corresponding scheduled OBS end handling at this point.
+- `EVENT INPUT_EOF frame_id=<id> input=<summary>`: input reading reached EOF. The controller may respond by sending `PLAY_NEXT`; decoding/output for the old input may still be active.
+- `EVENT INPUT_ENDED frame_id=<id> input=<summary>`: reading, decoding, and output for that input have finished. The controller confirms the pending activation and performs the corresponding scheduled OBS end handling at this point.
 
 ## Build
 

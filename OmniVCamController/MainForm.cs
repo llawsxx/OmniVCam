@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -50,25 +51,21 @@ namespace OmniVCamController
         private long currentSizeBytes;
 		private long currentDeliverNs;
 		private long currentDeliverAvgNs;
-		private string currentStatusState = "stopped";
+        private string currentStatusState = "stopped";
         private string currentStatusInput = string.Empty;
+        private string currentActualStatusInput = string.Empty;
         private bool advancingPlayout;
         private bool processingPlayoutTick;
         private DateTime lastAutoAdvanceAt = DateTime.MinValue;
-        private static readonly TimeSpan PendingPlaybackTimeout = TimeSpan.FromSeconds(15);
-        private int queuedNextScheduledIndex = -1;
-        private string queuedNextCommand = string.Empty;
-        private ScheduledPlaylistItem queuedNextScheduledItem;
-        private bool eofSourceScheduled;
-        private int eofSourceIndex = -1;
-        private ScheduledPlaylistItem eofSourceScheduledItem;
-        private readonly Queue<PendingPlaybackActivation> pendingPlaybackActivations = new Queue<PendingPlaybackActivation>();
-        private readonly Queue<long> pendingInputEndedFrameIds = new Queue<long>();
-        private bool handlingInputEnded;
-        private readonly Queue<long> pendingInputEofFrameIds = new Queue<long>();
+        private DateTime terminalStatusSince = DateTime.MinValue;
+        private static readonly TimeSpan PendingPlaybackTimeout = TimeSpan.FromSeconds(10);
+        private Guid playNextOverrideId = Guid.Empty;
+        private Guid activePlayNextOverrideId = Guid.Empty;
+        private int playNextResumeIndex = -1;
+        private PendingPlaybackTransition pendingPlaybackTransition;
+        private readonly Queue<BackendInputEvent> backendInputEvents = new Queue<BackendInputEvent>();
+        private bool handlingBackendInputEvents;
         private readonly Queue<ScheduledObsAction> pendingScheduledObsEnds = new Queue<ScheduledObsAction>();
-        private Task pendingScheduledObsEndTask = Task.CompletedTask;
-        private bool handlingInputEof;
         private int playbackStateGeneration;
         private long pendingSeekSeconds = -1;
         private DateTime pendingSeekUntil = DateTime.MinValue;
@@ -100,6 +97,8 @@ namespace OmniVCamController
         public MainForm()
         {
             InitializeComponent();
+            EnableDoubleBuffering(playlistView);
+            EnableDoubleBuffering(scheduledPlaylistView);
             ApplyLocalizedDesignerText();
             commandClient = new TcpCommandClient(AppendRemoteLog, HandleBackendEvent);
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -141,6 +140,12 @@ namespace OmniVCamController
             };
         }
 
+        private static void EnableDoubleBuffering(Control control)
+        {
+            typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.SetValue(control, true, null);
+        }
+
         private void ApplyLocalizedDesignerText()
         {
             deliverLabel.Text = T("FrameDeliverBlockTimeEmpty");
@@ -154,6 +159,7 @@ namespace OmniVCamController
             saturdayBox.Text = T("WeekSaturday");
             sundayBox.Text = T("WeekSunday");
             scheduleEndBox.Text = T("UseEndTime");
+            scheduledEnabledBox.Text = T("Enabled");
             writeNowPlayingXmlBox.Text = T("WriteNowPlayingXml");
             autoAdvanceBox.Text = T("NormalAutoNext");
             scheduledStartBox.Text = T("StartAt");
@@ -288,6 +294,7 @@ namespace OmniVCamController
                 ScheduleTime = scheduleTimePicker.Value,
                 ScheduleEndEnabled = scheduleEndBox.Checked,
                 ScheduleEnd = scheduleEndPicker.Value,
+                ScheduledItemEnabled = scheduledEnabledBox.Checked,
                 ScheduledTitle = scheduledTitleBox.Text,
                 ScheduledOptions = scheduledOptionsBox.Text,
                 ObsUrl = obsUrlBox.Text,
@@ -303,6 +310,7 @@ namespace OmniVCamController
                 WeekDays = GetSelectedWeekDays(),
                 CurrentStatusState = currentStatusState,
                 CurrentStatusInput = currentStatusInput,
+                CurrentActualStatusInput = currentActualStatusInput,
                 ScheduledSlotEndAt = scheduledSlotEndAt,
                 CurrentStartedAt = currentStartedAt,
                 PendingSeekUntil = pendingSeekUntil,
@@ -390,6 +398,7 @@ namespace OmniVCamController
             activeState.ScheduleTime = scheduleTimePicker.Value;
             activeState.ScheduleEndEnabled = scheduleEndBox.Checked;
             activeState.ScheduleEnd = scheduleEndPicker.Value;
+            activeState.ScheduledItemEnabled = scheduledEnabledBox.Checked;
             activeState.ScheduledTitle = scheduledTitleBox.Text;
             activeState.ScheduledOptions = scheduledOptionsBox.Text;
             activeState.ObsUrl = obsUrlBox.Text;
@@ -420,6 +429,7 @@ namespace OmniVCamController
             activeState.CurrentSizeBytes = currentSizeBytes;
             activeState.CurrentStatusState = currentStatusState;
             activeState.CurrentStatusInput = currentStatusInput;
+            activeState.CurrentActualStatusInput = currentActualStatusInput;
             activeState.AdvancingPlayout = advancingPlayout;
             activeState.LastAutoAdvanceAt = lastAutoAdvanceAt;
             activeState.PendingSeekSeconds = pendingSeekSeconds;
@@ -453,6 +463,7 @@ namespace OmniVCamController
             currentSizeBytes = state.CurrentSizeBytes;
             currentStatusState = state.CurrentStatusState;
             currentStatusInput = state.CurrentStatusInput;
+            currentActualStatusInput = state.CurrentActualStatusInput;
             advancingPlayout = state.AdvancingPlayout;
             lastAutoAdvanceAt = state.LastAutoAdvanceAt;
             pendingSeekSeconds = state.PendingSeekSeconds;
@@ -483,6 +494,7 @@ namespace OmniVCamController
             scheduleTimePicker.Value = ClampDateTimePicker(scheduleTimePicker, state.ScheduleTime);
             scheduleEndBox.Checked = state.ScheduleEndEnabled;
             scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, state.ScheduleEnd);
+            scheduledEnabledBox.Checked = state.ScheduledItemEnabled;
             SetScheduledInputFields(state.ScheduledTitle, state.ScheduledOptions);
             obsUrlBox.Text = state.ObsUrl;
             obsPasswordBox.Text = state.ObsPassword;
@@ -967,6 +979,7 @@ namespace OmniVCamController
             root.Controls.Add(actions, 0, 0);
 
             var startSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 3) };
+            startSettings.Controls.Add(scheduledEnabledBox);
             startSettings.Controls.Add(MakeInlineLabel(T("ScheduleType")));
             startSettings.Controls.Add(scheduleTypeBox);
             startSettings.Controls.Add(MakeInlineLabel(T("OneTimeStart")));
@@ -1025,6 +1038,7 @@ namespace OmniVCamController
 
             scheduledPlaylistView.Columns.Add("#", 38);
             scheduledPlaylistView.Columns.Add(T("ColumnStatus"), 78);
+            scheduledPlaylistView.Columns.Add(T("ColumnEnabled"), 70);
             scheduledPlaylistView.Columns.Add(T("ColumnTitle"), 180);
             scheduledPlaylistView.Columns.Add(T("ColumnDuration"), 76);
             scheduledPlaylistView.Columns.Add(T("ColumnSchedule"), 210);
@@ -1089,6 +1103,7 @@ namespace OmniVCamController
             toolbar.Controls.Add(MakeButton(T("Down"), (_, __) => MoveSelected(1)));
             toolbar.Controls.Add(MakeButton(T("SetTitle"), (_, __) => SetSelectedTitle()));
             toolbar.Controls.Add(MakeButton(T("SetOptions"), (_, __) => SetSelectedOptions()));
+            toolbar.Controls.Add(MakeButton(T("PlayNext"), (_, __) => SetSelectedAsNextPlayback()));
             toolbar.Controls.Add(MakeButton(T("Load"), async (_, __) => await LoadPlaylistAsync()));
             toolbar.Controls.Add(MakeButton(T("SaveFile"), (_, __) => SavePlaylist()));
             toolbar.Controls.Add(MakeButton(T("RefreshDurations"), async (_, __) => await RefreshDurationsAsync()));
@@ -2056,19 +2071,11 @@ namespace OmniVCamController
 
         private void ClearQueuedPlaybackState(bool clearEvents = false)
         {
-            queuedNextScheduledIndex = -1;
-            queuedNextCommand = string.Empty;
-            queuedNextScheduledItem = null;
-            pendingPlaybackActivations.Clear();
-            eofSourceScheduled = false;
-            eofSourceIndex = -1;
-            eofSourceScheduledItem = null;
+            pendingPlaybackTransition = null;
             if (!clearEvents) return;
             playbackStateGeneration++;
-            pendingInputEofFrameIds.Clear();
-            pendingInputEndedFrameIds.Clear();
+            backendInputEvents.Clear();
             pendingScheduledObsEnds.Clear();
-            pendingScheduledObsEndTask = Task.CompletedTask;
         }
 
         private static void ConfigureFileDrop(Control control, Func<string[], Task> dropAction)
@@ -2318,6 +2325,7 @@ namespace OmniVCamController
         {
             var item = new ScheduledPlaylistItem
             {
+                Enabled = scheduledEnabledBox.Checked,
                 Path = input,
                 Title = useTitleInput ? GetScheduledTitleInputOrDefault(input) : GetInputTitle(input),
                 DurationSeconds = 0,
@@ -2372,6 +2380,7 @@ namespace OmniVCamController
             int index = scheduledPlaylistView.SelectedIndices[0];
             if (index < 0 || index >= scheduledPlaylist.Count) return;
             ScheduledPlaylistItem item = scheduledPlaylist[index];
+            scheduledEnabledBox.Checked = item.Enabled;
             SetInputFields(item.Path, item.Title, item.Options);
             SetScheduledInputFields(item.Title, item.Options);
             SetComboValue(scheduleTypeBox, item.ScheduleKind == ScheduleKind.Weekly ? "Weekly" : "One-time");
@@ -2402,6 +2411,7 @@ namespace OmniVCamController
             updated.LastTriggeredAt = item.LastTriggeredAt;
             if (!ValidateScheduledItemForUser(updated)) return;
             item.Path = inputBox.Text.Trim();
+            item.Enabled = updated.Enabled;
             item.Title = updated.Title;
             item.Options = updated.Options;
             SetScheduledInputFields(item.Title, item.Options);
@@ -2438,23 +2448,6 @@ namespace OmniVCamController
             AppendLog(T("InvalidScheduledItemTitle") + ": " + error);
             MessageBox.Show(this, error, T("InvalidScheduledItemTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
-        }
-
-        private bool ValidateScheduledPlaylistForUser()
-        {
-            for (int i = 0; i < scheduledPlaylist.Count; i++)
-            {
-                string error = GetScheduledItemValidationError(scheduledPlaylist[i]);
-                if (string.IsNullOrEmpty(error)) continue;
-
-                string message = TF("ScheduledItemInvalid", i + 1, error);
-                AppendLog(message);
-                MessageBox.Show(this, message, T("InvalidScheduledPlaylistTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                RefreshScheduledPlaylistView();
-                return false;
-            }
-
-            return true;
         }
 
         private static string GetScheduledItemValidationError(ScheduledPlaylistItem item)
@@ -2564,16 +2557,65 @@ namespace OmniVCamController
             await PlayCurrentAsync();
         }
 
+        private void SetSelectedAsNextPlayback()
+        {
+            if (playlistView.SelectedIndices.Count == 0) return;
+            int index = playlistView.SelectedIndices[0];
+            if (index < 0 || index >= playlist.Count) return;
+            playNextOverrideId = playlist[index].RuntimeId;
+            playNextResumeIndex = playingScheduled
+                ? (currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0)
+                : GetNextPlaylistIndex(currentIndex);
+            AppendLog(TF("LogNextPlayback", playlist[index].Title));
+            RefreshPlaylistView();
+        }
+
+        private int TakePreferredNextPlaylistIndex(int sourceIndex, bool returningFromScheduled = false)
+        {
+            if (!returningFromScheduled && activePlayNextOverrideId != Guid.Empty &&
+                sourceIndex >= 0 && sourceIndex < playlist.Count &&
+                playlist[sourceIndex].RuntimeId == activePlayNextOverrideId)
+            {
+                activePlayNextOverrideId = Guid.Empty;
+                int resume = playNextResumeIndex;
+                playNextResumeIndex = -1;
+                return resume >= 0 && resume < playlist.Count ? resume : GetNextPlaylistIndex(sourceIndex);
+            }
+
+            int overrideIndex = FindPlaylistItemIndex(playNextOverrideId);
+            if (overrideIndex >= 0)
+            {
+                activePlayNextOverrideId = playNextOverrideId;
+                playNextOverrideId = Guid.Empty;
+                return overrideIndex;
+            }
+            playNextOverrideId = Guid.Empty;
+            return returningFromScheduled
+                ? (currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0)
+                : GetNextPlaylistIndex(sourceIndex);
+        }
+
+        private void ActivatePlayNextOverrideIfNeeded(int index)
+        {
+            if (index < 0 || index >= playlist.Count || playNextOverrideId == Guid.Empty) return;
+            if (playlist[index].RuntimeId != playNextOverrideId) return;
+            activePlayNextOverrideId = playNextOverrideId;
+            playNextOverrideId = Guid.Empty;
+        }
+
         private async Task StartPlayoutAsync()
         {
             if (playlist.Count == 0 && scheduledPlaylist.Count == 0) return;
+            if (playoutRunning) return;
+            await RefreshStatusForPlayoutStartAsync();
             playoutRunning = true;
             SetPlayoutTimerRunning(true);
-            waitingForScheduledStart = scheduledStartBox.Checked;
-            if (!waitingForScheduledStart)
+            bool adoptedCurrentPlayback = await TryAdoptCurrentPlaybackAsync();
+            waitingForScheduledStart = !adoptedCurrentPlayback && scheduledStartBox.Checked;
+            if (!adoptedCurrentPlayback && !waitingForScheduledStart)
             {
                 bool startedScheduled = await StartDueScheduledItemAsync();
-                if (!startedScheduled && playlist.Count > 0)
+                if (!startedScheduled && !playingScheduled && playlist.Count > 0)
                 {
                     currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
                     await PlayCurrentAsync();
@@ -2581,6 +2623,88 @@ namespace OmniVCamController
             }
             UpdatePlayoutStatusLabel();
             AppendLog(T("PlayoutStarted"));
+        }
+
+        private async Task RefreshStatusForPlayoutStartAsync()
+        {
+            while (refreshingStatus)
+                await Task.Delay(25);
+            await RefreshStatusAsync();
+        }
+
+        private async Task<bool> TryAdoptCurrentPlaybackAsync()
+        {
+            if (!IsCurrentPlaybackActive()) return false;
+            string actualSummary = string.IsNullOrEmpty(currentActualStatusInput)
+                ? currentStatusInput : currentActualStatusInput;
+            if (string.IsNullOrEmpty(actualSummary)) return false;
+
+            DateTime now = DateTime.Now;
+            int scheduledIndex = FindMatchingActiveScheduledIndex(actualSummary, now);
+            if (scheduledIndex >= 0)
+            {
+                ScheduledPlaylistItem liveItem = scheduledPlaylist[scheduledIndex];
+                ScheduleWindow window = GetScheduleWindow(liveItem, now);
+                liveItem.LastTriggeredAt = window.Start;
+                currentScheduledIndex = scheduledIndex;
+                currentScheduledItem = CloneScheduledItem(liveItem);
+                playingScheduled = true;
+                scheduledObsEndApplied = false;
+                scheduledSlotEndAt = window.End;
+                currentStartedAt = now.AddSeconds(-Math.Max(0, currentPositionSeconds));
+                SetInputFields(liveItem.Path, liveItem.Title, liveItem.Options);
+                SelectCurrentRow();
+                SelectCurrentScheduledRow();
+                await ApplyObsActionsAsync(liveItem.ObsScene, liveItem.ObsShowSources, liveItem.ObsHideSources);
+                RefreshScheduledPlaylistView();
+                AppendLog(TF("LogAdoptedScheduledPlayback", liveItem.Title));
+                return true;
+            }
+
+            int normalIndex = FindMatchingPlaylistIndex(actualSummary);
+            if (normalIndex < 0) return false;
+            currentIndex = normalIndex;
+            playingScheduled = false;
+            currentScheduledIndex = -1;
+            currentScheduledItem = null;
+            scheduledSlotEndAt = DateTime.MinValue;
+            currentStartedAt = now.AddSeconds(-Math.Max(0, currentPositionSeconds));
+            ActivatePlayNextOverrideIfNeeded(currentIndex);
+            SelectCurrentRow();
+            RefreshScheduledPlaylistView();
+            AppendLog(TF("LogAdoptedNormalPlayback", playlist[normalIndex].Title));
+            return true;
+        }
+
+        private int FindMatchingActiveScheduledIndex(string summary, DateTime now)
+        {
+            int selectedIndex = -1;
+            DateTime selectedStart = DateTime.MinValue;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
+            {
+                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                if (!item.Enabled) continue;
+                ScheduleWindow window = GetScheduleWindow(item, now);
+                if (!window.IsActive || !InputSummariesEqual(summary,
+                    BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false)))) continue;
+                if (selectedIndex < 0 || window.Start > selectedStart)
+                {
+                    selectedIndex = i;
+                    selectedStart = window.Start;
+                }
+            }
+            return selectedIndex;
+        }
+
+        private int FindMatchingPlaylistIndex(string summary)
+        {
+            for (int i = 0; i < playlist.Count; i++)
+            {
+                PlaylistItem item = playlist[i];
+                if (InputSummariesEqual(summary,
+                    BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false)))) return i;
+            }
+            return -1;
         }
 
         private async Task StopPlayoutAsync()
@@ -2655,7 +2779,7 @@ namespace OmniVCamController
         {
             if (!playoutRunning) return;
             if (advancingPlayout) return;
-            if (pendingPlaybackActivations.Count > 0)
+            if (pendingPlaybackTransition != null)
             {
                 await RecoverTimedOutPendingPlaybackAsync();
                 return;
@@ -2685,7 +2809,6 @@ namespace OmniVCamController
             }
 
             await StartDueScheduledItemAsync();
-            await PrepareWaitingScheduledPlaybackAsync();
             await HandleScheduledEndAsync();
             await AutoAdvanceIfNeededAsync();
         }
@@ -2693,27 +2816,34 @@ namespace OmniVCamController
         private async Task AutoAdvanceIfNeededAsync()
         {
             if (advancingPlayout) return;
+            bool terminalTimedOut = terminalStatusSince != DateTime.MinValue &&
+                DateTime.Now - terminalStatusSince >= PendingPlaybackTimeout;
             if (playingScheduled)
             {
-                await AutoAdvanceScheduledIfNeededAsync();
+                if (terminalTimedOut) await HandleScheduledEndAsync();
+                else await AutoAdvanceScheduledIfNeededAsync();
                 return;
             }
             if (!autoAdvanceBox.Checked || currentIndex < 0 || currentIndex >= playlist.Count) return;
             if ((DateTime.Now - lastAutoAdvanceAt).TotalSeconds < 2) return;
 
             PlaylistItem current = playlist[currentIndex];
-            bool statusMatchesCurrent = PathsEqual(current.Path, GetStatusInputPath(currentStatusInput));
-            bool reachedPlaylistDuration = current.DurationSeconds > 0 && currentPositionSeconds >= current.DurationSeconds;
-            bool playbackFailed = statusMatchesCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
-            bool playbackEnded = statusMatchesCurrent && string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
+            string actualSummary = string.IsNullOrEmpty(currentActualStatusInput) ? currentStatusInput : currentActualStatusInput;
+            bool statusMatchesCurrent = InputSummariesEqual(actualSummary,
+                BuildInputSummary(current.Path, NormalizeQueueOptions(current.Path, current.Options, false)));
+            bool playbackFailed = statusMatchesCurrent && terminalTimedOut && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
+            bool playbackEnded = statusMatchesCurrent && terminalTimedOut && string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
 
-            if (reachedPlaylistDuration || playbackFailed || playbackEnded)
+            // Normal playlist transitions are driven by INPUT_EOF. Duration is informational and
+            // may be reached before the backend has actually finished reading the input; advancing
+            // here would incorrectly skip a WaitCurrentItem scheduled task that is still blocked.
+            if (playbackFailed || playbackEnded)
             {
                 advancingPlayout = true;
                 lastAutoAdvanceAt = DateTime.Now;
                 try
                 {
-                    await PlayNextAsync(false);
+                    if (!await StartDueScheduledItemAsync()) await PlayNextAsync(false);
                 }
                 finally
                 {
@@ -2724,6 +2854,7 @@ namespace OmniVCamController
 
         private async Task PlayNextAsync(bool manual)
         {
+            if (!manual && await StartDueScheduledItemAsync()) return;
             if (playingScheduled)
             {
                 await ReturnToNormalPlaylistAsync();
@@ -2731,22 +2862,7 @@ namespace OmniVCamController
                 return;
             }
             if (playlist.Count == 0) return;
-            if (GetComboValue(playoutModeBox) == "Random")
-            {
-                int nextValue = random.Next(playlist.Count);
-                if(playlist.Count > 1)
-                {
-                    while(nextValue == currentIndex)
-                    {
-                        nextValue = random.Next(playlist.Count);
-                    }
-                }
-                currentIndex = nextValue;
-            }
-            else
-            {
-                currentIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % playlist.Count;
-            }
+            currentIndex = TakePreferredNextPlaylistIndex(currentIndex);
             if (manual)
             {
                 playoutRunning = true;
@@ -2767,7 +2883,8 @@ namespace OmniVCamController
             currentPositionSeconds = 0;
             currentDurationSeconds = 0;
             currentStatusState = "playing";
-            currentStatusInput = item.Path;
+            currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
+            ActivatePlayNextOverrideIfNeeded(currentIndex);
             SelectCurrentRow();
             await PlayInputAsync(item.Path, item.Options);
             UpdatePlayoutStatusLabel();
@@ -2795,62 +2912,85 @@ namespace OmniVCamController
                 return;
             }
             AppendLog("[vcam event] " + eventLine);
+            string inputSummary = ParseStatusString(eventLine, "input=");
             if (eventLine.StartsWith("INPUT_EOF", StringComparison.OrdinalIgnoreCase))
-                QueueInputEofHandling(ParseStatusLong(eventLine, "frame_id="));
+                QueueBackendInputEvent(new BackendInputEvent(BackendInputEventType.Eof,
+                    ParseStatusLong(eventLine, "frame_id="), inputSummary));
             else if (eventLine.StartsWith("INPUT_ENDED", StringComparison.OrdinalIgnoreCase))
-                QueueInputEndedHandling(ParseStatusLong(eventLine, "frame_id="));
+                QueueBackendInputEvent(new BackendInputEvent(BackendInputEventType.Ended,
+                    ParseStatusLong(eventLine, "frame_id="), inputSummary));
         }
 
-        private void QueueInputEofHandling(long frameId)
+        private void QueueBackendInputEvent(BackendInputEvent inputEvent)
         {
-            pendingInputEofFrameIds.Enqueue(frameId);
-            if (!handlingInputEof) _ = HandleInputEofEventsAsync();
+            backendInputEvents.Enqueue(inputEvent);
+            if (!handlingBackendInputEvents) _ = HandleBackendInputEventsAsync();
         }
 
-        private async Task HandleInputEofEventsAsync()
+        private async Task HandleBackendInputEventsAsync()
         {
-            if (handlingInputEof) return;
-            handlingInputEof = true;
+            if (handlingBackendInputEvents) return;
+            handlingBackendInputEvents = true;
             int stateGeneration = playbackStateGeneration;
             try
             {
-                while (stateGeneration == playbackStateGeneration && pendingInputEofFrameIds.Count > 0)
-                    await AdvanceOnInputEofAsync(pendingInputEofFrameIds.Dequeue());
+                while (stateGeneration == playbackStateGeneration && backendInputEvents.Count > 0)
+                {
+                    BackendInputEvent inputEvent = backendInputEvents.Dequeue();
+                    if (inputEvent.Type == BackendInputEventType.Eof)
+                        await AdvanceOnInputEofAsync(inputEvent);
+                    else
+                        await CompleteInputTransitionAsync(inputEvent);
+                }
             }
             finally
             {
-                handlingInputEof = false;
+                handlingBackendInputEvents = false;
             }
         }
 
-        private async Task AdvanceOnInputEofAsync(long frameId = 0)
+        private async Task AdvanceOnInputEofAsync(BackendInputEvent inputEvent)
         {
             if (!playoutRunning) return;
-            if (advancingPlayout) return;
+            // Do not discard an EOF merely because a timer/manual transition is finishing. This
+            // event is the authoritative ordinary-item completion signal used to unblock schedules.
+            while (advancingPlayout && playoutRunning)
+                await Task.Delay(25);
+            if (!playoutRunning) return;
             advancingPlayout = true;
             lastAutoAdvanceAt = DateTime.Now;
             try
             {
-                bool sourceScheduled = pendingPlaybackActivations.Count > 0 ? eofSourceScheduled : playingScheduled;
-                int sourceIndex = pendingPlaybackActivations.Count > 0
-                    ? eofSourceIndex : (sourceScheduled ? currentScheduledIndex : currentIndex);
-                if (sourceScheduled)
+                if (pendingPlaybackTransition != null)
                 {
-                    ScheduledPlaylistItem sourceItem = pendingPlaybackActivations.Count > 0
-                        ? eofSourceScheduledItem : currentScheduledItem;
-                    await HandleScheduledEndAsync(true, frameId, sourceIndex, sourceItem);
+                    if (inputEvent.FrameId != pendingPlaybackTransition.FrameId &&
+                        InputSummariesEqual(inputEvent.Input, pendingPlaybackTransition.TargetInput))
+                        pendingPlaybackTransition.DeferredTargetEof = inputEvent;
                     return;
                 }
-                if (await QueueWaitingScheduledActivationAsync(frameId)) return;
+                string endedInput = inputEvent.Input;
+                bool eventMatchesScheduled = currentScheduledItem != null && InputSummariesEqual(endedInput,
+                    BuildInputSummary(currentScheduledItem.Path, NormalizeQueueOptions(
+                        currentScheduledItem.Path, currentScheduledItem.Options, false)));
+                bool eventMatchesNormal = currentIndex >= 0 && currentIndex < playlist.Count && InputSummariesEqual(endedInput,
+                    BuildInputSummary(playlist[currentIndex].Path, NormalizeQueueOptions(
+                        playlist[currentIndex].Path, playlist[currentIndex].Options, false)));
+                bool sourceScheduled = !string.IsNullOrEmpty(endedInput)
+                    ? eventMatchesScheduled && !eventMatchesNormal
+                    : playingScheduled;
+                int sourceIndex = sourceScheduled ? currentScheduledIndex : currentIndex;
+                if (sourceScheduled)
+                {
+                    await HandleScheduledEndAsync(true, inputEvent.FrameId, sourceIndex, currentScheduledItem);
+                    return;
+                }
+                if (await QueueWaitingScheduledActivationAsync(inputEvent.FrameId)) return;
                 if (!autoAdvanceBox.Checked || playlist.Count == 0) return;
-                int nextIndex = GetNextPlaylistIndex(sourceIndex);
+                int nextIndex = TakePreferredNextPlaylistIndex(sourceIndex);
                 if (nextIndex < 0 || nextIndex >= playlist.Count) return;
                 PlaylistItem next = playlist[nextIndex];
                 if (!await QueueNextInputAsync(next.Path, next.Options, true)) return;
-                pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForPlaylist(nextIndex, next, frameId));
-                eofSourceScheduled = false;
-                eofSourceIndex = nextIndex;
-                eofSourceScheduledItem = null;
+                pendingPlaybackTransition = PendingPlaybackTransition.ForPlaylist(nextIndex, next, inputEvent.FrameId);
             }
             finally
             {
@@ -2871,7 +3011,7 @@ namespace OmniVCamController
             currentPositionSeconds = 0;
             currentDurationSeconds = 0;
             currentStatusState = "playing";
-            currentStatusInput = item.Path;
+            currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
             ScheduleWindow window = GetScheduleWindow(item, DateTime.Now);
             scheduledSlotEndAt = window.End;
             SelectCurrentRow();
@@ -2884,99 +3024,76 @@ namespace OmniVCamController
             UpdatePlayoutStatusLabel();
         }
 
-        private async Task PrepareWaitingScheduledPlaybackAsync()
-        {
-            if (!playoutRunning || !IsCurrentPlaybackActive()) return;
-            DateTime now = DateTime.Now;
-            if (IsWaitingScheduledSlotActive(now)) return;
-            int selectedIndex = -1;
-            DateTime selectedStart = DateTime.MinValue;
-            for (int i = 0; i < scheduledPlaylist.Count; i++)
-            {
-                if (playingScheduled && i == currentScheduledIndex) continue;
-                ScheduledPlaylistItem item = scheduledPlaylist[i];
-                ScheduleWindow window = GetScheduleWindow(i, now);
-                if (!window.IsActive || (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End)) continue;
-                if (selectedIndex < 0 || window.Start > selectedStart)
-                {
-                    selectedIndex = i;
-                    selectedStart = window.Start;
-                }
-            }
-
-            if (selectedIndex < 0) return;
-            ScheduledPlaylistItem next = scheduledPlaylist[selectedIndex];
-            string options = NormalizeQueueOptions(next.Path, next.Options, false);
-            string command = string.IsNullOrWhiteSpace(options) ? "PLAY_NEXT " + next.Path : "PLAY_NEXT " + next.Path + "\t" + options;
-            if (queuedNextScheduledIndex == selectedIndex && string.Equals(queuedNextCommand, command, StringComparison.Ordinal)) return;
-            queuedNextScheduledIndex = selectedIndex;
-            queuedNextCommand = command;
-            queuedNextScheduledItem = CloneScheduledItem(next);
-            await Task.CompletedTask;
-        }
-
         private async Task<bool> QueueWaitingScheduledActivationAsync(long endingFrameId = 0,
             ScheduledPlaylistItem endingScheduledItem = null)
         {
-            int index = queuedNextScheduledIndex;
-            ScheduledPlaylistItem item = CloneScheduledItem(queuedNextScheduledItem);
-            if (item == null) return false;
-            index = FindScheduledItemIndex(item.RuntimeId);
-            ScheduleWindow window = GetScheduleWindow(item, DateTime.Now);
-            if (!window.IsActive ||
-                (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End))
+            DateTime now = DateTime.Now;
+            int index = FindDueScheduledIndex(now);
+            if (index < 0) return false;
+            ScheduledPlaylistItem item = CloneScheduledItem(scheduledPlaylist[index]);
+            ScheduleWindow window = GetScheduleWindow(item, now);
+            if (item.StartAction == ScheduleStartAction.StartImmediately)
             {
-                queuedNextScheduledIndex = -1;
-                queuedNextCommand = string.Empty;
-                queuedNextScheduledItem = null;
-                return false;
+                if (endingScheduledItem != null) await ApplyObsActionsAsync(endingScheduledItem.ObsEndScene,
+                    endingScheduledItem.ObsEndShowSources, endingScheduledItem.ObsEndHideSources);
+                currentScheduledIndex = index;
+                currentScheduledItem = item;
+                await PlayScheduledCurrentAsync();
+                return true;
             }
 
             if (!await QueueNextInputAsync(item.Path, item.Options, true)) return false;
-            queuedNextScheduledIndex = -1;
-            queuedNextCommand = string.Empty;
-            queuedNextScheduledItem = null;
             if (endingScheduledItem != null) QueueScheduledObsEnd(endingScheduledItem, endingFrameId);
-            pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForScheduled(index, item, endingFrameId, window.Start, true));
-            eofSourceScheduled = true;
-            eofSourceIndex = index;
-            eofSourceScheduledItem = CloneScheduledItem(item);
+            pendingPlaybackTransition = PendingPlaybackTransition.ForScheduled(index, item, endingFrameId, window.Start, true);
             return true;
         }
 
-        private void QueueInputEndedHandling(long frameId)
+        private int FindDueScheduledIndex(DateTime now)
         {
-            pendingInputEndedFrameIds.Enqueue(frameId);
-            if (!handlingInputEnded) _ = HandleInputEndedEventsAsync();
-        }
-
-        private async Task HandleInputEndedEventsAsync()
-        {
-            if (handlingInputEnded) return;
-            handlingInputEnded = true;
-            int stateGeneration = playbackStateGeneration;
-            try
+            int selectedIndex = -1;
+            ScheduleWindow selectedWindow = ScheduleWindow.Empty;
+            for (int i = 0; i < scheduledPlaylist.Count; i++)
             {
-                while (stateGeneration == playbackStateGeneration && pendingInputEndedFrameIds.Count > 0)
+                ScheduledPlaylistItem item = scheduledPlaylist[i];
+                if (!item.Enabled) continue;
+                ScheduleWindow window = GetScheduleWindow(i, now);
+                if (!window.IsActive) continue;
+                if (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End) continue;
+                if (selectedIndex < 0 || window.Start > selectedWindow.Start)
                 {
-                    long frameId = pendingInputEndedFrameIds.Dequeue();
-                    await ApplyPendingScheduledObsEndsAsync(false, frameId);
-                    if (stateGeneration != playbackStateGeneration) return;
-                    await ActivatePendingPlaybackAsync(frameId);
+                    selectedIndex = i;
+                    selectedWindow = window;
                 }
             }
-            finally
-            {
-                handlingInputEnded = false;
-            }
+            return selectedIndex;
         }
 
-        private async Task ActivatePendingPlaybackAsync(long frameId)
+        private async Task CompleteInputTransitionAsync(BackendInputEvent inputEvent)
         {
-            if (pendingPlaybackActivations.Count == 0) return;
-            PendingPlaybackActivation activation = pendingPlaybackActivations.Peek();
-            if (activation.FrameId != 0 && frameId != 0 && activation.FrameId != frameId) return;
-            pendingPlaybackActivations.Dequeue();
+            int stateGeneration = playbackStateGeneration;
+            await ApplyPendingScheduledObsEndsAsync(false, inputEvent.FrameId);
+            if (stateGeneration != playbackStateGeneration) return;
+            if (pendingPlaybackTransition == null)
+            {
+                if (InputSummariesEqual(inputEvent.Input, currentStatusInput))
+                    currentActualStatusInput = currentStatusInput;
+                return;
+            }
+            BackendInputEvent? deferredEof = await ActivatePendingPlaybackAsync(inputEvent.FrameId);
+            if (deferredEof.HasValue && stateGeneration == playbackStateGeneration)
+                await AdvanceOnInputEofAsync(deferredEof.Value);
+        }
+
+        private async Task<BackendInputEvent?> ActivatePendingPlaybackAsync(long frameId)
+        {
+            PendingPlaybackTransition activation = pendingPlaybackTransition;
+            if (activation == null) return null;
+            if (activation.FrameId != 0 && frameId != 0 && activation.FrameId != frameId)
+            {
+                AppendLog(TF("LogIgnoredInputEnded", frameId, activation.FrameId));
+                return null;
+            }
+            pendingPlaybackTransition = null;
 
             currentStartedAt = DateTime.Now;
             currentPositionSeconds = 0;
@@ -2985,7 +3102,7 @@ namespace OmniVCamController
             if (activation.Scheduled)
             {
                 ScheduledPlaylistItem item = CloneScheduledItem(activation.ScheduledItem);
-                if (item == null) return;
+                if (item == null) return activation.DeferredTargetEof;
                 int liveIndex = FindScheduledItemIndex(item.RuntimeId);
                 if (activation.WindowStart != DateTime.MinValue)
                 {
@@ -2996,7 +3113,7 @@ namespace OmniVCamController
                 currentScheduledIndex = liveIndex;
                 currentScheduledItem = item;
                 scheduledObsEndApplied = false;
-                currentStatusInput = item.Path;
+                currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
                 scheduledSlotEndAt = GetScheduleWindow(item, DateTime.Now).End;
                 SelectCurrentRow();
                 SelectCurrentScheduledRow();
@@ -3008,29 +3125,32 @@ namespace OmniVCamController
             else
             {
                 PlaylistItem item = ClonePlaylistItem(activation.PlaylistItem);
-                if (item == null) return;
+                if (item == null) return activation.DeferredTargetEof;
                 currentIndex = FindPlaylistItemIndex(item.RuntimeId);
+                ActivatePlayNextOverrideIfNeeded(currentIndex);
                 playingScheduled = false;
                 currentScheduledIndex = -1;
                 currentScheduledItem = null;
                 scheduledSlotEndAt = DateTime.MinValue;
-                currentStatusInput = item.Path;
+                currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
                 SelectCurrentRow();
             }
+            currentActualStatusInput = currentStatusInput;
             UpdatePlayoutStatusLabel();
+            return activation.DeferredTargetEof;
         }
 
         private async Task RecoverTimedOutPendingPlaybackAsync()
         {
-            if (pendingPlaybackActivations.Count == 0) return;
+            if (pendingPlaybackTransition == null) return;
             bool sourceEnded = string.Equals(currentStatusState, "ended", StringComparison.OrdinalIgnoreCase);
             bool sourceFailed = string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase);
             if (!sourceEnded && !sourceFailed) return;
-            PendingPlaybackActivation activation = pendingPlaybackActivations.Peek();
+            PendingPlaybackTransition activation = pendingPlaybackTransition;
             if (DateTime.UtcNow - activation.QueuedAtUtc < PendingPlaybackTimeout) return;
 
-            pendingPlaybackActivations.Dequeue();
-            AppendLog("PLAY_NEXT transition timed out; reopening the target with PLAY.");
+            pendingPlaybackTransition = null;
+            AppendLog(T("LogPlayNextTransitionTimedOut"));
             await ApplyPendingScheduledObsEndsAsync(false, activation.FrameId);
             ClearQueuedPlaybackState();
 
@@ -3049,7 +3169,7 @@ namespace OmniVCamController
                 playingScheduled = true;
                 scheduledObsEndApplied = false;
                 scheduledSlotEndAt = GetScheduleWindow(item, DateTime.Now).End;
-                currentStatusInput = item.Path;
+                currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
                 currentStatusState = "opening";
                 if (activation.ApplyObsStart)
                     await ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources);
@@ -3060,12 +3180,13 @@ namespace OmniVCamController
                 PlaylistItem item = ClonePlaylistItem(activation.PlaylistItem);
                 if (item == null) return;
                 currentIndex = FindPlaylistItemIndex(item.RuntimeId);
+                ActivatePlayNextOverrideIfNeeded(currentIndex);
                 playingScheduled = false;
                 currentScheduledIndex = -1;
                 currentScheduledItem = null;
                 scheduledSlotEndAt = DateTime.MinValue;
                 currentStatusState = "opening";
-                currentStatusInput = item.Path;
+                currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
                 await PlayInputAsync(item.Path, item.Options);
             }
             RefreshScheduledPlaylistView();
@@ -3144,13 +3265,6 @@ namespace OmniVCamController
             await ApplyObsActionsAsync(item.ObsEndScene, item.ObsEndShowSources, item.ObsEndHideSources);
         }
 
-        private void QueueScheduledObsEnd(long frameId = 0)
-        {
-            if (!playingScheduled || scheduledObsEndApplied || currentScheduledItem == null) return;
-            scheduledObsEndApplied = true;
-            EnqueueScheduledObsEnd(currentScheduledItem, frameId);
-        }
-
         private void QueueScheduledObsEnd(ScheduledPlaylistItem item, long frameId)
         {
             if (item == null) return;
@@ -3172,27 +3286,9 @@ namespace OmniVCamController
             });
         }
 
-        private Task ApplyPendingScheduledObsEndsAsync(bool applyAll = true, long frameId = 0)
+        private async Task ApplyPendingScheduledObsEndsAsync(bool applyAll = true, long frameId = 0)
         {
             int stateGeneration = playbackStateGeneration;
-            pendingScheduledObsEndTask = ApplyPendingScheduledObsEndsCoreAsync(
-                pendingScheduledObsEndTask, applyAll, frameId, stateGeneration);
-            return pendingScheduledObsEndTask;
-        }
-
-        private async Task ApplyPendingScheduledObsEndsCoreAsync(Task previousTask, bool applyAll, long frameId,
-            int stateGeneration)
-        {
-            try
-            {
-                await previousTask;
-            }
-            catch
-            {
-                // OBS errors are logged by ApplyObsActionsAsync. Keep later actions usable.
-            }
-            if (stateGeneration != playbackStateGeneration) return;
-
             if (!applyAll && pendingScheduledObsEnds.Count > 0)
             {
                 ScheduledObsAction next = pendingScheduledObsEnds.Peek();
@@ -3235,26 +3331,12 @@ namespace OmniVCamController
         {
             DateTime now = DateTime.Now;
             if (IsWaitingScheduledSlotActive(now)) return false;
-            int selectedIndex = -1;
-            ScheduleWindow selectedWindow = ScheduleWindow.Empty;
-
             List<ScheduledPlaylistItem> active = scheduledPlaylist;
-            for (int i = 0; i < active.Count; i++)
-            {
-                ScheduledPlaylistItem item = active[i];
-                ScheduleWindow window = GetScheduleWindow(i, now);
-                if (!window.IsActive) continue;
-                if (item.LastTriggeredAt >= window.Start && item.LastTriggeredAt < window.End) continue;
-                if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) continue;
-
-                if (selectedIndex < 0 || window.Start > selectedWindow.Start)
-                {
-                    selectedIndex = i;
-                    selectedWindow = window;
-                }
-            }
+            int selectedIndex = FindDueScheduledIndex(now);
 
             if (selectedIndex < 0) return false;
+            ScheduleWindow selectedWindow = GetScheduleWindow(selectedIndex, now);
+            if (active[selectedIndex].StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) return false;
             if (playingScheduled && IsCurrentPlaybackActive())
             {
                 if (currentScheduledItem != null)
@@ -3304,11 +3386,8 @@ namespace OmniVCamController
                 if (inputEof)
                 {
                     if (!await QueueNextInputAsync(item.Path, item.Options, true)) return;
-                    pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForScheduled(index, item, eofFrameId,
-                        item.LastTriggeredAt, false));
-                    eofSourceScheduled = true;
-                    eofSourceIndex = index;
-                    eofSourceScheduledItem = CloneScheduledItem(item);
+                    pendingPlaybackTransition = PendingPlaybackTransition.ForScheduled(index, item, eofFrameId,
+                        item.LastTriggeredAt, false);
                 }
                 else
                 {
@@ -3316,7 +3395,7 @@ namespace OmniVCamController
                     currentPositionSeconds = 0;
                     currentDurationSeconds = 0;
                     currentStatusState = "playing";
-                    currentStatusInput = item.Path;
+                    currentStatusInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false));
                     await PlayInputAsync(item.Path, item.Options);
                 }
                 return;
@@ -3356,6 +3435,7 @@ namespace OmniVCamController
             scheduledSlotEndAt = DateTime.MinValue;
             currentStatusState = "stopped";
             currentStatusInput = string.Empty;
+            currentActualStatusInput = string.Empty;
             RefreshScheduledPlaylistView();
             UpdatePlayoutStatusLabel();
 
@@ -3367,19 +3447,18 @@ namespace OmniVCamController
         private async Task QueueReturnToNormalPlaylistAsync(long endingFrameId, ScheduledPlaylistItem scheduledItem)
         {
             if (playlist.Count == 0) return;
-            int returnIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            int returnIndex = TakePreferredNextPlaylistIndex(currentIndex, true);
             PlaylistItem item = playlist[returnIndex];
+            ActivatePlayNextOverrideIfNeeded(returnIndex);
             if (!await QueueNextInputAsync(item.Path, item.Options, true)) return;
             QueueScheduledObsEnd(scheduledItem, endingFrameId);
-            pendingPlaybackActivations.Enqueue(PendingPlaybackActivation.ForPlaylist(returnIndex, item, endingFrameId));
-            eofSourceScheduled = false;
-            eofSourceIndex = returnIndex;
-            eofSourceScheduledItem = null;
+            pendingPlaybackTransition = PendingPlaybackTransition.ForPlaylist(returnIndex, item, endingFrameId);
         }
 
         private async Task ReturnToNormalPlaylistAsync()
         {
-            currentIndex = currentIndex >= 0 && currentIndex < playlist.Count ? currentIndex : 0;
+            currentIndex = TakePreferredNextPlaylistIndex(currentIndex, true);
+            ActivatePlayNextOverrideIfNeeded(currentIndex);
             Task obsEndTask = ApplyScheduledObsEndAsync();
             playingScheduled = false;
             currentScheduledIndex = -1;
@@ -3477,6 +3556,7 @@ namespace OmniVCamController
                     new XAttribute("scheduleTime", state.ScheduleTime.ToString("HH:mm:ss")),
                     new XAttribute("scheduleEndEnabled", state.ScheduleEndEnabled ? "1" : "0"),
                     new XAttribute("scheduleEnd", state.ScheduleEnd.ToString("o")),
+                    new XAttribute("scheduledItemEnabled", state.ScheduledItemEnabled ? "1" : "0"),
                     new XAttribute("scheduledTitle", state.ScheduledTitle),
                     new XAttribute("scheduledOptions", state.ScheduledOptions),
                     new XAttribute("obsUrl", state.ObsUrl),
@@ -3499,6 +3579,7 @@ namespace OmniVCamController
                         new XAttribute("isBumper", item.IsBumper ? "1" : "0")))),
                 new XElement("ScheduledPlaylist",
                     state.ScheduledPlaylist.Select(item => new XElement("Item",
+                        new XAttribute("enabled", item.Enabled ? "1" : "0"),
                         new XAttribute("path", item.Path),
                         new XAttribute("title", item.Title),
                         new XAttribute("durationSeconds", item.DurationSeconds),
@@ -3683,6 +3764,7 @@ namespace OmniVCamController
             if (DateTime.TryParse(GetAttribute(settings, "scheduleTime", null), out dateValue)) scheduleTimePicker.Value = ClampDateTimePicker(scheduleTimePicker, dateValue);
             scheduleEndBox.Checked = GetAttribute(settings, "scheduleEndEnabled", scheduleEndBox.Checked ? "1" : "0") == "1";
             if (DateTime.TryParse(GetAttribute(settings, "scheduleEnd", null), out dateValue)) scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, dateValue);
+            scheduledEnabledBox.Checked = GetAttribute(settings, "scheduledItemEnabled", "1") == "1";
             scheduledTitleBox.Text = GetAttribute(settings, "scheduledTitle", scheduledTitleBox.Text);
             scheduledOptionsBox.Text = GetAttribute(settings, "scheduledOptions", scheduledOptionsBox.Text);
             obsUrlBox.Text = GetAttribute(settings, "obsUrl", obsUrlBox.Text);
@@ -3747,6 +3829,7 @@ namespace OmniVCamController
 
             return new ScheduledPlaylistItem
             {
+                Enabled = GetAttribute(itemElement, "enabled", "1") == "1",
                 Path = itemPath,
                 Title = GetAttribute(itemElement, "title", GetInputTitle(itemPath)),
                 DurationSeconds = int.TryParse(GetAttribute(itemElement, "durationSeconds", null), out duration) ? duration : 0,
@@ -3834,7 +3917,8 @@ namespace OmniVCamController
             if (!writeNowPlayingXmlBox.Checked) return;
             try
             {
-                string path = GetStatusInputPath(currentStatusInput);
+                string path = ResolveStatusInputPath(string.IsNullOrEmpty(currentActualStatusInput)
+                    ? currentStatusInput : currentActualStatusInput);
                 long position = Math.Max(0, currentPositionSeconds);
                 long duration = Math.Max(0, currentDurationSeconds);
                 var document = new XDocument(
@@ -3930,7 +4014,9 @@ namespace OmniVCamController
             for (int i = 0; i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
-                bool isCurrent = !playingScheduled && PathsEqual(item.Path, GetStatusInputPath(currentStatusInput));
+                bool isCurrent = !playingScheduled && InputSummariesEqual(
+                    string.IsNullOrEmpty(currentActualStatusInput) ? currentStatusInput : currentActualStatusInput,
+                    BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false)));
                 var row = new ListViewItem((i + 1).ToString());
                 row.SubItems.Add(isCurrent ? FormatState(currentStatusState) : string.Empty);
                 row.SubItems.Add(item.IsBumper ? T("Bumper") : T("Program"));
@@ -3957,6 +4043,7 @@ namespace OmniVCamController
                 ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
                 var row = new ListViewItem((i + 1).ToString());
                 row.SubItems.Add(isCurrent ? FormatState(currentStatusState) : FormatScheduledIdleStatus(item, window));
+                row.SubItems.Add(item.Enabled ? T("Enabled") : T("Disabled"));
                 row.SubItems.Add(item.Title);
                 row.SubItems.Add(FormatDuration(item.DurationSeconds));
                 row.SubItems.Add(FormatSchedule(item));
@@ -3969,6 +4056,11 @@ namespace OmniVCamController
                 row.SubItems.Add(item.Path);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) row.BackColor = Color.FromArgb(255, 230, 230);
                 else if (isCurrent) row.BackColor = Color.FromArgb(220, 238, 255);
+                else if (!item.Enabled)
+                {
+                    row.BackColor = Color.FromArgb(245, 245, 245);
+                    row.ForeColor = SystemColors.GrayText;
+                }
                 else if (FormatScheduledIdleStatus(item, window) == T("Blocked")) row.BackColor = Color.FromArgb(255, 248, 220);
                 rows.Add(row);
             }
@@ -4038,11 +4130,13 @@ namespace OmniVCamController
 
         private void UpdatePlaylistStatusView()
         {
-            string statusPath = GetStatusInputPath(currentStatusInput);
+            string actualSummary = string.IsNullOrEmpty(currentActualStatusInput)
+                ? currentStatusInput : currentActualStatusInput;
             for (int i = 0; i < playlistView.Items.Count && i < playlist.Count; i++)
             {
                 PlaylistItem item = playlist[i];
-                bool isCurrent = !playingScheduled && PathsEqual(item.Path, statusPath);
+                bool isCurrent = !playingScheduled && InputSummariesEqual(actualSummary,
+                    BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false)));
                 ListViewItem row = playlistView.Items[i];
                 SetListViewText(row, 1, isCurrent ? FormatState(currentStatusState) : string.Empty);
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) SetListViewBackColor(row, Color.FromArgb(255, 230, 230));
@@ -4056,9 +4150,11 @@ namespace OmniVCamController
                 ScheduleWindow window = GetScheduleWindow(i, DateTime.Now);
                 string idleStatus = FormatScheduledIdleStatus(scheduledPlaylist[i], window);
                 SetListViewText(row, 1, isCurrent ? FormatState(currentStatusState) : idleStatus);
-                SetListViewText(row, 10, FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt));
+                SetListViewText(row, 2, scheduledPlaylist[i].Enabled ? T("Enabled") : T("Disabled"));
+                SetListViewText(row, 11, FormatLastTriggered(scheduledPlaylist[i].LastTriggeredAt));
                 if (isCurrent && string.Equals(currentStatusState, "error", StringComparison.OrdinalIgnoreCase)) SetListViewBackColor(row, Color.FromArgb(255, 230, 230));
                 else if (isCurrent) SetListViewBackColor(row, Color.FromArgb(220, 238, 255));
+                else if (!scheduledPlaylist[i].Enabled) SetListViewBackColor(row, Color.FromArgb(245, 245, 245));
                 else if (idleStatus == T("Blocked")) SetListViewBackColor(row, Color.FromArgb(255, 248, 220));
                 else SetListViewBackColor(row, SystemColors.Window);
             }
@@ -4179,8 +4275,15 @@ namespace OmniVCamController
                 currentSizeBytes = ParseStatusLong(reply, "size=");
                 currentDeliverNs = ParseStatusLong(reply, "deliver_ns=");
                 currentDeliverAvgNs = ParseStatusLong(reply, "deliver_avg_ns=");
-                currentStatusState = ParseStatusString(reply, "state=");
+                string newStatusState = ParseStatusString(reply, "state=");
+                bool terminalState = string.Equals(newStatusState, "ended", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(newStatusState, "error", StringComparison.OrdinalIgnoreCase);
+                if (!terminalState) terminalStatusSince = DateTime.MinValue;
+                else if (!string.Equals(currentStatusState, newStatusState, StringComparison.OrdinalIgnoreCase) || terminalStatusSince == DateTime.MinValue)
+                    terminalStatusSince = DateTime.Now;
+                currentStatusState = newStatusState;
                 currentStatusInput = ParseStatusString(reply, "input=");
+                currentActualStatusInput = ParseStatusString(reply, "actual_input=");
                 UpdateManualPlayButtonText();
                 if (!syncingInitialCameraSettings && ParseStatusLong(reply, "controller_connected=") == 0)
                 {
@@ -4227,12 +4330,53 @@ namespace OmniVCamController
 
         private static string ParseStatusString(string reply, string key)
         {
-            int start = reply.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+            int start = FindProtocolField(reply, key);
             if (start < 0) return string.Empty;
             start += key.Length;
             if (key.Equals("input=", StringComparison.OrdinalIgnoreCase)) return reply.Substring(start).Trim();
             int end = reply.IndexOf(' ', start);
             return (end >= 0 ? reply.Substring(start, end - start) : reply.Substring(start)).Trim();
+        }
+
+        private static int FindProtocolField(string text, string key)
+        {
+            int start = 0;
+            while (start < text.Length)
+            {
+                int found = text.IndexOf(key, start, StringComparison.OrdinalIgnoreCase);
+                if (found < 0) return -1;
+                if (found == 0 || char.IsWhiteSpace(text[found - 1])) return found;
+                start = found + key.Length;
+            }
+            return -1;
+        }
+
+        private static string BuildInputSummary(string input, string options)
+        {
+            string value = string.IsNullOrWhiteSpace(options)
+                ? (input ?? string.Empty)
+                : (input ?? string.Empty) + "\t" + options;
+            using (SHA256 sha = SHA256.Create())
+            {
+                return string.Concat(sha.ComputeHash(Encoding.UTF8.GetBytes(value)).Select(b => b.ToString("x2")));
+            }
+        }
+
+        private static bool InputSummariesEqual(string left, string right)
+        {
+            return !string.IsNullOrEmpty(left) && !string.IsNullOrEmpty(right) &&
+                string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string ResolveStatusInputPath(string summary)
+        {
+            if (string.IsNullOrEmpty(summary)) return string.Empty;
+            PlaylistItem normal = playlist.FirstOrDefault(item => InputSummariesEqual(summary,
+                BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false))));
+            if (normal != null) return normal.Path;
+            ScheduledPlaylistItem scheduled = scheduledPlaylist.FirstOrDefault(item => InputSummariesEqual(summary,
+                BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false))));
+            return scheduled != null ? scheduled.Path : string.Empty;
         }
 
         private static string GetStatusInputPath(string input)
@@ -4308,6 +4452,7 @@ namespace OmniVCamController
 
         private string FormatScheduledIdleStatus(ScheduledPlaylistItem item, ScheduleWindow window)
         {
+            if (!item.Enabled) return T("Disabled");
             if (!string.IsNullOrEmpty(GetScheduledItemValidationError(item))) return T("Invalid");
             if (!window.IsActive) return T("Waiting");
             if (item.StartAction == ScheduleStartAction.WaitCurrentItem && IsCurrentPlaybackActive()) return T("Blocked");
@@ -4375,6 +4520,7 @@ namespace OmniVCamController
             return new ScheduledPlaylistItem
             {
                 RuntimeId = item.RuntimeId,
+                Enabled = item.Enabled,
                 Path = item.Path,
                 Title = item.Title,
                 DurationSeconds = item.DurationSeconds,
@@ -4426,6 +4572,7 @@ namespace OmniVCamController
             List<ScheduledPlaylistItem> active = scheduledPlaylist;
             for (int i = 0; i < active.Count; i++)
             {
+                if (!active[i].Enabled) continue;
                 DateTime candidate = GetNextScheduleStartAfter(active[i], start);
                 if (candidate > start && candidate < best) best = candidate;
             }
@@ -4892,6 +5039,7 @@ namespace OmniVCamController
         private sealed class ScheduledPlaylistItem
         {
             public Guid RuntimeId { get; set; } = Guid.NewGuid();
+            public bool Enabled { get; set; } = true;
             public string Path { get; set; } = string.Empty;
             public string Title { get; set; } = string.Empty;
             public int DurationSeconds { get; set; }
@@ -4923,7 +5071,27 @@ namespace OmniVCamController
             public long FrameId { get; set; }
         }
 
-        private sealed class PendingPlaybackActivation
+        private enum BackendInputEventType
+        {
+            Eof,
+            Ended
+        }
+
+        private readonly struct BackendInputEvent
+        {
+            public BackendInputEvent(BackendInputEventType type, long frameId, string input)
+            {
+                Type = type;
+                FrameId = frameId;
+                Input = input ?? string.Empty;
+            }
+
+            public BackendInputEventType Type { get; }
+            public long FrameId { get; }
+            public string Input { get; }
+        }
+
+        private sealed class PendingPlaybackTransition
         {
             public bool Scheduled { get; private set; }
             public int Index { get; private set; }
@@ -4933,22 +5101,25 @@ namespace OmniVCamController
             public PlaylistItem PlaylistItem { get; private set; }
             public ScheduledPlaylistItem ScheduledItem { get; private set; }
             public DateTime QueuedAtUtc { get; private set; }
+            public string TargetInput { get; private set; } = string.Empty;
+            public BackendInputEvent? DeferredTargetEof { get; set; }
 
-            public static PendingPlaybackActivation ForPlaylist(int index, PlaylistItem item, long frameId)
+            public static PendingPlaybackTransition ForPlaylist(int index, PlaylistItem item, long frameId)
             {
-                return new PendingPlaybackActivation
+                return new PendingPlaybackTransition
                 {
                     Index = index,
                     PlaylistItem = ClonePlaylistItem(item),
                     FrameId = frameId,
-                    QueuedAtUtc = DateTime.UtcNow
+                    QueuedAtUtc = DateTime.UtcNow,
+                    TargetInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false))
                 };
             }
 
-            public static PendingPlaybackActivation ForScheduled(int index, ScheduledPlaylistItem item, long frameId,
+            public static PendingPlaybackTransition ForScheduled(int index, ScheduledPlaylistItem item, long frameId,
                 DateTime windowStart, bool applyObsStart)
             {
-                return new PendingPlaybackActivation
+                return new PendingPlaybackTransition
                 {
                     Scheduled = true,
                     Index = index,
@@ -4956,7 +5127,8 @@ namespace OmniVCamController
                     FrameId = frameId,
                     WindowStart = windowStart,
                     ApplyObsStart = applyObsStart,
-                    QueuedAtUtc = DateTime.UtcNow
+                    QueuedAtUtc = DateTime.UtcNow,
+                    TargetInput = BuildInputSummary(item.Path, NormalizeQueueOptions(item.Path, item.Options, false))
                 };
             }
         }
@@ -5062,6 +5234,7 @@ namespace OmniVCamController
             public DateTime ScheduleTime { get; set; } = DateTime.Now;
             public bool ScheduleEndEnabled { get; set; }
             public DateTime ScheduleEnd { get; set; } = DateTime.Now.AddMinutes(30);
+            public bool ScheduledItemEnabled { get; set; } = true;
             public string ScheduledTitle { get; set; } = string.Empty;
             public string ScheduledOptions { get; set; } = string.Empty;
             public string ObsUrl { get; set; } = "ws://127.0.0.1:4455";
@@ -5092,6 +5265,7 @@ namespace OmniVCamController
             public long CurrentSizeBytes { get; set; }
             public string CurrentStatusState { get; set; } = "stopped";
             public string CurrentStatusInput { get; set; } = string.Empty;
+            public string CurrentActualStatusInput { get; set; } = string.Empty;
             public bool AdvancingPlayout { get; set; }
             public DateTime LastAutoAdvanceAt { get; set; } = DateTime.MinValue;
             public long PendingSeekSeconds { get; set; } = -1;

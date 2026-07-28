@@ -34,7 +34,7 @@ extern AVRational DSHOW_TB;
 #define DEBUG_LOG(format, ...) ;
 #endif // DEBUG
 
-#define MAX_AUTO_THREADS 4
+#define MAX_AUTO_THREADS 8
 #define VIDEO_PROCESS_QUEUE_COUNT 4
 #define AUDIO_PROCESS_QUEUE_COUNT 16
 #define INPUT_MEDIA_VIDEO 0x01

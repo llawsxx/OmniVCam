@@ -44,6 +44,7 @@ namespace OmniVCamController
         private CheckBox sundayBox;
         private CheckBox scheduleEndBox;
         private DateTimePicker scheduleEndPicker;
+        private CheckBox scheduledEnabledBox;
         private TextBox scheduledTitleBox;
         private TextBox scheduledOptionsBox;
         private TextBox obsUrlBox;
@@ -111,6 +112,7 @@ namespace OmniVCamController
             sundayBox = new CheckBox();
             scheduleEndBox = new CheckBox();
             scheduleEndPicker = new DateTimePicker();
+            scheduledEnabledBox = new CheckBox();
             scheduledTitleBox = new TextBox();
             scheduledOptionsBox = new TextBox();
             obsUrlBox = new TextBox();
@@ -266,6 +268,9 @@ namespace OmniVCamController
             scheduleEndPicker.Format = DateTimePickerFormat.Custom;
             scheduleEndPicker.CustomFormat = "yyyy-MM-dd HH:mm:ss";
             scheduleEndPicker.Width = 150;
+            scheduledEnabledBox.Text = "Enabled";
+            scheduledEnabledBox.Checked = true;
+            scheduledEnabledBox.AutoSize = true;
             scheduledTitleBox.Width = 220;
             scheduledOptionsBox.Width = 260;
             writeNowPlayingXmlBox.Text = "Write now playing XML";
