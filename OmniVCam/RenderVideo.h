@@ -39,6 +39,7 @@ extern AVRational DSHOW_TB;
 #define AUDIO_PROCESS_QUEUE_COUNT 16
 #define INPUT_MEDIA_VIDEO 0x01
 #define INPUT_MEDIA_AUDIO 0x02
+#define INPUT_MEDIA_LOOP_RESTART 0x04
 
 typedef struct avframe_node {
 	AVFrame* frame;
@@ -184,6 +185,8 @@ typedef struct inout_context {
 	int test_card_style;
 	int force_exit;
 	int eof;
+	int loop_enabled;
+	volatile LONG loop_restart_requested;
 	void (*input_eof_callback)(void* priv, int64_t frame_id);
 	void* input_eof_private;
 	void (*input_ended_callback)(void* priv, int64_t frame_id);

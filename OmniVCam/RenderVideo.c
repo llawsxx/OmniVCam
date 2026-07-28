@@ -20,6 +20,10 @@
 #define FRAME_QUEUE_MAX_COUNT_LIMIT 256
 #define SEAMLESS_DRAIN_RESERVE_MS 750
 
+/* Set by the TCP thread as soon as PLAY/PLAY_NEXT is accepted, allowing a
+ * looping input read to yield before the main command loop dequeues it. */
+static volatile LONG g_input_loop_cancel_requested = 0;
+
 static int clamp_frame_queue_max_count(int64_t max_count)
 {
 	if (max_count <= 0) return 1;
@@ -1027,6 +1031,8 @@ void inout_context_reset_input(inout_context* ctx, int preserve_output)
 	ctx->special_source_running = 0;
 	ctx->force_exit = 0;
 	ctx->eof = 0;
+	ctx->loop_enabled = 0;
+	InterlockedExchange(&ctx->loop_restart_requested, 0);
 	ctx->input_start_time = AV_NOPTS_VALUE;
 	ctx->input_media_mask = 0;
 
@@ -1415,6 +1421,12 @@ DWORD WINAPI reading_input(LPVOID p)
 			else continue;
 		}
 		else if(ret < 0){
+			if (ret == AVERROR_EOF && !ctx->force_exit && ctx->loop_enabled &&
+				InterlockedCompareExchange(&g_input_loop_cancel_requested, 0, 0) == 0) {
+				InterlockedExchange(&ctx->loop_restart_requested, 1);
+				av_log(NULL, AV_LOG_INFO, "loop input reached EOF; requesting seek to start\n");
+				break;
+			}
 			natural_eof = !ctx->force_exit;
 			break;
 		}
@@ -1447,6 +1459,8 @@ DWORD WINAPI reading_input(LPVOID p)
 	av_packet_free(&pkt);
 
 	ctx->eof = 1;
+	/* Wake decoders waiting on an empty queue. packet_dequeue still consumes
+	 * every queued packet before treating abort_request as end of input. */
 	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++)
 		packet_queue_set_abort(&ctx->queues[i], 1);
 	if (natural_eof && ctx->input_eof_callback)
@@ -2861,6 +2875,39 @@ void reset_after_seek(inout_context* ctx)
 	av_audio_fifo_reset(ctx->output_audio_fifo);
 }
 
+/* Restart the same input after EOF while retaining already decoded output.
+ * A new frame id makes the existing A/V boundary logic align both streams;
+ * INPUT_MEDIA_LOOP_RESTART prevents that internal boundary from being
+ * reported as a completed project. */
+static void reset_after_loop_seek(inout_context* ctx)
+{
+	if (!ctx) return;
+	ctx->force_exit = 0;
+	ctx->eof = 0;
+	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
+		ctx->decoders[i].exit = 0;
+		ctx->decoders[i].sent_eof = 0;
+		if (ctx->decoders[i].avctx) avcodec_flush_buffers(ctx->decoders[i].avctx);
+	}
+	for (int i = 0; i < ARRAY_ELEMS(ctx->queues); i++) {
+		packet_queue_clean(&ctx->queues[i]);
+		packet_queue_set_abort(&ctx->queues[i], 0);
+	}
+	frame_queue_clean(ctx->decoded_video_frame_queue);
+	frame_queue_clean(ctx->decoded_audio_frame_queue);
+	for (int i = 0; i < ARRAY_ELEMS(ctx->filter_contexts); i++) {
+		avfilter_graph_free(&ctx->filter_contexts[i].filter_graph);
+		avfilter_inout_free(&ctx->filter_contexts[i].input);
+		avfilter_inout_free(&ctx->filter_contexts[i].output);
+		ctx->filter_contexts[i].buffer_src = NULL;
+		ctx->filter_contexts[i].buffer_sink = NULL;
+	}
+	ctx->needs_reinit_filter = 1;
+	ctx->needs_reinit_audio_filter = 1;
+	ctx->last_video_decode_time = av_gettime_relative();
+	ctx->last_audio_decode_time = ctx->last_video_decode_time;
+}
+
 
 void control_output_speed(inout_context* ctx)
 {
@@ -3198,8 +3245,9 @@ static int reset_output_at_input_boundary(inout_context* ctx, int64_t frame_id, 
 		ctx->output_last_audio_nb_samples = 0;
 		av_audio_fifo_reset(ctx->output_audio_fifo);
 	}
-	if (ended_frame_id > 0 && ctx->input_ended_callback)
+	if (ended_frame_id > 0 && !(media_mask & INPUT_MEDIA_LOOP_RESTART) && ctx->input_ended_callback) {
 		ctx->input_ended_callback(ctx->input_ended_private, ended_frame_id);
+	}
 	return 1;
 }
 
@@ -3841,6 +3889,7 @@ typedef enum tcp_control_event_type {
 	TCP_CONTROL_EVENT_INPUT_ENDED
 } tcp_control_event_type;
 
+
 typedef struct tcp_control_event {
 	tcp_control_event_type type;
 	int64_t frame_id;
@@ -4463,6 +4512,8 @@ static DWORD tcp_control_thread(LPVOID p)
 					line_buffer[line_len] = '\0';
 					tcp_control_parse_line(server, line_buffer, &cmd, reply, TCP_CONTROL_BUFFER_SIZE);
 					if (cmd.type != TCP_CONTROL_NONE) {
+						if (cmd.type == TCP_CONTROL_PLAY || cmd.type == TCP_CONTROL_PLAY_NEXT)
+							InterlockedExchange(&g_input_loop_cancel_requested, 1);
 						EnterCriticalSection(&server->mutex);
 						server->controller_connected = 1;
 						LeaveCriticalSection(&server->mutex);
@@ -4711,6 +4762,7 @@ DWORD main_thread(LPVOID p) {
 			char* queue_left = NULL;
 			char* queue_right = NULL;
 			char* queue_center = NULL;
+			char* loop = NULL;
 			char* vcodec_str = NULL;
 			char* acodec_str = NULL;
 			char* scodec_str = NULL;
@@ -4752,6 +4804,39 @@ DWORD main_thread(LPVOID p) {
 			LeaveCriticalSection(&control_server.mutex);
 			memset(&command, 0, sizeof(command));
 			if (!tcp_control_pop(&control_server, &command)) {
+				if (InterlockedCompareExchange(&ctx->loop_restart_requested, 0, 0) != 0 &&
+					InterlockedCompareExchange(&g_input_loop_cancel_requested, 0, 0) == 0 &&
+					input_threads_finished(ctx)) {
+					int64_t ended_frame_id = ctx->input_frame_id;
+					int64_t start_time = ctx->fmt_ctx && ctx->fmt_ctx->start_time != AV_NOPTS_VALUE
+						? ctx->fmt_ctx->start_time : 0;
+					stop_read(ctx, 0);
+					reset_after_loop_seek(ctx);
+					if (ctx->fmt_ctx && avformat_seek_file(ctx->fmt_ctx, -1, INT64_MIN,
+						start_time, start_time, 0) >= 0) {
+						int64_t loop_frame_id;
+						avformat_flush(ctx->fmt_ctx);
+						loop_frame_id = av_gettime_relative();
+						if (loop_frame_id <= ended_frame_id) loop_frame_id = ended_frame_id + 1;
+						ctx->input_frame_id = loop_frame_id;
+						ctx->input_media_mask |= INPUT_MEDIA_LOOP_RESTART;
+						if (start_read(ctx) >= 0) {
+							tcp_control_register_input(&control_server, ctx->input_frame_id,
+								current_input ? current_input : "");
+							InterlockedExchange(&ctx->loop_restart_requested, 0);
+							EnterCriticalSection(&control_server.mutex);
+							strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
+							LeaveCriticalSection(&control_server.mutex);
+							av_log(NULL, AV_LOG_INFO, "loop input seeked to start\n");
+							continue;
+						}
+					}
+					InterlockedExchange(&ctx->loop_restart_requested, 0);
+					ctx->eof = 1;
+					if (ctx->input_eof_callback)
+						ctx->input_eof_callback(ctx->input_eof_private, ended_frame_id);
+					av_log(NULL, AV_LOG_WARNING, "loop input seek to start failed\n");
+				}
 				play_filename = tcp_control_take_next_input_if_ready(&control_server, ctx, &next_input);
 				if (!play_filename) break;
 				should_open = 1;
@@ -4998,6 +5083,7 @@ DWORD main_thread(LPVOID p) {
 					queue_left = av_dict_pop_value(&temp_dict, "queue_left");
 					queue_right = av_dict_pop_value(&temp_dict, "queue_right");
 					queue_center = av_dict_pop_value(&temp_dict, "queue_center");
+					loop = av_dict_pop_value(&temp_dict, "loop");
 					vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
 					acodec_str = av_dict_pop_value(&temp_dict, "acodec");
 					scodec_str = av_dict_pop_value(&temp_dict, "scodec");
@@ -5014,6 +5100,9 @@ DWORD main_thread(LPVOID p) {
 				if (queue_left) queue_left_int = atoi(queue_left);
 				if (queue_right) queue_right_int = atoi(queue_right);
 				if (queue_center) queue_center_int = atoi(queue_center);
+				ctx->loop_enabled = loop && atoi(loop) != 0;
+				InterlockedExchange(&ctx->loop_restart_requested, 0);
+				InterlockedExchange(&g_input_loop_cancel_requested, 0);
 				if (auto_deinterlace_filter_opt) strcpy_s(auto_deinterlace_filter_current, sizeof(auto_deinterlace_filter_current), normalize_deinterlace_filter(auto_deinterlace_filter_opt));
 
 				int64_t open_started_us = av_gettime_relative();
@@ -5070,6 +5159,7 @@ DWORD main_thread(LPVOID p) {
 			if (queue_left) av_free(queue_left);
 			if (queue_right) av_free(queue_right);
 			if (queue_center) av_free(queue_center);
+			if (loop) av_free(loop);
 			if (vcodec_str) av_free(vcodec_str);
 			if (acodec_str) av_free(acodec_str);
 			if (scodec_str) av_free(scodec_str);

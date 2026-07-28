@@ -119,6 +119,46 @@ The main window includes a **log viewer** panel on the left side that displays F
 - Drag files onto the **Input** field to load them for playback.
 - Drag files onto the **Normal playlist** or **Scheduled playlist** to add them as items.
 
+## Interactive Playback
+
+Select **Interactive Playback** in the controller's main window to open the separate interactive-playback window. Media-library and project settings belong to the active connection tab and are saved in `OmniVCamController.xml`; the queue and operation history show runtime activity.
+
+### Media and Projects
+
+1. Add media files to the media library, then edit their titles, input options, and **Loop playback** setting as needed. A looping item is sent to the virtual camera with the `loop=1` input option.
+2. Add an interactive project and arrange one or more library items into its playback sequence. For example, a project can contain `A → B → D (loop)`.
+3. Assign an optional global hotkey and select the project's trigger mode.
+4. Trigger the project with its hotkey, the project's button, **Trigger**, or by double-clicking it.
+
+The two trigger modes are:
+
+- `PLAY_NEXT` (default): queues the sequence and switches at natural input boundaries for seamless playback. In the example above, the controller queues A, then B, and finally leaves D looping.
+- `PLAY`: immediately interrupts current playback and starts the first item in the project. The remaining items are then advanced with `PLAY_NEXT`.
+
+### Consecutive Triggers and Looping
+
+Projects can be triggered repeatedly without waiting for the current sequence to finish. Normal items retain their order in the queue, while a looping tail is treated as a replaceable destination instead of being allowed to block later actions. For example, if D is currently looping, trigger `B → C → D (loop)` and then trigger `E (loop)`; the resulting sequence is `B → C → E (loop)`.
+
+Looping is performed inside the virtual-camera backend. At EOF, it drains the current packet/decoder/filter queues, seeks the input to the beginning, assigns a new `input_frame_id`, and resumes timing only after audio and video reach the same new boundary. An internal loop restart is therefore not reported as completion of the interactive item. Receiving `PLAY` cancels the loop immediately; receiving `PLAY_NEXT` cancels it after the current pass so that the queued item can take over cleanly.
+
+The **Current and queued playback** panel shows the active item, the item already submitted with `PLAY_NEXT`, queued items, and pending trigger actions. The read-only **Operations** panel records hotkeys, project clicks, and command replies; its history is capped at 1,000 lines.
+
+Equivalent protocol traffic for `A → B → D (loop)` is conceptually:
+
+```text
+PLAY_NEXT A.mp4
+PLAY_NEXT B.mp4
+PLAY_NEXT D.mp4<TAB>loop=1
+```
+
+An immediate looping item uses:
+
+```text
+PLAY D.mp4<TAB>loop=1
+```
+
+`<TAB>` above represents the literal tab separator between the input and its options.
+
 ## Favorite Inputs
 
 Favorite inputs are shown in the right half of the main window.
@@ -323,7 +363,7 @@ Controller state is saved to:
 OmniVCamController.xml
 ```
 
-This file stores controller settings, favorite inputs, normal playlist, scheduled playlist, and now-playing XML output preference.
+This file stores controller settings, favorite inputs, normal playlist, scheduled playlist, interactive-playback media and projects, and now-playing XML output preference.
 It also stores the controller UI language in the root `uiCulture` attribute when a language is selected explicitly.
 
 `OmniVCam/config.ini` is read by the virtual camera instance. Common keys include:
@@ -355,6 +395,7 @@ Supported commands include:
 - `DURATION <input>[\toptions]`: probe input duration.
 - `PLAY <input>[\toptions]`: play input.
 - `PLAY_NEXT <input>[\toptions]`: register the next input. The controller sends it after the current input reports EOF; the backend opens it after all threads belonging to the current input finish and resets timing state at the output boundary.
+- Input option `loop=1`: when a seekable input reaches EOF, seek it back to the beginning inside the virtual-camera backend. A received `PLAY` or `PLAY_NEXT` cancels looping; `PLAY_NEXT <input>` then switches at the current pass's natural end.
 - `PAUSE`: pause output without closing the input.
 - `RESUME`: resume paused output.
 - `STOP`: stop playback.

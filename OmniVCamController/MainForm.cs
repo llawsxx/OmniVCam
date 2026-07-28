@@ -104,6 +104,7 @@ namespace OmniVCamController
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
+            BuildInteractiveWindow();
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
             scaleModeBox.Items.AddRange(new object[] { "letterbox", "fill" });
@@ -120,6 +121,7 @@ namespace OmniVCamController
             InitializeConnectionTabs();
             scheduleEndBox.CheckedChanged += (_, __) => UpdateScheduleEndControls();
             LoadAutoConfig();
+            interactiveForm?.ActivateHotkeys();
             UpdateScheduleEndControls();
             controlsReady = true;
 
@@ -136,6 +138,7 @@ namespace OmniVCamController
                 SaveActiveConnectionState();
                 SaveAutoConfig();
                 if (playoutForm != null && !playoutForm.IsDisposed) playoutForm.Close();
+                if (interactiveForm != null && !interactiveForm.IsDisposed) interactiveForm.Close();
                 commandClient.Dispose();
             };
         }
@@ -357,10 +360,12 @@ namespace OmniVCamController
             {
                 if (activeState != null) SaveActiveConnectionState();
                 ClearQueuedPlaybackState(true);
+                ClearInteractiveRuntime();
                 commandClient.Reset();
                 activeState = connectionTabs.SelectedTab.Tag as ConnectionTabState;
                 if (activeState == null) return;
                 LoadConnectionStateToControls(activeState);
+                interactiveForm?.ReloadAll();
             }
             finally
             {
@@ -415,6 +420,8 @@ namespace OmniVCamController
             activeState.Playlist = playlist;
             activeState.ScheduledPlaylist = scheduledPlaylist;
             activeState.FavoriteInputs = favoriteInputs;
+            activeState.InteractiveMedia = interactiveMedia;
+            activeState.InteractiveRoutes = interactiveRoutes;
             activeState.CurrentIndex = currentIndex;
             activeState.CurrentScheduledIndex = currentScheduledIndex;
             activeState.CurrentScheduledItem = CloneScheduledItem(currentScheduledItem);
@@ -449,6 +456,8 @@ namespace OmniVCamController
             playlist = state.Playlist;
             scheduledPlaylist = state.ScheduledPlaylist;
             favoriteInputs = state.FavoriteInputs;
+            interactiveMedia = state.InteractiveMedia;
+            interactiveRoutes = state.InteractiveRoutes;
             currentIndex = state.CurrentIndex;
             currentScheduledIndex = state.CurrentScheduledIndex;
             currentScheduledItem = CloneScheduledItem(state.CurrentScheduledItem);
@@ -672,6 +681,7 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton(T("FrameInfo"), async (_, __) => await ShowFrameInfoAsync()));
             buttons.Controls.Add(MakeButton(T("SaveXml"), (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton(T("OpenPlayout"), (_, __) => OpenPlayoutWindow()));
+            buttons.Controls.Add(MakeButton(T("InteractivePlayback"), (_, __) => OpenInteractiveWindow()));
             root.Controls.Add(buttons, 0, 1);
 
             var obsDebug = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(0, 0, 0, 6) };
@@ -900,7 +910,7 @@ namespace OmniVCamController
                 MinimumSize = new Size(980, 600),
                 StartPosition = FormStartPosition.CenterParent,
                 Font = Font,
-                Icon = Icon
+                ShowIcon = false
             };
             playoutForm.FormClosing += (_, e) =>
             {
@@ -1419,7 +1429,8 @@ namespace OmniVCamController
                 Text = T("DirectShowCamera"),
                 Size = new Size(800, 650),
                 MinimumSize = new Size(680, 480),
-                StartPosition = FormStartPosition.CenterParent
+                StartPosition = FormStartPosition.CenterParent,
+                ShowIcon = false
             })
             {
                 var existingOptions = ParseOptionMap(optionsBox.Text);
@@ -2055,6 +2066,7 @@ namespace OmniVCamController
                 return;
             }
             options = NormalizeQueueOptions(input, options, false);
+            ClearInteractiveRuntime();
             ClearQueuedPlaybackState();
             await SendCommandAsync(string.IsNullOrWhiteSpace(options) ? "PLAY " + input : "PLAY " + input + "\t" + options);
         }
@@ -2733,6 +2745,7 @@ namespace OmniVCamController
             currentScheduledIndex = -1;
             currentScheduledItem = null;
             ResetScheduledTriggers();
+            ClearInteractiveRuntime();
             await SendCommandAsync("STOP");
             SetPlayoutTimerRunning(false);
             UpdatePlayoutStatusLabel();
@@ -2912,6 +2925,7 @@ namespace OmniVCamController
                 return;
             }
             AppendLog("[vcam event] " + eventLine);
+            if (HandleInteractiveBackendEvent(eventLine)) return;
             string inputSummary = ParseStatusString(eventLine, "input=");
             if (eventLine.StartsWith("INPUT_EOF", StringComparison.OrdinalIgnoreCase))
                 QueueBackendInputEvent(new BackendInputEvent(BackendInputEventType.Eof,
@@ -3602,7 +3616,20 @@ namespace OmniVCamController
                     state.FavoriteInputs.Select(item => new XElement("Item",
                         new XAttribute("input", item.Input),
                         new XAttribute("title", item.Title),
-                        new XAttribute("options", item.Options)))));
+                        new XAttribute("options", item.Options)))),
+                new XElement("InteractivePlayback",
+                    new XElement("Media", state.InteractiveMedia.Select(item => new XElement("Item",
+                        new XAttribute("id", item.RuntimeId),
+                        new XAttribute("title", item.Title),
+                        new XAttribute("path", item.Path),
+                        new XAttribute("options", item.Options),
+                        new XAttribute("loop", item.Loop ? "1" : "0")))),
+                    new XElement("Routes", state.InteractiveRoutes.Select(route => new XElement("Route",
+                        new XAttribute("name", route.Name),
+                        new XAttribute("immediate", route.Immediate ? "1" : "0"),
+                        new XAttribute("hotkey", route.Hotkey == null ? string.Empty : route.Hotkey.KeyCode.ToString()),
+                        new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
+                        route.MediaIds.Select(id => new XElement("MediaRef", new XAttribute("id", id))))))));
         }
 
         private void LoadAutoConfig()
@@ -3648,6 +3675,8 @@ namespace OmniVCamController
             playlist = state.Playlist;
             scheduledPlaylist = state.ScheduledPlaylist;
             favoriteInputs = state.FavoriteInputs;
+            interactiveMedia = state.InteractiveMedia;
+            interactiveRoutes = state.InteractiveRoutes;
 
             XElement settings = root.Element("Settings");
             if (settings != null) LoadSettingsElement(settings);
@@ -3673,6 +3702,8 @@ namespace OmniVCamController
                 foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
             }
 
+            LoadInteractivePlaybackElement(root.Element("InteractivePlayback"));
+
             SaveControlsToConnectionState(state);
             state.Name = "OmniVCam";
             return state;
@@ -3685,6 +3716,8 @@ namespace OmniVCamController
             playlist = state.Playlist;
             scheduledPlaylist = state.ScheduledPlaylist;
             favoriteInputs = state.FavoriteInputs;
+            interactiveMedia = state.InteractiveMedia;
+            interactiveRoutes = state.InteractiveRoutes;
 
             XElement settings = tabElement.Element("Settings");
             if (settings != null) LoadSettingsElement(settings);
@@ -3710,6 +3743,8 @@ namespace OmniVCamController
                 foreach (XElement itemElement in favoriteInputsElement.Elements("Item")) LoadFavoriteInputElement(itemElement);
             }
 
+            LoadInteractivePlaybackElement(tabElement.Element("InteractivePlayback"));
+
             SaveControlsToConnectionState(state);
             state.Name = GetAttribute(tabElement, "name", state.Name);
             return state;
@@ -3721,6 +3756,50 @@ namespace OmniVCamController
             activeState = state;
             SaveActiveConnectionState();
             activeState = previous;
+        }
+
+        private void LoadInteractivePlaybackElement(XElement element)
+        {
+            interactiveMedia.Clear();
+            interactiveRoutes.Clear();
+            if (element == null) return;
+
+            XElement mediaElement = element.Element("Media");
+            if (mediaElement != null)
+            {
+                foreach (XElement itemElement in mediaElement.Elements("Item"))
+                {
+                    Guid id;
+                    if (!Guid.TryParse(GetAttribute(itemElement, "id", null), out id)) id = Guid.NewGuid();
+                    interactiveMedia.Add(new InteractiveMediaItem
+                    {
+                        RuntimeId = id,
+                        Title = GetAttribute(itemElement, "title", string.Empty),
+                        Path = GetAttribute(itemElement, "path", string.Empty),
+                        Options = GetAttribute(itemElement, "options", string.Empty),
+                        Loop = GetAttribute(itemElement, "loop", "0") == "1"
+                    });
+                }
+            }
+
+            XElement routesElement = element.Element("Routes");
+            if (routesElement == null) return;
+            foreach (XElement routeElement in routesElement.Elements("Route"))
+            {
+                var route = new InteractiveRouteItem
+                {
+                    Name = GetAttribute(routeElement, "name", string.Empty),
+                    Immediate = GetAttribute(routeElement, "immediate", "0") == "1",
+                    Hotkey = ParseInteractiveHotkey(GetAttribute(routeElement, "hotkey", string.Empty),
+                        GetAttribute(routeElement, "modifiers", string.Empty))
+                };
+                foreach (XElement reference in routeElement.Elements("MediaRef"))
+                {
+                    Guid id;
+                    if (Guid.TryParse(GetAttribute(reference, "id", null), out id)) route.MediaIds.Add(id);
+                }
+                interactiveRoutes.Add(route);
+            }
         }
 
         private void LoadSettingsElement(XElement settings)
@@ -4204,7 +4283,7 @@ namespace OmniVCamController
                 MinimumSize = new Size(560, 360),
                 StartPosition = FormStartPosition.CenterParent,
                 Font = Font,
-                Icon = Icon
+                ShowIcon = false
             })
             using (var text = new TextBox
             {
@@ -4811,6 +4890,9 @@ namespace OmniVCamController
         private void FlushPendingLog()
         {
             if (pendingLogText.Length == 0) return;
+            bool followTail = logBox.SelectionStart + logBox.SelectionLength >= logBox.TextLength;
+            int selectionStart = logBox.SelectionStart;
+            int selectionLength = logBox.SelectionLength;
             logBox.AppendText(pendingLogText.ToString());
             pendingLogText.Clear();
             lastLogFlushAt = DateTime.UtcNow;
@@ -4821,9 +4903,17 @@ namespace OmniVCamController
                 var keepLines = allLines.Skip(linesToRemove).ToArray();
 
                 logBox.Lines = keepLines;
-
-                logBox.SelectionStart = logBox.Text.Length;
+            }
+            if (followTail)
+            {
+                logBox.SelectionStart = logBox.TextLength;
+                logBox.SelectionLength = 0;
                 logBox.ScrollToCaret();
+            }
+            else
+            {
+                logBox.SelectionStart = Math.Min(selectionStart, logBox.TextLength);
+                logBox.SelectionLength = Math.Min(selectionLength, logBox.TextLength - logBox.SelectionStart);
             }
         }
 
@@ -5251,6 +5341,8 @@ namespace OmniVCamController
             public List<PlaylistItem> Playlist { get; set; } = new List<PlaylistItem>();
             public List<ScheduledPlaylistItem> ScheduledPlaylist { get; set; } = new List<ScheduledPlaylistItem>();
             public List<FavoriteInputItem> FavoriteInputs { get; set; } = new List<FavoriteInputItem>();
+            public List<InteractiveMediaItem> InteractiveMedia { get; set; } = new List<InteractiveMediaItem>();
+            public List<InteractiveRouteItem> InteractiveRoutes { get; set; } = new List<InteractiveRouteItem>();
             public int CurrentIndex { get; set; } = -1;
             public int CurrentScheduledIndex { get; set; } = -1;
             public ScheduledPlaylistItem CurrentScheduledItem { get; set; }

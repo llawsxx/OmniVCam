@@ -151,7 +151,7 @@ namespace OmniVCamController
 
             Text = "OmniVCam Controller";
             MinimumSize = new Size(820, 600);
-            Size = new Size(1000, 800);
+            Size = new Size(1050, 800);
             Font = new Font("Segoe UI", 9F);
 
             hostBox.Text = "127.0.0.1";

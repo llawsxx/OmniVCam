@@ -198,4 +198,44 @@
   <data name="ObsAtEnd" xml:space="preserve"><value>OBS at end</value></data>
   <data name="ColumnObsStart" xml:space="preserve"><value>OBS at start</value></data>
   <data name="ColumnObsEnd" xml:space="preserve"><value>OBS at end</value></data>
+  <data name="InteractivePlayback" xml:space="preserve"><value>Interactive Playback</value></data>
+  <data name="InteractiveNowPlaying" xml:space="preserve"><value>Now playing: </value></data>
+  <data name="InteractiveSequenceCompleted" xml:space="preserve"><value>Interactive sequence completed.</value></data>
+  <data name="InteractiveNoPlayableMedia" xml:space="preserve"><value>The project has no playable media.</value></data>
+  <data name="InteractiveImmediateFailed" xml:space="preserve"><value>Immediate playback failed.</value></data>
+  <data name="InteractiveReplacedLoop" xml:space="preserve"><value>Replaced queued loop item: </value></data>
+  <data name="InteractivePlayNextFailed" xml:space="preserve"><value>PLAY_NEXT failed; item kept in queue.</value></data>
+  <data name="InteractiveQueueCleared" xml:space="preserve"><value>Interactive queue cleared; current video continues.</value></data>
+  <data name="InteractivePlaying" xml:space="preserve"><value>Playing: </value></data>
+  <data name="InteractiveNext" xml:space="preserve"><value>Next: </value></data>
+  <data name="InteractivePendingAction" xml:space="preserve"><value>Pending action: </value></data>
+  <data name="InteractiveQueueEmpty" xml:space="preserve"><value>Queue is empty</value></data>
+  <data name="InteractiveClearQueue" xml:space="preserve"><value>Clear queue</value></data>
+  <data name="InteractiveQueuePanel" xml:space="preserve"><value>Current and queued playback</value></data>
+  <data name="InteractiveOperations" xml:space="preserve"><value>Operations</value></data>
+  <data name="InteractiveLoop" xml:space="preserve"><value>Loop</value></data>
+  <data name="InteractiveProject" xml:space="preserve"><value>Project</value></data>
+  <data name="InteractiveHotkey" xml:space="preserve"><value>Hotkey</value></data>
+  <data name="InteractiveCommand" xml:space="preserve"><value>Command</value></data>
+  <data name="InteractiveSequence" xml:space="preserve"><value>Sequence</value></data>
+  <data name="InteractiveDoubleClickedProject" xml:space="preserve"><value>Double-clicked project</value></data>
+  <data name="InteractiveMedia" xml:space="preserve"><value>Media</value></data>
+  <data name="InteractiveEdit" xml:space="preserve"><value>Edit</value></data>
+  <data name="InteractiveToggleLoop" xml:space="preserve"><value>Toggle loop</value></data>
+  <data name="InteractiveProjects" xml:space="preserve"><value>Interactive projects</value></data>
+  <data name="InteractiveAdd" xml:space="preserve"><value>Add</value></data>
+  <data name="InteractiveTrigger" xml:space="preserve"><value>Trigger</value></data>
+  <data name="InteractiveClickedProject" xml:space="preserve"><value>Clicked project</value></data>
+  <data name="InteractiveConnection" xml:space="preserve"><value>Connection: </value></data>
+  <data name="InteractiveYes" xml:space="preserve"><value>Yes</value></data>
+  <data name="InteractiveMediaFilter" xml:space="preserve"><value>Media files|*.*</value></data>
+  <data name="InteractiveHotkeyRegisterFailed" xml:space="preserve"><value>Failed to register hotkey: </value></data>
+  <data name="InteractiveHotkeySource" xml:space="preserve"><value>Hotkey </value></data>
+  <data name="InteractiveEditMedia" xml:space="preserve"><value>Edit media</value></data>
+  <data name="InteractiveLoopPlayback" xml:space="preserve"><value>Loop playback</value></data>
+  <data name="InteractiveOk" xml:space="preserve"><value>OK</value></data>
+  <data name="InteractiveEditProject" xml:space="preserve"><value>Edit interactive project</value></data>
+  <data name="InteractiveName" xml:space="preserve"><value>Name</value></data>
+  <data name="InteractiveTriggerMode" xml:space="preserve"><value>Trigger mode</value></data>
+  <data name="InteractiveAddToSequence" xml:space="preserve"><value>Add to sequence</value></data>
 </root>
