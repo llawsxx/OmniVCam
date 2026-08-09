@@ -1803,7 +1803,9 @@ namespace OmniVCamController
             {
                 inputBox.Text = input;
                 titleBox.Text = title;
-                optionsBox.Text = NormalizeQueueOptions(input, options, true);
+                // This path restores an existing input (startup, tabs, playlists, and favorites).
+                // Keep any saved queue tuning rather than replacing it with source defaults.
+                optionsBox.Text = NormalizeQueueOptions(input, options, false);
                 LoadQueueControlsFromOptions(input, optionsBox.Text);
                 LoadDShowTimestampFromOptions(input, optionsBox.Text);
             }
