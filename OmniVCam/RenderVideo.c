@@ -19,6 +19,8 @@
 
 #define FRAME_QUEUE_MAX_COUNT_LIMIT 256
 #define SEAMLESS_DRAIN_RESERVE_MS 750
+/* Empty queues must periodically return control for timeout/exit checks. */
+#define QUEUE_DEQUEUE_WAIT_MS 100
 
 /* Set by the TCP thread as soon as PLAY/PLAY_NEXT is accepted, allowing a
  * looping input read to yield before the main command loop dequeues it. */
@@ -456,7 +458,10 @@ int frame_dequeue(frame_queue* q, AVFrame* frame, int64_t* frame_id, int* media_
 			LeaveCriticalSection(&q->mutex);
 			return -1;
 		}
-		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
+		if (!SleepConditionVariableCS(&q->cond, &q->mutex, QUEUE_DEQUEUE_WAIT_MS)) {
+			LeaveCriticalSection(&q->mutex);
+			return -1;
+		}
 		if (q->abort_request) {
 			LeaveCriticalSection(&q->mutex);
 			return -1;
@@ -677,8 +682,10 @@ int packet_dequeue(packet_queue* q, AVPacket* pkt)
 
 	EnterCriticalSection(&q->mutex);
 
-	while (!q->front && !q->abort_request)
-		SleepConditionVariableCS(&q->cond, &q->mutex, INFINITE);
+	while (!q->front && !q->abort_request) {
+		if (!SleepConditionVariableCS(&q->cond, &q->mutex, QUEUE_DEQUEUE_WAIT_MS))
+			break;
+	}
 	if (!q->front) {
 		LeaveCriticalSection(&q->mutex);
 		return -1;
@@ -1414,6 +1421,7 @@ DWORD WINAPI reading_input(LPVOID p)
 
 	while (1)
 	{
+		if (input_call_back(ctx)) break;
 		ret = av_read_frame(ctx->fmt_ctx, pkt);
 		if (ret == AVERROR(EAGAIN)) {
 			av_usleep(100000);
