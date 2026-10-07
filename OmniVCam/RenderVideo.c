@@ -4797,6 +4797,15 @@ DWORD main_thread(LPVOID p) {
 				break;
 			}
 
+			int input_draining = input_threads_finished(ctx) &&
+				InterlockedCompareExchange(&ctx->loop_restart_requested, 0, 0) == 0;
+			if (input_draining) {
+				/* No producer can refill the queues: release the low/center
+				 * watermarks so even a short input's remaining frames drain. */
+				for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+					frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
+			}
+
 			EnterCriticalSection(&control_server.mutex);
 			control_server.status_time = ctx->output_status_time == AV_NOPTS_VALUE ? 0 : ctx->output_status_time;
 			control_server.status_duration = (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE) ? ctx->fmt_ctx->duration : 0;
@@ -4808,7 +4817,7 @@ DWORD main_thread(LPVOID p) {
 			if (current_input) tcp_control_sha256(current_input, control_server.status_input);
 			else control_server.status_input[0] = '\0';
 			if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
-			else if (strcmp(control_server.status_state, "playing") == 0 && is_input_exit(ctx) && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
+			else if (strcmp(control_server.status_state, "playing") == 0 && input_draining && inout_ctx_frame_queues_empty(ctx)) strcpy_s(control_server.status_state, sizeof(control_server.status_state), "ended");
 			LeaveCriticalSection(&control_server.mutex);
 			memset(&command, 0, sizeof(command));
 			if (!tcp_control_pop(&control_server, &command)) {
