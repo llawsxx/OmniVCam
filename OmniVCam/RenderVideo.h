@@ -183,6 +183,7 @@ typedef struct inout_context {
 	int64_t timeout;
 	int special_source_running;
 	int test_card_style;
+	int calibration_tcp_port;
 	int force_exit;
 	int eof;
 	int loop_enabled;

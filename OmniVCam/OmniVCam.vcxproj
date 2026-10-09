@@ -41,6 +41,7 @@
     <ClInclude Include="ParseConfig.h" />
     <ClInclude Include="RenderVideo.h" />
     <ClInclude Include="TestCard.h" />
+    <ClInclude Include="third_party\qrcodegen\qrcodegen.h" />
     <ClInclude Include="Threads.h" />
     <ClInclude Include="Utils.h" />
     <ClInclude Include="video_frame.h" />
@@ -63,6 +64,7 @@
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="TestCard.cpp" />
+    <ClCompile Include="third_party\qrcodegen\qrcodegen.c" />
     <ClCompile Include="Threads.c" />
     <ClCompile Include="Utils.c" />
     <ClCompile Include="video_frame.c" />

@@ -238,4 +238,49 @@
   <data name="InteractiveName" xml:space="preserve"><value>Name</value></data>
   <data name="InteractiveTriggerMode" xml:space="preserve"><value>Trigger mode</value></data>
   <data name="InteractiveAddToSequence" xml:space="preserve"><value>Add to sequence</value></data>
+  <data name="CalibrationTitle" xml:space="preserve"><value>Camera diagnostics / Shift calibration</value></data>
+  <data name="CalibrationHint" xml:space="preserve"><value>Play &lt;TESTCARDCAL&gt; and keep its entire QR and white border visible. Diagnosis scans all screens, then waits for desktop updates and reads only the matching QR region. Enlarge the preview if recognition fails. Frame gaps estimate drops and may include capture/decode misses. Auto adjustment waits for the requested Shift in two advancing QR frames before measuring. The test card remains playing afterwards.</value></data>
+  <data name="CalibrationPlayCard" xml:space="preserve"><value>Play calibration card</value></data>
+  <data name="CalibrationCardRequested" xml:space="preserve"><value>Calibration card requested.</value></data>
+  <data name="CalibrationSeconds" xml:space="preserve"><value>Seconds/point</value></data>
+  <data name="CalibrationSweepPoints" xml:space="preserve"><value>Sweep points</value></data>
+  <data name="CalibrationDiagnose" xml:space="preserve"><value>Diagnose</value></data>
+  <data name="CalibrationAutoAdjust" xml:space="preserve"><value>Auto adjust Shift us</value></data>
+  <data name="CalibrationCancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="CalibrationStatistics" xml:space="preserve"><value>Observed {0:F2} fps; desktop updates {1:F2} fps (monitor {2:F2} Hz); unique/repeat {3}/{4}; dropped frames (observed estimate) {5} ({6:P2}); QR failures {7}; queue drops {8}; missed desktop frames {9}; max readback {10:F2} ms; sampling {11}</value></data>
+  <data name="CalibrationHealthy" xml:space="preserve"><value>healthy</value></data>
+  <data name="CalibrationInsufficient" xml:space="preserve"><value>insufficient</value></data>
+  <data name="CalibrationUpdateDll" xml:space="preserve"><value>Update the camera DLL first (CALIBRATION_ID unavailable).</value></data>
+  <data name="CalibrationBaseline" xml:space="preserve"><value>Measuring baseline…</value></data>
+  <data name="CalibrationSamplingInsufficient" xml:space="preserve"><value>Sampling is insufficient; Shift was not changed.</value></data>
+  <data name="CalibrationSamplingFailed" xml:space="preserve"><value>Sampling became insufficient; cancelling calibration.</value></data>
+  <data name="CalibrationNoPeak" xml:space="preserve"><value>No clear loss peak (difference &lt; 1%); retaining the original Shift.</value></data>
+  <data name="CalibrationVerification" xml:space="preserve"><value>Verification: </value></data>
+  <data name="CalibrationVerificationFailed" xml:space="preserve"><value>Verification failed or loss increased; restoring original Shift.</value></data>
+  <data name="CalibrationCancelled" xml:space="preserve"><value>Cancelled.</value></data>
+  <data name="CalibrationRestored" xml:space="preserve"><value>Original Shift restored: </value></data>
+  <data name="CalibrationRestoreFailed" xml:space="preserve"><value>Unable to restore Shift: </value></data>
+  <data name="CalibrationRefreshUnknown" xml:space="preserve"><value>Unable to read target monitor refresh rate.</value></data>
+  <data name="CalibrationQrNotFound" xml:space="preserve"><value>No matching &lt;TESTCARDCAL&gt; QR found. Check camera/preview size/visibility.</value></data>
+  <data name="CalibrationStreamChanged" xml:space="preserve"><value>Calibration stream identity/format changed.</value></data>
+  <data name="CalibrationFrameRestarted" xml:space="preserve"><value>Calibration frame counter restarted/went backwards.</value></data>
+  <data name="CalibrationFrozenFrames" xml:space="preserve"><value>No changing calibration frames detected.</value></data>
+  <data name="CalibrationNoReply" xml:space="preserve"><value>no reply</value></data>
+  <data name="CameraDiagnostics" xml:space="preserve"><value>Camera diagnostics</value></data>
+  <data name="CalibrationStreamInfo" xml:space="preserve"><value>Camera identity {0}; output {1}×{2}; {3}/{4} fps</value></data>
+  <data name="CalibrationSweepStatus" xml:space="preserve"><value>[{0}/{1}] Shift {2} us: </value></data>
+  <data name="CalibrationAppliedFormula" xml:space="preserve"><value>Applied Shift: ({0} + {1:F3}) mod {2:F3} = {3} us</value></data>
+  <data name="CalibrationCaptureDetected" xml:space="preserve"><value>QR acquired; capture region {0}; monitor {1}</value></data>
+  <data name="CalibrationDisplayChanged" xml:space="preserve"><value>Display layout changed during capture; start diagnosis again.</value></data>
+  <data name="CalibrationShiftChanged" xml:space="preserve"><value>QR Shift changed during measurement; samples cannot be compared.</value></data>
+  <data name="CalibrationObservedShift" xml:space="preserve"><value>Shift read from QR: {0} us</value></data>
+  <data name="CalibrationShiftUnknown" xml:space="preserve"><value>unavailable (old test card)</value></data>
+  <data name="CalibrationWaitingShift" xml:space="preserve"><value>Waiting for QR to confirm Shift {0} us…</value></data>
+  <data name="CalibrationShiftTimeout" xml:space="preserve"><value>QR did not confirm Shift {0} us within 10 seconds; calibration stopped.</value></data>
+  <data name="CalibrationRetries" xml:space="preserve"><value>Retries/point</value></data>
+  <data name="CalibrationDiscardedSample" xml:space="preserve"><value>Shift {0} us: capture/decode misses; discarding this attempt. </value></data>
+  <data name="CalibrationRetrying" xml:space="preserve"><value>Retrying the same Shift {0} us ({1}/{2}); counters reset.</value></data>
+  <data name="CalibrationRetriesExhausted" xml:space="preserve"><value>Shift {0} us still has capture/decode misses after {1} retries; calibration stopped.</value></data>
+  <data name="CalibrationDesktopUnavailable" xml:space="preserve"><value>Desktop update capture is unavailable (0x{0}). Calibration stopped; check the display driver and desktop session.</value></data>
+  <data name="CalibrationQrCrossMonitor" xml:space="preserve"><value>Keep the entire QR and its border on one monitor, then start diagnosis again.</value></data>
 </root>

@@ -528,4 +528,49 @@
   <data name="InteractiveName" xml:space="preserve"><value>项目名称</value></data>
   <data name="InteractiveTriggerMode" xml:space="preserve"><value>触发方式</value></data>
   <data name="InteractiveAddToSequence" xml:space="preserve"><value>加入顺序</value></data>
+  <data name="CalibrationTitle" xml:space="preserve"><value>虚拟摄像头图像诊断 / Shift 自动调整</value></data>
+  <data name="CalibrationHint" xml:space="preserve"><value>播放 &lt;TESTCARDCAL&gt; 并保持整个二维码及白边可见。诊断先扫描所有屏幕，找到匹配二维码后等待桌面更新，只读取二维码区域。识别困难时请放大预览。丢帧统计是观察估计，可能包含采集或识别漏采。自动调整会等待两个帧号递增的二维码确认目标 Shift 后开始计数。结束后测试卡继续播放。</value></data>
+  <data name="CalibrationPlayCard" xml:space="preserve"><value>播放校准测试卡</value></data>
+  <data name="CalibrationCardRequested" xml:space="preserve"><value>已请求播放校准测试卡。</value></data>
+  <data name="CalibrationSeconds" xml:space="preserve"><value>每点秒数</value></data>
+  <data name="CalibrationSweepPoints" xml:space="preserve"><value>扫描点数</value></data>
+  <data name="CalibrationDiagnose" xml:space="preserve"><value>开始诊断</value></data>
+  <data name="CalibrationAutoAdjust" xml:space="preserve"><value>自动调整 Shift us</value></data>
+  <data name="CalibrationCancel" xml:space="preserve"><value>取消</value></data>
+  <data name="CalibrationStatistics" xml:space="preserve"><value>观察帧率 {0:F2} fps；桌面更新 {1:F2} fps（显示器 {2:F2} Hz）；不同帧/重复 {3}/{4}；丢帧数量（观察估计）{5} ({6:P2})；识别失败 {7}；队列漏采 {8}；桌面采集漏帧数 {9}；最长图像读取 {10:F2} ms；采样 {11}</value></data>
+  <data name="CalibrationHealthy" xml:space="preserve"><value>正常</value></data>
+  <data name="CalibrationInsufficient" xml:space="preserve"><value>不足</value></data>
+  <data name="CalibrationUpdateDll" xml:space="preserve"><value>请先更新摄像头 DLL（不支持 CALIBRATION_ID）。</value></data>
+  <data name="CalibrationBaseline" xml:space="preserve"><value>正在采集基准…</value></data>
+  <data name="CalibrationSamplingInsufficient" xml:space="preserve"><value>采样不足，未调整 Shift。</value></data>
+  <data name="CalibrationSamplingFailed" xml:space="preserve"><value>采样质量不足，停止自动调整。</value></data>
+  <data name="CalibrationNoPeak" xml:space="preserve"><value>未发现明显丢帧峰值（差异 &lt; 1%），保留原 Shift。</value></data>
+  <data name="CalibrationVerification" xml:space="preserve"><value>调整后验证：</value></data>
+  <data name="CalibrationVerificationFailed" xml:space="preserve"><value>验证失败或丢帧增加，恢复原 Shift。</value></data>
+  <data name="CalibrationCancelled" xml:space="preserve"><value>已取消。</value></data>
+  <data name="CalibrationRestored" xml:space="preserve"><value>已恢复原 Shift：</value></data>
+  <data name="CalibrationRestoreFailed" xml:space="preserve"><value>恢复 Shift 失败：</value></data>
+  <data name="CalibrationRefreshUnknown" xml:space="preserve"><value>无法读取目标显示器刷新率。</value></data>
+  <data name="CalibrationQrNotFound" xml:space="preserve"><value>未发现匹配的 &lt;TESTCARDCAL&gt; 二维码，请检查摄像头、预览大小和可见性。</value></data>
+  <data name="CalibrationStreamChanged" xml:space="preserve"><value>校准流身份或输出格式已改变。</value></data>
+  <data name="CalibrationFrameRestarted" xml:space="preserve"><value>校准帧计数器重启或发生了倒退。</value></data>
+  <data name="CalibrationFrozenFrames" xml:space="preserve"><value>未检测到持续变化的校准帧。</value></data>
+  <data name="CalibrationNoReply" xml:space="preserve"><value>无响应</value></data>
+  <data name="CameraDiagnostics" xml:space="preserve"><value>虚拟摄像头诊断</value></data>
+  <data name="CalibrationStreamInfo" xml:space="preserve"><value>摄像头身份 {0}；输出 {1}×{2}；{3}/{4} fps</value></data>
+  <data name="CalibrationSweepStatus" xml:space="preserve"><value>[{0}/{1}] Shift {2} us：</value></data>
+  <data name="CalibrationAppliedFormula" xml:space="preserve"><value>已应用 Shift：({0} + {1:F3}) 对 {2:F3} 取模 = {3} us</value></data>
+  <data name="CalibrationCaptureDetected" xml:space="preserve"><value>已定位二维码；局部截屏范围 {0}；显示器 {1}</value></data>
+  <data name="CalibrationDisplayChanged" xml:space="preserve"><value>截屏期间显示器布局改变，请重新开始诊断。</value></data>
+  <data name="CalibrationShiftChanged" xml:space="preserve"><value>测量期间二维码中的 Shift 改变，无法比较当前采样。</value></data>
+  <data name="CalibrationObservedShift" xml:space="preserve"><value>二维码读取的 Shift：{0} us</value></data>
+  <data name="CalibrationShiftUnknown" xml:space="preserve"><value>不可用（旧版测试卡）</value></data>
+  <data name="CalibrationWaitingShift" xml:space="preserve"><value>等待二维码确认已切换到 Shift {0} us…</value></data>
+  <data name="CalibrationShiftTimeout" xml:space="preserve"><value>10 秒内二维码未确认 Shift {0} us，停止自动调整。</value></data>
+  <data name="CalibrationRetries" xml:space="preserve"><value>每点重试次数</value></data>
+  <data name="CalibrationDiscardedSample" xml:space="preserve"><value>Shift {0} us：本轮有漏采或识别失败，丢弃结果。 </value></data>
+  <data name="CalibrationRetrying" xml:space="preserve"><value>使用相同 Shift {0} us 重试（{1}/{2}），重新计数。</value></data>
+  <data name="CalibrationRetriesExhausted" xml:space="preserve"><value>Shift {0} us 重试 {1} 次后仍有漏采或识别失败，停止自动调整。</value></data>
+  <data name="CalibrationDesktopUnavailable" xml:space="preserve"><value>无法使用桌面更新采集（0x{0}），已停止校准。请检查显示驱动和桌面会话。</value></data>
+  <data name="CalibrationQrCrossMonitor" xml:space="preserve"><value>请将整个二维码及白边放在同一显示器上，然后重新开始诊断。</value></data>
 </root>

@@ -4,6 +4,8 @@
 #include <iomanip>
 #include <vector>
 #include"TestCard.h"
+#include "third_party/qrcodegen/qrcodegen.h"
+#include <algorithm>
 extern "C" {
     #include"global.h"
     #include"video_frame.h"
@@ -90,7 +92,7 @@ public:
         blockVelX = (int)(blockVelX * blockMovMul);
         blockVelY = (int)(blockVelY * blockMovMul);
 
-        InitializeCircles();
+        if (style != 2) InitializeCircles();
      }
 
     ~TestCard() {
@@ -570,6 +572,53 @@ public:
 
         return NULL;
     }
+    void SetIdentity(int port, int64_t session) {
+        calibrationPort = port;
+        calibrationSession = session;
+    }
+
+    void SetShift(int64_t shift_us) { calibrationShift = shift_us; }
+
+    void DrawCalibration(HDC hdc) {
+        char payload[128];
+        unsigned long long magnitude = calibrationShift < 0
+            ? (unsigned long long)(-(calibrationShift + 1)) + 1
+            : (unsigned long long)calibrationShift;
+        // Fixed-width numeric fields use QR numeric segments, keeping a constant 37-module grid.
+        snprintf(payload, sizeof(payload), "OVCAL2:%05d%010lu%019lld%05d%05d%010d%010d%019lld%c%019llu",
+            calibrationPort, GetCurrentProcessId(), (long long)calibrationSession,
+            width, height, fps.num, fps.den, (long long)frameCount,
+            calibrationShift < 0 ? '1' : '0', magnitude);
+        uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(5)];
+        uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(5)];
+        uint8_t prefix[16], digits[64];
+        qrcodegen_Segment segments[2] = {
+            qrcodegen_makeAlphanumeric("OVCAL2:", prefix),
+            qrcodegen_makeNumeric(payload + 7, digits)
+        };
+        if (!qrcodegen_encodeSegmentsAdvanced(segments, 2, qrcodegen_Ecc_QUARTILE,
+            5, 5, qrcodegen_Mask_AUTO, false, scratch, qr)) return;
+        int modules = qrcodegen_getSize(qr);
+        int scale = (std::min)(width, height - barHeight) / (modules + 10);
+        if (scale < 1) return;
+        int side = (modules + 8) * scale;
+        int left = (width - side) / 2;
+        int top = barHeight + (height - barHeight - side) / 2;
+        RECT area = { left, top, left + side, top + side };
+        FillRect(hdc, &area, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        for (int y = 0; y < modules; ++y)
+            for (int x = 0; x < modules; ++x)
+                if (qrcodegen_getModule(qr, x, y)) {
+                    RECT cell = { left + (x + 4) * scale, top + (y + 4) * scale,
+                        left + (x + 5) * scale, top + (y + 5) * scale };
+                    FillRect(hdc, &cell, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                }
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, RGB(0, 0, 0));
+        SetTextColor(hdc, RGB(255, 255, 255));
+        TextOutA(hdc, 8, barHeight + 2, payload, (int)strlen(payload));
+    }
+
     AVFrame* Draw(char* infoText) {
         if (!frameBuffer || !frameBufferAligned || !swsCtx) return NULL;
         HDC hdc = hMemDC;
@@ -585,7 +634,7 @@ public:
         }
 
         // 3. 绘制DVD风格移动色块
-        DrawDVDBlock(hdc);
+        if (style != 2) DrawDVDBlock(hdc);
 
         if (style == 0) {
             UpdateCircles();
@@ -599,9 +648,11 @@ public:
         }
 
         // 4. 绘制帧数和时间戳信息
-        DrawInfoText(hdc, infoText);
+        if (style == 2) DrawCalibration(hdc);
+        else DrawInfoText(hdc, infoText);
 
 
+        GdiFlush();
         memcpy(frameBufferAligned + rowSize * barHeight, frameBuffer + rowSize * barHeight, rowSize * (height - barHeight));
 
 
@@ -647,7 +698,10 @@ private:
 	int blockVelX = 8, blockVelY = 8;
 	COLORREF blockColor = RGB(255, 0, 0);  // 起始颜色：红色
 	DWORD startTime = 0;
-	int frameCount = 0;
+	int64_t frameCount = 0;
+    int calibrationPort = 0;
+    int64_t calibrationSession = 0;
+    int64_t calibrationShift = 0;
 
 	int colorIndex = 0;
 	Line lines[8];
@@ -693,6 +747,12 @@ void* test_card_alloc(int width, int height, AVPixelFormat outPixelFormat, AVRat
 void test_card_free(void* p) {
     TestCard* card = (TestCard*)p;
     delete card;
+}
+void test_card_set_identity(void* p, int port, int64_t session) {
+    ((TestCard*)p)->SetIdentity(port, session);
+}
+void test_card_set_shift(void* p, int64_t shift_us) {
+    ((TestCard*)p)->SetShift(shift_us);
 }
 AVFrame* test_card_draw(void* p,char* infoText) {
     TestCard* card = (TestCard*)p;

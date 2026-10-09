@@ -1299,7 +1299,7 @@ int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_conte
 	int video_index, int audio_index, int subtitle_index, char* hw_decode, int probesize, int analyzeduration, int queue_left_count, int queue_right_count, int queue_center_count, char *vcodec_str,char* acodec_str,char * scodec_str, char* dcodec_str)
 {
 
-	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<OBSVCAM>") == 0 || strcmp(name, "<DSHOW>") == 0)) {
+	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<TESTCARDCAL>") == 0 || strcmp(name, "<OBSVCAM>") == 0 || strcmp(name, "<DSHOW>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
 		ctx->input_media_mask = 0;
@@ -1310,7 +1310,7 @@ int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_conte
 		else if (strcmp(name, "<DSHOW>") == 0 && dshow_source_open(ctx, dict_opts, queue_left_count, queue_right_count, queue_center_count) < 0) {
 			return -1;
 		}
-		else if (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0) {
+		else if (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<TESTCARDCAL>") == 0) {
 			ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 		}
 		if (strcmp(name, "<DSHOW>") == 0) {
@@ -2267,6 +2267,7 @@ DWORD test_card_thread(LPVOID p) {
 	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
 	if (!card) return -1;
 	ctx->input_frame_id = av_gettime_relative();
+	test_card_set_identity(card, ctx->calibration_tcp_port, ctx->input_frame_id);
 	ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 	char infoText[512] = { 0 };
 	AVFrame* f;
@@ -2293,6 +2294,7 @@ DWORD test_card_thread(LPVOID p) {
 			ctx->filter_text,
 			ctx->audio_filter_text);
 		LeaveCriticalSection(&ctx->filter_text_mutex);
+		test_card_set_shift(card, ctx->output_start_shift_time / 1000);
 		if (f = test_card_draw(card, infoText)) {
 			if (frame_enqueue(ctx->frame_queues[0], f, ctx->timeout, ctx->input_frame_id, ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit) < 0) {
 				break;
@@ -2746,13 +2748,13 @@ int start_read(inout_context* ctx) {
 	HANDLE decode_audio_tid = NULL;
 
 	if (ctx->input_name) {
-		if (strcmp(ctx->input_name, "<TESTCARD>") == 0 || strcmp(ctx->input_name, "<TESTCARD2>") == 0) {
+		if (strcmp(ctx->input_name, "<TESTCARD>") == 0 || strcmp(ctx->input_name, "<TESTCARD2>") == 0 || strcmp(ctx->input_name, "<TESTCARDCAL>") == 0) {
 			ctx->special_source_running = 1;
 			if(strcmp(ctx->input_name, "<TESTCARD2>") == 0){
 				ctx->test_card_style = 1;
 			}
 			else {
-				ctx->test_card_style = 0;
+				ctx->test_card_style = strcmp(ctx->input_name, "<TESTCARDCAL>") == 0 ? 2 : 0;
 			}
 			ret = open_thread(&special_source_tid, test_card_thread, ctx);
 			if (ret < 0) goto failed;
@@ -3840,7 +3842,7 @@ static int64_t probe_input_duration_seconds(char* text)
 		av_dict_parse_string(&dict, tab_pos + 1, "=", ",", 0);
 	}
 
-	if (strcmp(input, "<TESTCARD>") == 0 || strcmp(input, "<TESTCARD2>") == 0 || strcmp(input, "<OBSVCAM>") == 0 || strcmp(input, "<DSHOW>") == 0) {
+	if (strcmp(input, "<TESTCARD>") == 0 || strcmp(input, "<TESTCARD2>") == 0 || strcmp(input, "<TESTCARDCAL>") == 0 || strcmp(input, "<OBSVCAM>") == 0 || strcmp(input, "<DSHOW>") == 0) {
 		duration = 0;
 		goto end;
 	}
@@ -4331,6 +4333,10 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 		diagnostics_get_text(reply, reply_size);
 		return;
 	}
+	if (starts_with_command(line, "CALIBRATION_ID")) {
+		sprintf_s(reply, reply_size, "OK pid=%lu\n", GetCurrentProcessId());
+		return;
+	}
 	if (starts_with_command(line, "DSHOW_DEVICES")) {
 		char* data = (char*)av_malloc(reply_size);
 		if (!data || dshow_camera_list_devices(data, reply_size) < 0) strcpy_s(reply, reply_size, "ERR unable to enumerate DirectShow devices\n");
@@ -4737,6 +4743,7 @@ DWORD main_thread(LPVOID p) {
 	ctx->input_eof_private = &control_server;
 	ctx->input_ended_callback = tcp_control_notify_input_ended;
 	ctx->input_ended_private = &control_server;
+	ctx->calibration_tcp_port = tcp_port;
 	ctx->output_scale_mode = output_scale_mode;
 	ctx->output_display_aspect = output_display_aspect;
 	set_auto_deinterlace_config(ctx, auto_deinterlace, auto_deinterlace_filter);

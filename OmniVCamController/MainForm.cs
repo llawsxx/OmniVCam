@@ -679,6 +679,7 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton(T("SetVideoIndex"), async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton(T("SetAudioIndex"), async (_, __) => await SendIndexesAsync()));
             buttons.Controls.Add(MakeButton(T("FrameInfo"), async (_, __) => await ShowFrameInfoAsync()));
+            buttons.Controls.Add(MakeButton(T("CameraDiagnostics"), (_, __) => OpenCameraCalibration()));
             buttons.Controls.Add(MakeButton(T("SaveXml"), (_, __) => SaveAutoConfig()));
             buttons.Controls.Add(MakeButton(T("OpenPlayout"), (_, __) => OpenPlayoutWindow()));
             buttons.Controls.Add(MakeButton(T("InteractivePlayback"), (_, __) => OpenInteractiveWindow()));
@@ -1329,7 +1330,7 @@ namespace OmniVCamController
                 Dock = DockStyle.Fill,
                 Margin = new Padding(4, 0, 4, 0)
             };
-            quickBox.Items.AddRange(new object[] { "<TESTCARD>", "<TESTCARD2>", "<OBSVCAM>", "<DSHOW>" });
+            quickBox.Items.AddRange(new object[] { "<TESTCARD>", "<TESTCARD2>", "<TESTCARDCAL>", "<OBSVCAM>", "<DSHOW>" });
             quickBox.SelectedIndexChanged += (_, __) =>
             {
                 if (quickBox.SelectedItem != null) inputBox.Text = quickBox.SelectedItem.ToString();

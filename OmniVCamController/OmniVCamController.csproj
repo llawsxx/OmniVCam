@@ -40,6 +40,11 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ControllerLanguage.cs" />
+    <Compile Include="CameraCalibration.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="CalibrationQrDecoder.cs" />
+    <Compile Include="CalibrationDesktopCapture.cs" />
     <Compile Include="InteractivePlayback.cs">
       <DependentUpon>MainForm.cs</DependentUpon>
       <SubType>Form</SubType>
@@ -74,4 +79,7 @@
     <EmbeddedResource Include="Resources\AppStrings.zh-TW.resx" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <ItemGroup>
+    <PackageReference Include="ZXing.Net" Version="0.16.11" />
+  </ItemGroup>
 </Project>

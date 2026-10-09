@@ -128,4 +128,12 @@
       <Filter>源文件</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="third_party\qrcodegen\qrcodegen.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClCompile Include="third_party\qrcodegen\qrcodegen.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+  </ItemGroup>
 </Project>

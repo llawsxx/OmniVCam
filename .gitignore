@@ -363,5 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 
 ffmpeg_deps/
+tests/out/
 OmniVCam/current_play_file.txt
 OmniVCam/log.txt
