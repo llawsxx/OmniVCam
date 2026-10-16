@@ -3627,12 +3627,7 @@ namespace OmniVCamController
                         new XAttribute("path", item.Path),
                         new XAttribute("options", item.Options),
                         new XAttribute("loop", item.Loop ? "1" : "0")))),
-                    new XElement("Routes", state.InteractiveRoutes.Select(route => new XElement("Route",
-                        new XAttribute("name", route.Name),
-                        new XAttribute("immediate", route.Immediate ? "1" : "0"),
-                        new XAttribute("hotkey", route.Hotkey == null ? string.Empty : route.Hotkey.KeyCode.ToString()),
-                        new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
-                        route.MediaIds.Select(id => new XElement("MediaRef", new XAttribute("id", id))))))));
+                    new XElement("Routes", state.InteractiveRoutes.Select(SaveInteractiveRouteElement))));
         }
 
         private void LoadAutoConfig()
@@ -3788,21 +3783,7 @@ namespace OmniVCamController
             XElement routesElement = element.Element("Routes");
             if (routesElement == null) return;
             foreach (XElement routeElement in routesElement.Elements("Route"))
-            {
-                var route = new InteractiveRouteItem
-                {
-                    Name = GetAttribute(routeElement, "name", string.Empty),
-                    Immediate = GetAttribute(routeElement, "immediate", "0") == "1",
-                    Hotkey = ParseInteractiveHotkey(GetAttribute(routeElement, "hotkey", string.Empty),
-                        GetAttribute(routeElement, "modifiers", string.Empty))
-                };
-                foreach (XElement reference in routeElement.Elements("MediaRef"))
-                {
-                    Guid id;
-                    if (Guid.TryParse(GetAttribute(reference, "id", null), out id)) route.MediaIds.Add(id);
-                }
-                interactiveRoutes.Add(route);
-            }
+                interactiveRoutes.Add(LoadInteractiveRouteElement(routeElement));
         }
 
         private void LoadSettingsElement(XElement settings)

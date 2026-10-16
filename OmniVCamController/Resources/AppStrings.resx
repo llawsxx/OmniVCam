@@ -283,4 +283,11 @@
   <data name="CalibrationRetriesExhausted" xml:space="preserve"><value>Shift {0} us still has capture/decode misses after {1} retries; calibration stopped.</value></data>
   <data name="CalibrationDesktopUnavailable" xml:space="preserve"><value>Desktop update capture is unavailable (0x{0}). Calibration stopped; check the display driver and desktop session.</value></data>
   <data name="CalibrationQrCrossMonitor" xml:space="preserve"><value>Keep the entire QR and its border on one monitor, then start diagnosis again.</value></data>
+  <data name="InteractiveCombinationSelection" xml:space="preserve"><value>Combination selection</value></data>
+  <data name="InteractiveRandom" xml:space="preserve"><value>Random</value></data>
+  <data name="InteractiveSequential" xml:space="preserve"><value>Sequential (repeat in order)</value></data>
+  <data name="InteractiveCombinations" xml:space="preserve"><value>Media combinations</value></data>
+  <data name="InteractiveAddCombination" xml:space="preserve"><value>Add combination</value></data>
+  <data name="InteractiveDuplicateCombination" xml:space="preserve"><value>Duplicate combination</value></data>
+  <data name="InteractiveEmptyCombination" xml:space="preserve"><value>Add at least one combination and ensure each combination contains media.</value></data>
 </root>

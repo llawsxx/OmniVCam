@@ -573,4 +573,11 @@
   <data name="CalibrationRetriesExhausted" xml:space="preserve"><value>Shift {0} us 重試 {1} 次後仍有漏採或辨識失敗，停止自動調整。</value></data>
   <data name="CalibrationDesktopUnavailable" xml:space="preserve"><value>無法使用桌面更新擷取（0x{0}），已停止校準。請檢查顯示驅動程式和桌面工作階段。</value></data>
   <data name="CalibrationQrCrossMonitor" xml:space="preserve"><value>請將整個 QR 碼及白邊放在同一顯示器上，然後重新開始診斷。</value></data>
+  <data name="InteractiveCombinationSelection" xml:space="preserve"><value>組合選擇方式</value></data>
+  <data name="InteractiveRandom" xml:space="preserve"><value>隨機</value></data>
+  <data name="InteractiveSequential" xml:space="preserve"><value>順序輪換</value></data>
+  <data name="InteractiveCombinations" xml:space="preserve"><value>媒體組合</value></data>
+  <data name="InteractiveAddCombination" xml:space="preserve"><value>新增組合</value></data>
+  <data name="InteractiveDuplicateCombination" xml:space="preserve"><value>複製組合</value></data>
+  <data name="InteractiveEmptyCombination" xml:space="preserve"><value>請至少新增一個組合，並確保每個組合都包含媒體。</value></data>
 </root>

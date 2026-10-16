@@ -573,4 +573,11 @@
   <data name="CalibrationRetriesExhausted" xml:space="preserve"><value>Shift {0} us 重试 {1} 次后仍有漏采或识别失败，停止自动调整。</value></data>
   <data name="CalibrationDesktopUnavailable" xml:space="preserve"><value>无法使用桌面更新采集（0x{0}），已停止校准。请检查显示驱动和桌面会话。</value></data>
   <data name="CalibrationQrCrossMonitor" xml:space="preserve"><value>请将整个二维码及白边放在同一显示器上，然后重新开始诊断。</value></data>
+  <data name="InteractiveCombinationSelection" xml:space="preserve"><value>组合选择方式</value></data>
+  <data name="InteractiveRandom" xml:space="preserve"><value>随机</value></data>
+  <data name="InteractiveSequential" xml:space="preserve"><value>顺序轮换</value></data>
+  <data name="InteractiveCombinations" xml:space="preserve"><value>媒体组合</value></data>
+  <data name="InteractiveAddCombination" xml:space="preserve"><value>添加组合</value></data>
+  <data name="InteractiveDuplicateCombination" xml:space="preserve"><value>复制组合</value></data>
+  <data name="InteractiveEmptyCombination" xml:space="preserve"><value>请至少添加一个组合，并确保每个组合都包含媒体。</value></data>
 </root>

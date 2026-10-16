@@ -126,9 +126,11 @@ Select **Interactive Playback** in the controller's main window to open the sepa
 ### Media and Projects
 
 1. Add media files to the media library, then edit their titles, input options, and **Loop playback** setting as needed. A looping item is sent to the virtual camera with the `loop=1` input option.
-2. Add an interactive project and arrange one or more library items into its playback sequence. For example, a project can contain `A → B → D (loop)`.
-3. Assign an optional global hotkey and select the project's trigger mode.
+2. Add an interactive project, then add one or more **Media combinations**. Select a combination on the left and arrange its library items on the right; combinations can be duplicated, removed, and moved up or down. For example, one F1 project can contain `A → B`, `A2 → B`, and `A2 → B2`.
+3. Assign an optional global hotkey, select the project's trigger mode, and choose **Random** (default) or **Sequential (repeat in order)** for combination selection.
 4. Trigger the project with its hotkey, the project's button, **Trigger**, or by double-clicking it.
+
+Each trigger selects one whole combination. Random selection can repeat the previous combination; sequential selection advances through the configured order and wraps back to the first combination. Each project tracks its own position, which starts at the first combination after configuration reload or project editing. Existing single-sequence projects load as one combination. The Operations panel records the actual media sequence selected for each trigger.
 
 The two trigger modes are:
 
