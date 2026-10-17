@@ -156,6 +156,12 @@ Projects can be triggered repeatedly without waiting for the current sequence to
 
 Looping is performed inside the virtual-camera backend. At EOF, it drains the current packet/decoder/filter queues, seeks the input to the beginning, assigns a new `input_frame_id`, and resumes timing only after audio and video reach the same new boundary. An internal loop restart is therefore not reported as completion of the interactive item. Receiving `PLAY` cancels the loop immediately; receiving `PLAY_NEXT` cancels it after the current pass so that the queued item can take over cleanly.
 
+Interactive playback is enabled only while its window is open. Global route hotkeys are registered when the window is shown and released when it is closed or hidden; minimizing keeps them enabled. Closing cancels the controller's interactive trigger/playback queues and clears the backend's pending `PLAY_NEXT` slot while current output continues. Reopening waits for any previous queue cleanup before dispatching a new trigger.
+
+Playback transitions use the DLL's actual output batch, not just matching filenames or the decoder's prefetched input. `INPUT_STARTED` events and the existing `STATUS` response synchronize the controller before it applies interrupt protection. When replacing an old destination, `PLAY_NEXT` carries `after_frame_id` for the protected batch: the backend retains that batch's remaining output, discards superseded read-ahead, and opens the replacement. The controller queues the successor only after the replacement actually starts. This also covers repeated playback of the same file and commands that arrive just after the protected batch has finished. Update both the camera DLL and controller together. Run `tests/run-playback-boundary-checks.ps1` and `tests/run-interactive-checks.ps1` for native output and controller regressions.
+
+Short inputs also wake the command loop on producer completion instead of waiting for its idle timeout. Single-frame loops retain batch identities across the full queue capacity and consume the old loop request before restarting producers. Audio/video handoffs anchor a waiting first picture to the current video tick. Run `tests/run-playback-boundary-checks.ps1 -ShortMedia` (Python required) to generate real 1/2/3-frame AVI, AVI+PCM and delayed MPEG4/MP4 files at 30/60fps, then check actual output pictures and TCP events for repeated files, internal loops and 30/128/256-frame buffers. This test runs an isolated backend without registering a camera DLL.
+
 The **Current and queued playback** panel shows the active item, the item already submitted with `PLAY_NEXT`, queued items, and pending trigger actions. The read-only **Operations** panel records hotkeys, project clicks, and command replies; its history is capped at 1,000 lines.
 
 Equivalent protocol traffic for `A → B → D (loop)` is conceptually:
@@ -416,10 +422,10 @@ The virtual camera accepts line-based TCP commands. Default port: `16999`.
 Supported commands include:
 
 - `PING`: returns `OK PONG`.
-- `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `actual_input`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`. `input` is the SHA-256 digest of the requested `input + options`, while `actual_input` is the digest of the content currently reaching output. Digests use 64 lowercase hexadecimal characters.
+- `STATUS`: returns `seconds`, `duration`, `size`, `state`, `scale_mode`, `display_aspect`, `input`, `actual_input`, `input_frame_id`, `actual_frame_id`, `deliver_ns`, `deliver_avg_ns`, and `controller_connected`. `input` is the SHA-256 digest of the requested `input + options`, while `actual_input` is the digest of the content currently reaching output. Digests use 64 lowercase hexadecimal characters. `input_frame_id` identifies the batch being decoded; `actual_frame_id` identifies the batch reaching output, including internal loop passes.
 - `DURATION <input>[\toptions]`: probe input duration.
 - `PLAY <input>[\toptions]`: play input.
-- `PLAY_NEXT <input>[\toptions]`: register the next input. The controller sends it after the current input reports EOF; the backend opens it after all threads belonging to the current input finish and resets timing state at the output boundary.
+- `PLAY_NEXT <input>[\toptions]`: replaces the single pending next input; an empty argument clears that pending slot. The backend opens it after the current input's threads finish and resets timing at the output boundary. Optional `after_frame_id=<id>` retains the specified batch's remaining output and replaces all later prefetched batches immediately; if that batch has already ended, the replacement starts without waiting for the obsolete destination. This control option is removed before opening/hashing the media input. Ordinary `PLAY_NEXT` retains its existing behavior.
 - Input option `loop=1`: when a seekable input reaches EOF, seek it back to the beginning inside the virtual-camera backend. A received `PLAY` or `PLAY_NEXT` cancels looping; `PLAY_NEXT <input>` then switches at the current pass's natural end.
 - `PAUSE`: pause output without closing the input.
 - `RESUME`: resume paused output.
@@ -441,6 +447,7 @@ Supported commands include:
 
 The backend also sends unsolicited event lines over the same TCP connection:
 
+- `EVENT INPUT_STARTED frame_id=<id> input=<summary>`: the output thread has switched to this exact batch. Interactive playback uses this notification to confirm the next item, even when consecutive items have the same file path.
 - `EVENT INPUT_EOF frame_id=<id> input=<summary>`: input reading reached EOF. The controller may respond by sending `PLAY_NEXT`; decoding/output for the old input may still be active.
 - `EVENT INPUT_ENDED frame_id=<id> input=<summary>`: reading, decoding, and output for that input have finished. The controller confirms the pending activation and performs the corresponding scheduled OBS end handling at this point.
 

@@ -143,7 +143,6 @@ DWORD dshow_source_thread(LPVOID opaque)
     options.use_video_device_timestamp = source->use_video_device_timestamp;
     options.use_audio_device_timestamp = source->use_audio_device_timestamp;
     options.audio_buffer_size = source->audio_buffer_size;
-    ctx->input_frame_id = av_gettime_relative();
     ctx->last_video_decode_time = av_gettime_relative();
     ctx->last_audio_decode_time = av_gettime_relative();
     camera = dshow_camera_open(&options, frame_callback, audio_frame_callback, ctx, error, sizeof(error));

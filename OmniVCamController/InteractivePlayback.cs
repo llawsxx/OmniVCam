@@ -34,6 +34,9 @@ namespace OmniVCamController
         private bool processingInteractiveTriggers;
         private readonly Queue<InteractiveTriggerRequest> interactiveTriggerRequests = new Queue<InteractiveTriggerRequest>();
         private InteractivePlaybackForm interactiveForm;
+        private bool interactiveWindowOpen;
+        private int interactiveWindowVersion;
+        private Task interactiveCleanupTask;
 
         private void BuildInteractiveWindow()
         {
@@ -54,6 +57,20 @@ namespace OmniVCamController
             interactiveForm.ReloadAll();
             interactiveForm.Show();
             interactiveForm.BringToFront();
+        }
+
+        private void SetInteractiveWindowOpen(bool open)
+        {
+            if (interactiveWindowOpen == open) return;
+            interactiveWindowOpen = open;
+            interactiveWindowVersion++;
+            if (open) return;
+
+            bool hasPlayback = interactiveActive || interactiveCurrent != null || interactivePending != null ||
+                interactiveQueue.Count > 0 || interactiveTriggerRequests.Count > 0 ||
+                (interactiveNextQueueTask != null && !interactiveNextQueueTask.IsCompleted);
+            if (hasPlayback && !closingMainForm) _ = StopInteractiveAsync();
+            else ClearInteractiveRuntime();
         }
 
         private void ClearInteractiveRuntime(bool clearTriggerRequests = true)
@@ -86,9 +103,10 @@ namespace OmniVCamController
         private bool HandleInteractiveBackendEvent(string eventLine)
         {
             if (!interactiveActive) return false;
-            if (interactiveNeedsStatusCheck) return true;
+            if (interactiveNeedsStatusCheck && !eventLine.StartsWith("INPUT_STARTED", StringComparison.OrdinalIgnoreCase)) return true;
             BackendInputEventType type;
-            if (eventLine.StartsWith("INPUT_EOF", StringComparison.OrdinalIgnoreCase)) type = BackendInputEventType.Eof;
+            if (eventLine.StartsWith("INPUT_STARTED", StringComparison.OrdinalIgnoreCase)) type = BackendInputEventType.Started;
+            else if (eventLine.StartsWith("INPUT_EOF", StringComparison.OrdinalIgnoreCase)) type = BackendInputEventType.Eof;
             else if (eventLine.StartsWith("INPUT_ENDED", StringComparison.OrdinalIgnoreCase)) type = BackendInputEventType.Ended;
             else return false;
             interactiveBackendEvents.Enqueue(new InteractiveBackendEvent
@@ -107,8 +125,14 @@ namespace OmniVCamController
             {
                 var queued = interactiveBackendEvents.Dequeue();
                 await WaitForInteractiveNextQueueAsync();
-                if (!interactiveActive || interactiveNeedsStatusCheck || queued.RuntimeVersion != interactiveRuntimeVersion) continue;
+                if (!interactiveActive || queued.RuntimeVersion != interactiveRuntimeVersion) continue;
                 var inputEvent = queued.InputEvent;
+                if (inputEvent.Type == BackendInputEventType.Started)
+                {
+                    if (ApplyInteractiveOutputStarted(inputEvent)) await EnsureInteractiveNextQueuedAsync();
+                    continue;
+                }
+                if (interactiveNeedsStatusCheck) continue;
                 if (inputEvent.FrameId > 0 && inputEvent.FrameId <= interactiveLastEndedFrameId) continue;
                 if (inputEvent.Type == BackendInputEventType.Eof)
                 {
@@ -154,7 +178,16 @@ namespace OmniVCamController
             if (interactivePending != null &&
                 (string.IsNullOrEmpty(interactivePendingSource) || InputSummariesEqual(inputSummary, interactivePendingSource)))
             {
+                if (interactivePending.RequiresOutputConfirmation)
+                {
+                    // Ending the source cannot identify which pending batch actually won the race.
+                    interactiveStatusRevision++;
+                    interactiveAwaitingPendingConfirmation = true;
+                    MarkInteractivePlaybackMismatch();
+                    return;
+                }
                 interactiveStatusRevision++;
+                ResetInteractivePlaybackWatchdog();
                 interactiveCurrent = interactivePending;
                 currentStatusInput = interactiveCurrent.InputSummary;
                 currentActualStatusInput = interactiveCurrent.InputSummary;
@@ -180,7 +213,7 @@ namespace OmniVCamController
 
         private void RequestInteractiveRoute(InteractiveRouteItem route, string source)
         {
-            if (route == null) return;
+            if (!interactiveWindowOpen || closingMainForm || route == null) return;
             ObserveBackendConnectionLoss();
             List<InteractivePlaybackEntry> entries = BuildInteractiveEntries(route);
             if (entries.Count == 0)
@@ -220,15 +253,20 @@ namespace OmniVCamController
 
         private async Task ProcessInteractiveTriggerRequestsAsync()
         {
-            if (processingInteractiveTriggers) return;
+            if (processingInteractiveTriggers || !interactiveWindowOpen || closingMainForm) return;
+            int windowVersion = interactiveWindowVersion;
             processingInteractiveTriggers = true;
             try
             {
-                while (interactiveTriggerRequests.Count > 0)
+                if (interactiveCleanupTask != null) await interactiveCleanupTask;
+                while (interactiveWindowOpen && !closingMainForm && windowVersion == interactiveWindowVersion &&
+                    interactiveTriggerRequests.Count > 0)
                 {
                     InteractiveTriggerRequest request = interactiveTriggerRequests.Dequeue();
                     int version = interactiveRuntimeVersion;
-                    if (!await VerifyInteractivePlaybackAsync())
+                    bool verified = await VerifyInteractivePlaybackAsync();
+                    if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion) return;
+                    if (!verified)
                     {
                         if (version == interactiveRuntimeVersion || interactiveNeedsStatusCheck) PrependInteractiveTrigger(request);
                         break;
@@ -243,6 +281,10 @@ namespace OmniVCamController
             finally
             {
                 processingInteractiveTriggers = false;
+                // A reopened window may have queued a new request while this
+                // session was still waiting for a reply or protected playback.
+                if (interactiveWindowOpen && !closingMainForm && windowVersion != interactiveWindowVersion &&
+                    interactiveTriggerRequests.Count > 0) _ = ProcessInteractiveTriggerRequestsAsync();
             }
         }
 
@@ -301,7 +343,12 @@ namespace OmniVCamController
 
             interactiveStatusRevision++;
             InteractivePlaybackEntry replaced = PrepareInteractiveRouteAppend();
-            if (replaced != null) AppendInteractiveLog(T("InteractiveReplacedLoop") + replaced.Title);
+            if (replaced != null)
+            {
+                request.Entries[0].RequiresOutputConfirmation = true;
+                request.Entries[0].MinimumBackendFrameId = Math.Max(interactiveCurrent?.BackendFrameId ?? 0, replaced.BackendFrameId);
+                AppendInteractiveLog(T("InteractiveReplacedLoop") + replaced.Title);
+            }
 
             foreach (InteractivePlaybackEntry entry in request.Entries) interactiveQueue.Enqueue(entry);
             await EnsureInteractiveNextQueuedAsync();
@@ -330,6 +377,12 @@ namespace OmniVCamController
             string sourceSummary = interactiveCurrent != null
                 ? interactiveCurrent.InputSummary
                 : (!string.IsNullOrEmpty(currentActualStatusInput) ? currentActualStatusInput : currentStatusInput);
+            next.MinimumBackendFrameId = Math.Max(next.MinimumBackendFrameId, interactiveCurrent?.BackendFrameId ?? 0);
+            if (next.RequiresOutputConfirmation)
+            {
+                next.ReplaceAfterFrameId = interactiveCurrent?.BackendFrameId ?? 0;
+                next.MinimumBackendFrameId = Math.Max(next.MinimumBackendFrameId, next.ReplaceAfterFrameId);
+            }
             string command = BuildInteractivePlayCommand("PLAY_NEXT", next);
             string reply = await send(command);
             if (version != interactiveRuntimeVersion || !interactiveActive) return;
@@ -352,9 +405,21 @@ namespace OmniVCamController
             interactiveForm?.RefreshRuntime();
         }
 
-        private async Task StopInteractiveAsync()
+        private Task StopInteractiveAsync()
         {
+            Task sendingNext = interactiveNextQueueTask;
+            Task previousCleanup = interactiveCleanupTask;
             ClearInteractiveRuntime();
+            interactiveCleanupTask = ClearInteractiveBackendNextAsync(previousCleanup, sendingNext, interactiveRuntimeVersion);
+            return interactiveCleanupTask;
+        }
+
+        private async Task ClearInteractiveBackendNextAsync(Task previousCleanup, Task sendingNext, int version)
+        {
+            if (previousCleanup != null) await previousCleanup;
+            if (sendingNext != null) await sendingNext;
+            // Manual playback or a connection-tab change supersedes this cleanup.
+            if (closingMainForm || version != interactiveRuntimeVersion) return;
             string reply = await SendRawCommandAsync("PLAY_NEXT");
             AppendInteractiveLog("> PLAY_NEXT" + Environment.NewLine + "< " + reply);
             AppendInteractiveLog(T("InteractiveQueueCleared"));
@@ -424,9 +489,11 @@ namespace OmniVCamController
 
         private static string BuildInteractivePlayCommand(string verb, InteractivePlaybackEntry entry)
         {
-            return string.IsNullOrWhiteSpace(entry.Options)
-                ? verb + " " + entry.Path
-                : verb + " " + entry.Path + "\t" + entry.Options;
+            string options = entry.Options;
+            if (verb == "PLAY_NEXT" && entry.RequiresOutputConfirmation && entry.ReplaceAfterFrameId > 0)
+                options = "after_frame_id=" + entry.ReplaceAfterFrameId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    (string.IsNullOrWhiteSpace(options) ? string.Empty : "," + options);
+            return string.IsNullOrWhiteSpace(options) ? verb + " " + entry.Path : verb + " " + entry.Path + "\t" + options;
         }
 
         private static string FormatInteractiveEntry(InteractivePlaybackEntry entry)
@@ -588,12 +655,6 @@ namespace OmniVCamController
                 RefreshRoutes();
                 RefreshRuntime();
                 RegisterRouteHotkeys();
-            }
-
-            public void ActivateHotkeys()
-            {
-                IntPtr unused = Handle;
-                ReloadAll();
             }
 
             private void RefreshMedia()
@@ -817,9 +878,8 @@ namespace OmniVCamController
 
             private void RegisterRouteHotkeys()
             {
-                if (!IsHandleCreated) return;
-                foreach (int id in registeredRoutes.Keys.ToList()) UnregisterHotKey(Handle, id);
-                registeredRoutes.Clear();
+                UnregisterRouteHotkeys();
+                if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm) return;
                 int index = 0;
                 foreach (InteractiveRouteItem route in owner.interactiveRoutes)
                 {
@@ -832,6 +892,20 @@ namespace OmniVCamController
                 }
             }
 
+            private void UnregisterRouteHotkeys()
+            {
+                if (IsHandleCreated)
+                    foreach (int id in registeredRoutes.Keys.ToList()) UnregisterHotKey(Handle, id);
+                registeredRoutes.Clear();
+            }
+
+            protected override void OnVisibleChanged(EventArgs e)
+            {
+                base.OnVisibleChanged(e);
+                owner.SetInteractiveWindowOpen(Visible);
+                RegisterRouteHotkeys();
+            }
+
             protected override void OnHandleCreated(EventArgs e)
             {
                 base.OnHandleCreated(e);
@@ -840,15 +914,14 @@ namespace OmniVCamController
 
             protected override void OnHandleDestroyed(EventArgs e)
             {
-                foreach (int id in registeredRoutes.Keys.ToList()) UnregisterHotKey(Handle, id);
-                registeredRoutes.Clear();
+                UnregisterRouteHotkeys();
                 base.OnHandleDestroyed(e);
             }
 
             protected override void WndProc(ref Message m)
             {
                 const int WM_HOTKEY = 0x0312;
-                if (m.Msg == WM_HOTKEY && registeredRoutes.TryGetValue(m.WParam.ToInt32(), out InteractiveRouteItem route))
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && registeredRoutes.TryGetValue(m.WParam.ToInt32(), out InteractiveRouteItem route))
                 {
                     owner.RequestInteractiveRoute(route, T("InteractiveHotkeySource") + FormatHotkey(route.Hotkey));
                     return;
@@ -1292,6 +1365,9 @@ namespace OmniVCamController
             public Guid MediaId { get; set; }
             public Guid PlaybackUnitId { get; set; }
             public long BackendFrameId { get; set; }
+            public long MinimumBackendFrameId { get; set; }
+            public long ReplaceAfterFrameId { get; set; }
+            public bool RequiresOutputConfirmation { get; set; }
             public bool PreventInterrupt { get; set; }
             public string Title { get; set; } = string.Empty;
             public string Path { get; set; } = string.Empty;

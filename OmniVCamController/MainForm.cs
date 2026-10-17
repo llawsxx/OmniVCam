@@ -104,7 +104,6 @@ namespace OmniVCamController
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
-            BuildInteractiveWindow();
             hwDecodeBox.Items.AddRange(new object[] { "none", "dxva2", "d3d11va", "cuda", "qsv" });
             hwDecodeBox.Text = "none";
             scaleModeBox.Items.AddRange(new object[] { "letterbox", "fill" });
@@ -121,7 +120,6 @@ namespace OmniVCamController
             InitializeConnectionTabs();
             scheduleEndBox.CheckedChanged += (_, __) => UpdateScheduleEndControls();
             LoadAutoConfig();
-            interactiveForm?.ActivateHotkeys();
             UpdateScheduleEndControls();
             controlsReady = true;
 
@@ -5176,6 +5174,7 @@ namespace OmniVCamController
 
         private enum BackendInputEventType
         {
+            Started,
             Eof,
             Ended
         }

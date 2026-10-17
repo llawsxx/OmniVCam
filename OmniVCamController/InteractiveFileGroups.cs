@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -105,6 +105,8 @@ namespace OmniVCamController
             foreach (var entry in retained) interactiveQueue.Enqueue(entry);
             if (interactivePending != null && interactivePending.PlaybackUnitId != interactiveCurrent.PlaybackUnitId)
             {
+                request.Entries[0].RequiresOutputConfirmation = true;
+                request.Entries[0].MinimumBackendFrameId = Math.Max(interactiveCurrent.BackendFrameId, interactivePending.BackendFrameId);
                 interactivePending = null;
                 interactivePendingSource = string.Empty;
             }

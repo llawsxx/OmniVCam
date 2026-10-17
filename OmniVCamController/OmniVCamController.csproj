@@ -52,7 +52,9 @@
     <Compile Include="InteractiveFileGroups.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="InteractivePlaybackRecovery.cs" />
+    <Compile Include="InteractivePlaybackRecovery.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Resources\AppStrings.Designer.cs">
       <AutoGen>True</AutoGen>

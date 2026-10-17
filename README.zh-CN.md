@@ -145,6 +145,12 @@ OmniVCam 支持最多 4 个同时存在的虚拟摄像机实例。每个实例�
 
 控制器每秒通过 `STATUS` 的 `actual_input` 持续核对实际输出，不以预读的 `input` 判断当前播放，也不依赖断线通知。连续 10 秒无法确认当前项仍在播放（包括状态不符、已停止或查询失败）时，自动用 `PLAY` 启动已预排的下一项，保留后续队列；没有预排项时取下一个待触发项目。匹配的暂停状态也会清零超时。下一项发送失败或尚未确认实际输出时，保留同一项间隔重试，不会逐项跳空队列；确认实际播放后才恢复正常预排。没有下一项时解除过期的正在播放状态。超时在状态轮询时检查，连接或命令超时会影响实际恢复延迟。
 
+互动播放仅在互动播放窗口打开期间启用：显示窗口时注册项目的全局快捷键，关闭或隐藏时注销，最小化时仍保持启用。关闭时取消控制器中的互动触发和播放队列，并清空后端的 `PLAY_NEXT` 待切换槽位，当前输出继续播放；重新打开后的新触发会先等待上一轮队列清理完成。
+
+互动播放按照 DLL 实际输出的播放批次同步状态，不再仅凭文件名或预读输入推断正在播放的项目。`INPUT_STARTED` 事件与原有 `STATUS` 结果共同确认切换，确认后才发送后续项目。替换旧待机时，仍使用单个 `PLAY_NEXT`，并携带受保护媒体的 `after_frame_id`：后端保留该批次的剩余输出，丢弃之后已预读的旧项目并打开替换项；如果受保护批次已经结束，则不再等待旧待机播完。同一文件连续触发也能区分播放批次。此修改需要同时更新摄像头 DLL 和控制器。可运行 `tests/run-playback-boundary-checks.ps1` 与 `tests/run-interactive-checks.ps1` 验证后端输出和控制器切换。
+
+短文件在输入线程完成后立即唤醒控制循环，不再等待空闲轮询超时。单帧循环按队列上限保留批次身份，并在重启输入线程前清除上一轮循环请求；音视频交接时，将已等待的首张画面对齐到当前视频输出时刻。运行 `tests/run-playback-boundary-checks.ps1 -ShortMedia`（需要 Python），可生成 30/60fps 的真实 1/2/3 帧 AVI、带 PCM 音轨的 AVI 和包含延迟编码帧的 MPEG4/MP4，检查实际输出画面及 TCP 事件，覆盖同文件连续播放、内部循环及 30/128/256 帧缓存。测试使用独立后端，无需注册摄像头 DLL。
+
 两种触发方式的行为如下：
 
 - `PLAY_NEXT`（默认）：把序列加入队列，在每个输入自然结束时无缝切换。以上述项目为例，控制器会依次安排 A、B，最后让 D 循环播放。
@@ -410,10 +416,10 @@ OmniVCamController.xml
 支持命令包括：
 
 - `PING`：返回 `OK PONG`。
-- `STATUS`：返回 `seconds`、`duration`、`size`、`state`、`scale_mode`、`display_aspect`、`input`、`actual_input`、`deliver_ns`、`deliver_avg_ns` 和 `controller_connected`。`input` 是当前已请求输入的 `input + options` 的 SHA-256 摘要；`actual_input` 是输出端实际正在播出内容的 SHA-256 摘要。摘要使用 64 位小写十六进制表示。
+- `STATUS`：返回 `seconds`、`duration`、`size`、`state`、`scale_mode`、`display_aspect`、`input`、`actual_input`、`deliver_ns`、`deliver_avg_ns` 和 `controller_connected`。`input` 是当前已请求输入的 `input + options` 的 SHA-256 摘要；`actual_input` 是输出端实际正在播出内容的 SHA-256 摘要。摘要使用 64 位小写十六进制表示。 `input_frame_id` 表示当前解码批次，`actual_frame_id` 表示实际输出批次，可区分同一文件连续播放及内部循环。
 - `DURATION <input>[\toptions]`：探测输入时长。
 - `PLAY <input>[\toptions]`：播放输入。
-- `PLAY_NEXT <input>[\toptions]`：登记下一个输入。当前输入发出 EOF 后，控制器用此命令提前交付下一输入；后端等待当前输入相关线程结束后打开新输入，并在输出边界重置时间状态。
+- `PLAY_NEXT <input>[\toptions]`：替换单个待切换输入；空参数清空待切换项。通常在当前输入相关线程结束后打开下一输入，并在输出边界重置时间状态。可选参数 `after_frame_id=<id>` 表示保留该批次的剩余输出，立即替换之后已经预读的项目；若该批次已结束，则无需再等旧待机结束。该控制参数会在打开输入和计算身份摘要前移除。普通 `PLAY_NEXT` 保持原有行为。
 - 输入选项 `loop=1`：可定位输入到达 EOF 后，由虚拟摄像头后端自行定位回开头。收到 `PLAY` 或 `PLAY_NEXT` 后停止循环；`PLAY_NEXT <input>` 会在当前这一轮自然结束后切换到目标输入。
 - `PAUSE`：暂停输出但不关闭输入。
 - `RESUME`：恢复暂停输出。
@@ -435,6 +441,7 @@ OmniVCamController.xml
 
 后端还会在同一 TCP 连接上主动发送事件行：
 
+- `EVENT INPUT_STARTED frame_id=<id> input=<summary>`：输出线程已切换到该播放批次。互动播放据此确认下一项真正开始，相同文件连续播放也按批次分别处理。
 - `EVENT INPUT_EOF frame_id=<id> input=<summary>`：输入读取到 EOF，控制器可据此发送 `PLAY_NEXT`；这不代表旧输入的所有解码和输出工作已经结束。
 - `EVENT INPUT_ENDED frame_id=<id> input=<summary>`：该输入的读取、解码和输出已经结束。控制器在此时确认待切换项目，并执行对应的计划 OBS 结束处理。
 

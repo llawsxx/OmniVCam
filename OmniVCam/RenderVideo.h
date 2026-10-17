@@ -190,6 +190,8 @@ typedef struct inout_context {
 	volatile LONG loop_restart_requested;
 	void (*input_eof_callback)(void* priv, int64_t frame_id);
 	void* input_eof_private;
+	void (*input_started_callback)(void* priv, int64_t frame_id);
+	void* input_started_private;
 	void (*input_ended_callback)(void* priv, int64_t frame_id);
 	void* input_ended_private;
 
@@ -225,6 +227,9 @@ typedef struct inout_context {
 	int output_current_video_media_mask;
 	int output_current_audio_media_mask;
 	int64_t output_boundary_frame_id;
+	int output_boundary_media_mask;
+	int64_t output_discard_after_frame_id;
+	int64_t output_discard_through_frame_id;
 	int64_t output_audio_boundary_frame_id;
 	int64_t av_max_offset_time;
 	AVAudioFifo* output_audio_fifo;//用output audio的来初始化

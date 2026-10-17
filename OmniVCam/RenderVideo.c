@@ -532,6 +532,87 @@ void frame_queue_clean(frame_queue* q)
 	WakeAllConditionVariable(&q->cond);
 }
 
+/* Called with input_change_mutex held. Keep the protected output tail, but remove
+ * later batches that were prefetched before a replacement command arrived. */
+static int output_frame_was_replaced(const inout_context* ctx, int64_t frame_id)
+{
+    return frame_id > ctx->output_discard_after_frame_id &&
+        frame_id <= ctx->output_discard_through_frame_id;
+}
+
+static void frame_queue_discard_replaced(frame_queue* q, const inout_context* ctx)
+{
+    avframe_node** link;
+    avframe_node* previous = NULL;
+    int removed = 0;
+    EnterCriticalSection(&q->mutex);
+    link = &q->front;
+    while (*link) {
+        avframe_node* node = *link;
+        if (output_frame_was_replaced(ctx, node->frame_id)) {
+            *link = node->next;
+            av_frame_free(&node->frame);
+            av_free(node);
+            q->count--;
+            removed = 1;
+        }
+        else {
+            previous = node;
+            link = &node->next;
+        }
+    }
+    q->rear = previous;
+    if (removed) q->reached_center = q->count > 0;
+    LeaveCriticalSection(&q->mutex);
+    if (removed) WakeAllConditionVariable(&q->cond);
+}
+
+/* The output thread also owns frames/FIFO already removed from the queues. */
+static int discard_replaced_output(inout_context* ctx, AVFrame* video, AVFrame* audio)
+{
+    int changed = 0;
+    if (ctx->output_discard_through_frame_id <= ctx->output_discard_after_frame_id) return 0;
+    for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+        frame_queue_discard_replaced(ctx->frame_queues[i], ctx);
+    if (output_frame_was_replaced(ctx, ctx->output_current_video_frame_id)) {
+        av_frame_unref(video);
+        ctx->output_current_video_frame_id = ctx->output_discard_after_frame_id;
+        ctx->output_current_video_media_mask = ctx->output_boundary_media_mask;
+        changed = 1;
+    }
+    if (output_frame_was_replaced(ctx, ctx->output_current_audio_frame_id)) {
+        av_frame_unref(audio);
+        av_audio_fifo_reset(ctx->output_audio_fifo);
+        ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
+        ctx->output_last_audio_nb_samples = 0;
+        ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
+        ctx->output_audio_boundary_frame_id = ctx->output_discard_after_frame_id;
+        ctx->output_current_audio_frame_id = ctx->output_discard_after_frame_id;
+        ctx->output_current_audio_media_mask = ctx->output_boundary_media_mask;
+        changed = 1;
+    }
+    if (changed && ctx->output_boundary_frame_id > ctx->output_discard_after_frame_id)
+        ctx->output_time_offset = AV_NOPTS_VALUE;
+    return changed;
+}
+
+/* Set the cancellation range before stopping producers, so output cannot advance
+ * into a superseded input while stop_read joins its decoding threads. */
+static int replace_prefetched_input(inout_context* ctx, int64_t after_frame_id)
+{
+    int replace;
+    EnterCriticalSection(&ctx->input_change_mutex);
+    replace = after_frame_id > 0 && ctx->input_frame_id > after_frame_id;
+    if (replace) {
+        ctx->output_discard_after_frame_id = after_frame_id;
+        ctx->output_discard_through_frame_id = ctx->input_frame_id;
+        for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+            frame_queue_discard_replaced(ctx->frame_queues[i], ctx);
+    }
+    LeaveCriticalSection(&ctx->input_change_mutex);
+    return replace;
+}
+
 void frame_queue_set_abort(frame_queue* q, int abort_request)
 {
 	if (!q) return;
@@ -837,6 +918,9 @@ inout_context* inout_context_alloc(
 	av_channel_layout_copy(&ctx->output_audio_layout, audio_out_layout);
 	ctx->timeout = timeout;
 	ctx->input_start_time = AV_NOPTS_VALUE;
+#ifdef OMNIVCAM_TEST_CONTEXT_CREATED
+    OMNIVCAM_TEST_CONTEXT_CREATED(ctx);
+#endif
 	return ctx;
 
 failed:
@@ -993,6 +1077,8 @@ void inout_context_reset_input(inout_context* ctx, int preserve_output)
 	frame_queue_clean(ctx->decoded_video_frame_queue);
 	frame_queue_clean(ctx->decoded_audio_frame_queue);
 	if (!preserve_output) {
+        ctx->output_discard_after_frame_id = 0;
+        ctx->output_discard_through_frame_id = 0;
 		ctx->output_time_offset = AV_NOPTS_VALUE;
 		ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 		ctx->output_last_audio_frame_pts = AV_NOPTS_VALUE;
@@ -1302,6 +1388,8 @@ int open_input(char* fmt_name, char* name, AVDictionary** dict_opts, inout_conte
 	if (name && (strcmp(name, "<TESTCARD>") == 0 || strcmp(name, "<TESTCARD2>") == 0 || strcmp(name, "<TESTCARDCAL>") == 0 || strcmp(name, "<OBSVCAM>") == 0 || strcmp(name, "<DSHOW>") == 0)) {
 		av_freep(&ctx->input_name);
 		ctx->input_name = av_strdup(name);
+        /* Register this exact batch before any special-source producer starts. */
+        ctx->input_frame_id = av_gettime_relative();
 		ctx->input_media_mask = 0;
 		if (strcmp(name, "<OBSVCAM>") == 0){
 			ctx->input_media_mask = INPUT_MEDIA_VIDEO;
@@ -2266,7 +2354,6 @@ DWORD test_card_thread(LPVOID p) {
 	inout_context* ctx = (inout_context*)p;
 	void* card = test_card_alloc(ctx->output_frame_width, ctx->output_frame_height, ctx->output_frame_format, ctx->output_fps, ctx->test_card_style);
 	if (!card) return -1;
-	ctx->input_frame_id = av_gettime_relative();
 	test_card_set_identity(card, ctx->calibration_tcp_port, ctx->input_frame_id);
 	ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 	char infoText[512] = { 0 };
@@ -2311,7 +2398,6 @@ DWORD obs_virtual_cam_thread(LPVOID p) {
 	inout_context* ctx = (inout_context*)p;
 	OBSVirtualCamReader* reader = obs_virtual_cam_reader_create();
 	if (!reader) return -1;
-	ctx->input_frame_id = av_gettime_relative();
 	ctx->input_media_mask = INPUT_MEDIA_VIDEO;
 	AVFrame* f = NULL;
 	int ret;
@@ -3086,13 +3172,21 @@ end:
 
 int is_in_sync(inout_context* ctx, int64_t timestamp)//1:刚好，2:快了，0：慢了(或者必须取新帧)
 {
-	if (timestamp == AV_NOPTS_VALUE || ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
+	if (timestamp == AV_NOPTS_VALUE) return 0;
 
 	/* Keep a new video frame pending until new audio reaches the same input.
 	 * When audio arrived first, the remaining old video continues using the
 	 * previous input's clock offset. */
 	if ((ctx->output_current_video_media_mask & INPUT_MEDIA_AUDIO) &&
 		ctx->output_current_video_frame_id > ctx->output_current_audio_frame_id) return 2;
+
+    /* A short audio tail may clear the clock after the first video frame was
+     * dequeued. Establish its clock before deciding to dequeue again; otherwise
+     * a valid single-frame input is silently unreferenced by an empty queue. */
+    if (ctx->output_time_offset == AV_NOPTS_VALUE) {
+        update_offset_if_needed(ctx, timestamp, 1);
+        if (ctx->output_time_offset == AV_NOPTS_VALUE) return 0;
+    }
 
 	int64_t output_pts_time = ctx->output_video_pts_time;
 	int64_t interval = ctx->output_time_per_video_frame;
@@ -3246,6 +3340,7 @@ static int reset_output_at_input_boundary(inout_context* ctx, int64_t frame_id, 
 	if ((media_mask & INPUT_MEDIA_AUDIO) && ctx->output_current_audio_frame_id < frame_id) return 0;
 	ended_frame_id = ctx->output_boundary_frame_id;
 	ctx->output_boundary_frame_id = frame_id;
+    ctx->output_boundary_media_mask = media_mask;
 	ctx->output_time_offset = AV_NOPTS_VALUE;
 	ctx->output_time_offset_last_adjust_time = AV_NOPTS_VALUE;
 	ctx->output_last_audio_in_sync_time = AV_NOPTS_VALUE;
@@ -3255,6 +3350,7 @@ static int reset_output_at_input_boundary(inout_context* ctx, int64_t frame_id, 
 		ctx->output_last_audio_nb_samples = 0;
 		av_audio_fifo_reset(ctx->output_audio_fifo);
 	}
+	if (ctx->input_started_callback) ctx->input_started_callback(ctx->input_started_private, frame_id);
 	if (ended_frame_id > 0 && !(media_mask & INPUT_MEDIA_LOOP_RESTART) && ctx->input_ended_callback) {
 		ctx->input_ended_callback(ctx->input_ended_private, ended_frame_id);
 	}
@@ -3342,6 +3438,10 @@ HRESULT WINAPI output_thread(LPVOID p)
 		if (ctx->output_exit) break;
 		control_output_speed(ctx);//每编码完一轮音频+一帧视频就会进到这里看有没有快了，快了就sleep
 		EnterCriticalSection(&ctx->input_change_mutex);
+        if (discard_replaced_output(ctx, video_frame, audio_frame)) {
+            last_audio_sync_diff = AV_NOPTS_VALUE;
+            last_video_sync_diff = AV_NOPTS_VALUE;
+        }
 		if (ctx->output_paused) {
 			int64_t now = av_gettime_relative();
 			ctx->last_clock_time = now;
@@ -3399,6 +3499,10 @@ HRESULT WINAPI output_thread(LPVOID p)
 					ctx->output_current_audio_media_mask)) {
 					last_audio_sync_diff = AV_NOPTS_VALUE;
 					last_video_sync_diff = AV_NOPTS_VALUE;
+                    /* Video may already be waiting for this audio batch. Anchor
+                     * that first picture to the current video tick, rather than
+                     * an earlier audio tick that can make it appear overdue. */
+                    update_offset_if_needed(ctx, video_frame->pts, 1);
 				}
 
 				if (ctx->output_exit) {
@@ -3887,7 +3991,9 @@ end:
 
 #define TCP_CONTROL_QUEUE_SIZE 32
 #define TCP_CONTROL_EVENT_QUEUE_SIZE 32
-#define TCP_CONTROL_INPUT_HISTORY_SIZE 32
+/* A one-frame loop can assign one batch per queued frame. Retain identities
+ * for both maximum-size output queues plus held/current/in-flight batches. */
+#define TCP_CONTROL_INPUT_HISTORY_SIZE (2 * FRAME_QUEUE_MAX_COUNT_LIMIT + 8)
 #define TCP_CONTROL_INPUT_SUMMARY_SIZE 65
 #define TCP_CONTROL_BUFFER_SIZE 65536
 #define TCP_CONTROL_SEND_TIMEOUT_MS 500
@@ -3896,7 +4002,8 @@ end:
 
 typedef enum tcp_control_event_type {
 	TCP_CONTROL_EVENT_INPUT_EOF = 1,
-	TCP_CONTROL_EVENT_INPUT_ENDED
+	TCP_CONTROL_EVENT_INPUT_ENDED,
+    TCP_CONTROL_EVENT_INPUT_STARTED
 } tcp_control_event_type;
 
 
@@ -3918,6 +4025,7 @@ typedef struct tcp_control_server {
 	CONDITION_VARIABLE event_cond;
 	HANDLE thread;
 	HANDLE event_thread;
+    HANDLE work_event;
 	SOCKET listen_socket;
 	SOCKET client_socket;
 	int port;
@@ -3931,6 +4039,8 @@ typedef struct tcp_control_server {
 	int64_t deliver_avg_ns;
 	char status_input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
 	char status_actual_input[TCP_CONTROL_INPUT_SUMMARY_SIZE];
+    int64_t status_actual_frame_id;
+    int64_t status_input_frame_id;
 	char status_state[32];
 	int scale_mode;
 	AVRational display_aspect;
@@ -4004,25 +4114,23 @@ static void tcp_control_find_input_locked(tcp_control_server* server, int64_t fr
 	}
 }
 
-static void tcp_control_advance_actual_input(tcp_control_server* server, int64_t ended_frame_id)
+/* Publish the batch selected by the output thread, never infer it from read-ahead. */
+static void tcp_control_notify_input_started(void* priv, int64_t frame_id)
 {
-	char next_input[TCP_CONTROL_INPUT_SUMMARY_SIZE] = { 0 };
-	int64_t next_frame_id = INT64_MAX;
-	if (!server) return;
-	EnterCriticalSection(&server->event_mutex);
-	for (int i = 0; i < server->input_history_count; i++) {
-		int index = (server->input_history_head + i) % TCP_CONTROL_INPUT_HISTORY_SIZE;
-		int64_t frame_id = server->input_history[index].frame_id;
-		if (frame_id <= ended_frame_id || frame_id >= next_frame_id) continue;
-		next_frame_id = frame_id;
-		strcpy_s(next_input, sizeof(next_input), server->input_history[index].input);
-	}
-	LeaveCriticalSection(&server->event_mutex);
-
-	EnterCriticalSection(&server->mutex);
-	strcpy_s(server->status_actual_input, sizeof(server->status_actual_input),
-		next_input[0] ? next_input : server->status_input);
-	LeaveCriticalSection(&server->mutex);
+    tcp_control_server* server = (tcp_control_server*)priv;
+    char input[TCP_CONTROL_INPUT_SUMMARY_SIZE] = { 0 };
+    if (!server || frame_id <= 0) return;
+    EnterCriticalSection(&server->event_mutex);
+    tcp_control_find_input_locked(server, frame_id, input, sizeof(input));
+    LeaveCriticalSection(&server->event_mutex);
+    if (!input[0]) return;
+    EnterCriticalSection(&server->mutex);
+    if (frame_id >= server->status_actual_frame_id) {
+        strcpy_s(server->status_actual_input, sizeof(server->status_actual_input), input);
+        server->status_actual_frame_id = frame_id;
+    }
+    LeaveCriticalSection(&server->mutex);
+    tcp_control_push_event(server, TCP_CONTROL_EVENT_INPUT_STARTED, frame_id);
 }
 
 static void tcp_control_sanitize_log_line(char* s)
@@ -4106,7 +4214,6 @@ static void tcp_control_notify_input_eof(void* priv, int64_t frame_id)
 static void tcp_control_notify_input_ended(void* priv, int64_t frame_id)
 {
 	tcp_control_server* server = (tcp_control_server*)priv;
-	tcp_control_advance_actual_input(server, frame_id);
 	tcp_control_push_event(server, TCP_CONTROL_EVENT_INPUT_ENDED, frame_id);
 }
 
@@ -4159,6 +4266,9 @@ static void tcp_control_send_event(tcp_control_server* server, const tcp_control
 	if (!server || !event || server->exit) return;
 	line[0] = '\0';
 	switch (event->type) {
+	case TCP_CONTROL_EVENT_INPUT_STARTED:
+        snprintf(line, sizeof(line), "EVENT INPUT_STARTED frame_id=%I64d input=%s\n", event->frame_id, event->input);
+        break;
 	case TCP_CONTROL_EVENT_INPUT_EOF:
 		snprintf(line, sizeof(line), "EVENT INPUT_EOF frame_id=%I64d input=%s\n", event->frame_id, event->input);
 		break;
@@ -4210,6 +4320,7 @@ static void tcp_control_push(tcp_control_server* server, tcp_control_command* cm
 	server->queue_count++;
 	memset(cmd, 0, sizeof(*cmd));
 	LeaveCriticalSection(&server->mutex);
+    SetEvent(server->work_event);
 }
 
 static int tcp_control_pop(tcp_control_server* server, tcp_control_command* cmd)
@@ -4240,6 +4351,25 @@ static int input_threads_finished(inout_context* ctx)
 		if (threads[i] && WaitForSingleObject(threads[i], 0) != WAIT_OBJECT_0) return 0;
 	}
 	return 1;
+}
+
+/* New commands and producer completion wake playback immediately. The timeout
+ * only refreshes idle STATUS; it no longer sets the minimum file-switch time. */
+static void tcp_control_wait_for_work(tcp_control_server* server, inout_context* ctx, int input_was_finished)
+{
+    HANDLE producers[] = { ctx->reading_tid, ctx->special_source_tid, ctx->decode_video_tid,
+        ctx->process_video_tid, ctx->decode_audio_tid };
+    HANDLE handles[1 + ARRAY_ELEMS(producers)];
+    DWORD count = 1;
+    handles[0] = server->work_event;
+    for (int i = 0; i < ARRAY_ELEMS(producers); i++) {
+        if (producers[i] && WaitForSingleObject(producers[i], 0) == WAIT_TIMEOUT)
+            handles[count++] = producers[i];
+    }
+    /* The last producer may have exited between the main loop's drain check
+     * and this snapshot. Re-check immediately instead of losing that wakeup. */
+    if (count == 1 && !input_was_finished) return;
+    WaitForMultipleObjects(count, handles, FALSE, 100);
 }
 
 static char* tcp_control_take_next_input_if_ready(tcp_control_server* server,
@@ -4291,12 +4421,36 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 		strcpy_s(reply, reply_size, "OK PONG\n");
 		return;
 	}
-	if (starts_with_command(line, "PLAY_NEXT")) {
-		arg = tcp_trim_left(line + 9);
-		cmd->type = TCP_CONTROL_PLAY_NEXT;
-		cmd->text = arg && arg[0] ? av_strdup(arg) : NULL;
-		return;
-	}
+    if (starts_with_command(line, "PLAY_NEXT")) {
+        char* tab;
+        arg = tcp_trim_left(line + 9);
+        cmd->text = arg && arg[0] ? av_strdup(arg) : NULL;
+        if (arg && arg[0] && !cmd->text) { strcpy_s(reply, reply_size, "ERR out of memory\n"); return; }
+        tab = cmd->text ? strchr(cmd->text, '\t') : NULL;
+        if (tab) {
+            char* option = tab + 1;
+            while (*option) {
+                char* end = strchr(option, ',');
+                if (strncmp(option, "after_frame_id=", 15) == 0) {
+                    char* number_end;
+                    cmd->number = _strtoi64(option + 15, &number_end, 10);
+                    if (cmd->number <= 0 || number_end == option + 15 || (end ? number_end != end : *number_end != '\0')) {
+                        av_freep(&cmd->text);
+                        strcpy_s(reply, reply_size, "ERR invalid after_frame_id\n");
+                        return;
+                    }
+                    if (end) memmove(option, end + 1, strlen(end + 1) + 1);
+                    else if (option == tab + 1) *tab = '\0';
+                    else option[-1] = '\0';
+                    break;
+                }
+                if (!end) break;
+                option = end + 1;
+            }
+        }
+        cmd->type = TCP_CONTROL_PLAY_NEXT;
+        return;
+    }
 	if (starts_with_command(line, "PLAY")) {
 		arg = tcp_trim_left(line + 4);
 		if (!arg || arg[0] == '\0') {
@@ -4325,7 +4479,7 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 	if (starts_with_command(line, "STATUS")) {
 		EnterCriticalSection(&server->mutex);
 		format_display_aspect(server->display_aspect, aspect_text, sizeof(aspect_text));
-		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d deliver_ns=%I64d deliver_avg_ns=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d actual_input=%s input=%s\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->deliver_ns, server->deliver_avg_ns, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_actual_input, server->status_input);
+		sprintf_s(reply, reply_size, "OK seconds=%I64d duration=%I64d size=%I64d deliver_ns=%I64d deliver_avg_ns=%I64d state=%s scale_mode=%s display_aspect=%s controller_connected=%d actual_input=%s input=%s actual_frame_id=%I64d input_frame_id=%I64d\n", universal_to_seconds(server->status_time), server->status_duration / AV_TIME_BASE, server->status_size, server->deliver_ns, server->deliver_avg_ns, server->status_state, output_scale_mode_name(server->scale_mode), aspect_text, server->controller_connected, server->status_actual_input, server->status_input, server->status_actual_frame_id, server->status_input_frame_id);
 		LeaveCriticalSection(&server->mutex);
 		return;
 	}
@@ -4575,7 +4729,8 @@ static int tcp_control_start(tcp_control_server* server, int port)
 	server->started = 1;
 	g_tcp_log_server = server;
 	av_log_set_callback(tcp_control_av_log_callback);
-	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0 ||
+    server->work_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+	if (!server->work_event || WSAStartup(MAKEWORD(2, 2), &wsa) != 0 ||
 		open_thread(&server->thread, tcp_control_thread, server) < 0 ||
 		open_thread(&server->event_thread, tcp_control_event_thread, server) < 0) {
 		tcp_control_stop(server);
@@ -4612,6 +4767,7 @@ static void tcp_control_stop(tcp_control_server* server)
 		CloseHandle(server->thread);
 		server->thread = NULL;
 	}
+    if (server->work_event) { CloseHandle(server->work_event); server->work_event = NULL; }
 	if (g_tcp_log_server == server) {
 		av_log_set_callback(av_log_default_callback);
 		g_tcp_log_server = NULL;
@@ -4739,6 +4895,8 @@ DWORD main_thread(LPVOID p) {
 	ctx->video_callback = opts->video_callback;
 	ctx->audio_callback = opts->audio_callback;
 	ctx->callback_private = opts->callback_private;
+	ctx->input_started_callback = tcp_control_notify_input_started;
+    ctx->input_started_private = &control_server;
 	ctx->input_eof_callback = tcp_control_notify_input_eof;
 	ctx->input_eof_private = &control_server;
 	ctx->input_ended_callback = tcp_control_notify_input_ended;
@@ -4757,6 +4915,7 @@ DWORD main_thread(LPVOID p) {
 	enqueue_config_status_frame(ctx, config_status_text);
 	while (1) {
 			int processed_command = 0;
+            int input_was_finished = 0;
 			int should_exit_main = 0;
 			while (1) {
 			tcp_control_command command;
@@ -4804,8 +4963,10 @@ DWORD main_thread(LPVOID p) {
 				break;
 			}
 
-			int input_draining = input_threads_finished(ctx) &&
-				InterlockedCompareExchange(&ctx->loop_restart_requested, 0, 0) == 0;
+            int input_finished = input_threads_finished(ctx);
+            int input_draining = input_finished &&
+                InterlockedCompareExchange(&ctx->loop_restart_requested, 0, 0) == 0;
+            input_was_finished = input_finished;
 			if (input_draining) {
 				/* No producer can refill the queues: release the low/center
 				 * watermarks so even a short input's remaining frames drain. */
@@ -4821,6 +4982,7 @@ DWORD main_thread(LPVOID p) {
 			control_server.deliver_avg_ns = (int64_t)ctx->output_video_avg_block_time;
 			control_server.scale_mode = ctx->output_scale_mode;
 			control_server.display_aspect = ctx->output_display_aspect;
+            control_server.status_input_frame_id = ctx->input_frame_id;
 			if (current_input) tcp_control_sha256(current_input, control_server.status_input);
 			else control_server.status_input[0] = '\0';
 			if (control_server.status_state[0] == '\0') strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
@@ -4844,10 +5006,12 @@ DWORD main_thread(LPVOID p) {
 						if (loop_frame_id <= ended_frame_id) loop_frame_id = ended_frame_id + 1;
 						ctx->input_frame_id = loop_frame_id;
 						ctx->input_media_mask |= INPUT_MEDIA_LOOP_RESTART;
+                        tcp_control_register_input(&control_server, ctx->input_frame_id,
+                            current_input ? current_input : "");
+                        /* Consume the old request before starting producers: a
+                         * one-frame input can reach EOF before start_read returns. */
+                        InterlockedExchange(&ctx->loop_restart_requested, 0);
 						if (start_read(ctx) >= 0) {
-							tcp_control_register_input(&control_server, ctx->input_frame_id,
-								current_input ? current_input : "");
-							InterlockedExchange(&ctx->loop_restart_requested, 0);
 							EnterCriticalSection(&control_server.mutex);
 							strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
 							LeaveCriticalSection(&control_server.mutex);
@@ -4903,6 +5067,25 @@ DWORD main_thread(LPVOID p) {
 						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
 					next_queue_expanded = 0;
 				}
+                if (next_input && command.number > 0 && replace_prefetched_input(ctx, command.number)) {
+                    stop_read(ctx, 1);
+                    inout_context_reset_input(ctx, 1);
+                    play_filename = next_input;
+                    next_input = NULL;
+                    av_freep(&current_input);
+                    current_input = av_strdup(play_filename);
+                    if (next_queue_expanded) {
+                        for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
+                            frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
+                        next_queue_expanded = 0;
+                    }
+                    should_open = 1;
+                    preserve_output = 1;
+                    EnterCriticalSection(&control_server.mutex);
+                    strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
+                    tcp_control_sha256(current_input, control_server.status_input);
+                    LeaveCriticalSection(&control_server.mutex);
+                }
 				break;
 			case TCP_CONTROL_PLAY:
 				av_freep(&current_input);
@@ -5051,6 +5234,8 @@ DWORD main_thread(LPVOID p) {
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "stopped");
 				control_server.status_input[0] = '\0';
 				control_server.status_actual_input[0] = '\0';
+                control_server.status_actual_frame_id = 0;
+                control_server.status_input_frame_id = 0;
 				LeaveCriticalSection(&control_server.mutex);
 				break;
 			case TCP_CONTROL_PAUSE:
@@ -5153,8 +5338,11 @@ DWORD main_thread(LPVOID p) {
 					ctx->output_paused = 0;
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
 					tcp_control_sha256(input_summary, control_server.status_input);
-					if (!preserve_output || control_server.status_actual_input[0] == '\0')
-						tcp_control_sha256(input_summary, control_server.status_actual_input);
+					control_server.status_input_frame_id = ctx->input_frame_id;
+                    if (!preserve_output || control_server.status_actual_input[0] == '\0') {
+                        tcp_control_sha256(input_summary, control_server.status_actual_input);
+                        control_server.status_actual_frame_id = ctx->input_frame_id;
+                    }
 					LeaveCriticalSection(&control_server.mutex);
 					sprintf_s(str2, sizeof(str2), "[%s] Playing : %s\n", get_time_string(time_str, sizeof(time_str)), play_filename);
 					av_log(NULL, AV_LOG_INFO, "%s", str2);
@@ -5194,7 +5382,7 @@ DWORD main_thread(LPVOID p) {
 			tcp_control_command_free(&command);
 		}
 		if (should_exit_main) break;
-		if (!processed_command) av_usleep(100000);
+        if (!processed_command) tcp_control_wait_for_work(&control_server, ctx, input_was_finished);
 	}
 end:
 	if (ctx) {

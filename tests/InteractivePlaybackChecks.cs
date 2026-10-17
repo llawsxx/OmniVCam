@@ -9,6 +9,7 @@ using System.Threading;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -564,15 +565,21 @@ internal static class InteractivePlaybackChecks
             ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
             Check(commands.SequenceEqual(new[] { "PLAY_NEXT A2.mp4" }) && !waiting.IsCompleted, "Protected files defer through PLAY_NEXT instead of issuing immediate PLAY");
             ((Task)Invoke(owner, "HandleInteractiveEndedAsync", Get(current, "InputSummary"))).GetAwaiter().GetResult();
-            Check(waiting.IsCompleted && Field(owner, "interactiveCurrent") == next && Field(owner, "interactiveProtectedHandoff") == null, "Natural file end releases the waiting trigger and skips old B");
+            Check(!waiting.IsCompleted && Field(owner, "interactivePending") == next, "Source end alone cannot confirm a replaced pending input");
+            Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                Enum.Parse(Nested("BackendInputEventType"), "Started"), 100L, Get(next, "InputSummary") }));
+            Check(waiting.IsCompleted && Field(owner, "interactiveCurrent") == next && Field(owner, "interactiveProtectedHandoff") == null, "Actual output start releases the waiting trigger and skips old B");
 
             Set(a, "Loop", true); current = GroupBatch(a)[0];
+            next = GroupBatch(media[2])[0]; request = ProtectedRequest(next);
             QueueState(current, b); SetField("interactiveActive", true);
             handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", request);
             commands.Clear();
             ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
             Check(commands.SequenceEqual(new[] { "PLAY_NEXT A2.mp4" }), "Protected looping files yield to a next-file command at their natural EOF");
             ((Task)Invoke(owner, "HandleInteractiveEndedAsync", Get(current, "InputSummary"))).GetAwaiter().GetResult();
+            Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                Enum.Parse(Nested("BackendInputEventType"), "Started"), 200L, Get(next, "InputSummary") }));
             Check(HandoffTask(handoff).IsCompleted && Field(owner, "interactiveCurrent") == next, "Protected single-file loops do not make triggers wait forever");
             Set(a, "Loop", false);
             var one = FileGroup(); Set(one, "PreventInterrupt", true);
@@ -941,6 +948,55 @@ internal static class InteractivePlaybackChecks
             await CompleteSoon(dispatch, "The waiting request survives verification and starts");
             Check(Field(owner, "interactiveCurrent") == next, "Actual-state reconciliation preserves and completes the queued user request");
 
+            // Replacing at a boundary must keep a replay pending until its exact output batch starts.
+            foreach (int targetIndex in new[] { 0, 1, 2 })
+            {
+                Invoke(owner, "ClearInteractiveRuntime", true);
+                var boundaryCurrent = GroupBatch(media[0])[0]; Set(boundaryCurrent, "PreventInterrupt", true); Set(boundaryCurrent, "BackendFrameId", 100L);
+                var oldStandby = GroupBatch(media[1])[0]; Set(oldStandby, "BackendFrameId", 200L);
+                var replay = GroupBatch(media[targetIndex])[0];
+                var newStandby = GroupBatch(media[3])[0];
+                QueueState(boundaryCurrent, oldStandby); SetField("interactiveActive", true);
+                SetField("interactivePendingSource", Get(boundaryCurrent, "InputSummary"));
+                var boundaryHandoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", ProtectedRequest(replay, newStandby));
+                var queueReplay = (Task)Invoke(owner, "EnsureInteractiveNextQueuedAsync");
+                string replaceCommand = await CompleteSoon(reader.ReadLineAsync(), "Boundary replacement reaches backend");
+                Check(replaceCommand.StartsWith("PLAY_NEXT " + Get(replay, "Path") + "\tafter_frame_id=100"),
+                    "Single PLAY_NEXT identifies the protected batch so already-prefetched standby can be replaced atomically");
+                await writer.WriteLineAsync("OK"); await CompleteSoon(queueReplay, "Boundary replacement acknowledged");
+                Invoke(owner, "HandleInteractiveBackendEvent", "INPUT_ENDED frame_id=100 input=" + Get(boundaryCurrent, "InputSummary"));
+                await CompleteSoon((Task)Field(owner, "interactiveBackendEventTask"), "Old source end is processed");
+                Check(Field(owner, "interactiveCurrent") == boundaryCurrent && Field(owner, "interactivePending") == replay && !HandoffTask(boundaryHandoff).IsCompleted,
+                    "Source end alone cannot announce the replay or prefetch its successor");
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(oldStandby, "playing", replay) + " actual_frame_id=200 input_frame_id=300"),
+                    "The superseded standby cannot advance past the pending replay");
+                Invoke(owner, "HandleInteractiveBackendEvent", "INPUT_STARTED frame_id=300 input=" + Get(replay, "InputSummary"));
+                var startEvent = (Task)Field(owner, "interactiveBackendEventTask");
+                Check((await CompleteSoon(reader.ReadLineAsync(), "Successor follows actual replay output")).StartsWith("PLAY_NEXT " + Get(newStandby, "Path")),
+                    "The existing single-next command queues the successor only after the replay actually starts");
+                await writer.WriteLineAsync("OK"); await CompleteSoon(startEvent, "Actual-start event completes");
+                Check(Field(owner, "interactiveCurrent") == replay && (long)Get(replay, "BackendFrameId") == 300L && HandoffTask(boundaryHandoff).IsCompleted,
+                    "Actual-start notification confirms repeated or different-file replacements without a ten-second recovery wait");
+                Invoke(owner, "HandleInteractiveBackendEvent", "INPUT_ENDED frame_id=100 input=" + Get(boundaryCurrent, "InputSummary"));
+                await CompleteSoon((Task)Field(owner, "interactiveBackendEventTask"), "Delayed old end processed");
+                Check(Field(owner, "interactiveCurrent") == replay && Field(owner, "interactivePending") == newStandby,
+                    "A delayed duplicate end cannot skip the confirmed replay");
+            }
+
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            protectedFile = GroupBatch(media[0])[0]; Set(protectedFile, "PreventInterrupt", true); Set(protectedFile, "BackendFrameId", 100L);
+            var actualStandby = GroupBatch(media[1])[0]; Set(actualStandby, "BackendFrameId", 200L);
+            next = GroupBatch(media[2])[0];
+            QueueState(protectedFile, actualStandby); SetField("interactiveActive", true);
+            request = ProtectedRequest(next); Set(request, "Immediate", true);
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", request);
+            dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "Boundary trigger verifies output") == "STATUS", "Trigger still reuses backend STATUS protocol");
+            await writer.WriteLineAsync(BackendStatus(actualStandby, "playing", actualStandby) + " actual_frame_id=200 input_frame_id=200");
+            Check((await CompleteSoon(reader.ReadLineAsync(), "Finished protection switches to PLAY")).StartsWith("PLAY " + Get(next, "Path")),
+                "When standby is already actually playing, stale protected state cannot force PLAY_NEXT");
+            await writer.WriteLineAsync("OK"); await CompleteSoon(dispatch, "Trigger starts immediately after status synchronization");
+
             // Exercise the real polling path, including a generation change during the STATUS query.
             var retainedTail = GroupBatch(media[3])[0];
             QueueState(protectedFile, next, retainedTail); SetField("interactiveActive", true);
@@ -958,6 +1014,52 @@ internal static class InteractivePlaybackChecks
             Check(Field(owner, "interactiveCurrent") == next && Field(owner, "interactiveRecoveryEntry") == next && QueuedEntries().SequenceEqual(new[] { retainedTail }),
                 "Periodic recovery retains its selected target and subsequent queue until output is verified");
             Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(next, "playing", next));
+
+            // Closing must invalidate late replies and clear the backend slot after an in-flight queue write.
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            QueueState(protectedFile, null, next, retainedTail); SetField("interactiveActive", true);
+            var sendingNext = (Task)Invoke(owner, "EnsureInteractiveNextQueuedAsync");
+            Check((await CompleteSoon(reader.ReadLineAsync(), "A next command is in flight before closing")).StartsWith("PLAY_NEXT "), "Close test includes an unacknowledged next command");
+            Invoke(owner, "SetInteractiveWindowOpen", false);
+            Check(!(bool)Field(owner, "interactiveActive") && Field(owner, "interactiveCurrent") == null && Field(owner, "interactivePending") == null && QueuedEntries().Length == 0,
+                "Closing immediately clears runtime and queued interactive items");
+            var cleanup = (Task)Field(owner, "interactiveCleanupTask");
+            var clearCommand = reader.ReadLineAsync();
+            await Task.Delay(30);
+            Check(!clearCommand.IsCompleted, "Cleanup waits for the older queue write before clearing its destination");
+            await writer.WriteLineAsync("OK delayed next");
+            await CompleteSoon(sendingNext, "The old next acknowledgement finishes");
+            Check(await CompleteSoon(clearCommand, "Closing clears the backend next slot") == "PLAY_NEXT", "Close clears the single pending slot without stopping current output");
+            Check(Field(owner, "interactivePending") == null, "A late next acknowledgement cannot restore closed playback");
+
+            Invoke(owner, "SetInteractiveWindowOpen", true);
+            request = ProtectedRequest(next); Set(request, "Immediate", true);
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", request);
+            dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            var reopenedPlay = reader.ReadLineAsync();
+            await Task.Delay(30);
+            Check(!reopenedPlay.IsCompleted, "A reopened session waits for the previous close cleanup");
+            await writer.WriteLineAsync("OK cleared");
+            await CompleteSoon(cleanup, "Close cleanup completes");
+            Check((await CompleteSoon(reopenedPlay, "The reopened session can start a project")).StartsWith("PLAY " + Get(next, "Path")), "Reopened playback starts after cleanup and cannot be erased by an old clear command");
+            await writer.WriteLineAsync("OK reopened"); await CompleteSoon(dispatch, "Reopened trigger completes");
+
+            QueueState(protectedFile, null); SetField("interactiveActive", true);
+            request = ProtectedRequest(next); Set(request, "Immediate", true);
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", request);
+            dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "An old session is awaiting STATUS") == "STATUS", "Close test includes pending trigger verification");
+            Invoke(owner, "SetInteractiveWindowOpen", false);
+            cleanup = (Task)Field(owner, "interactiveCleanupTask");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "Closing during verification clears next") == "PLAY_NEXT", "Closing invalidates pending verification");
+            await writer.WriteLineAsync(BackendStatus(protectedFile, "playing", protectedFile));
+            await writer.WriteLineAsync("OK cleared after verification");
+            await CompleteSoon(dispatch, "Late verification finishes without a trigger");
+            await CompleteSoon(cleanup, "Final close cleanup completes");
+            Check(!(bool)Field(owner, "interactiveActive") && Field(owner, "interactiveCurrent") == null &&
+                !((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Any(), "Late STATUS cannot restore or requeue a closed session's trigger");
+            Invoke(owner, "SetInteractiveWindowOpen", true);
+            Console.WriteLine("PASS: closing cancels runtime and late STATUS/next acknowledgements; backend queue cleanup precedes reopened triggers.");
         }
         finally
         {
@@ -986,6 +1088,82 @@ internal static class InteractivePlaybackChecks
         }
         Console.WriteLine("PASS: real TCP reconnection preserves queues until actual-output verification, recovers missed transitions, retains waiting triggers, isolates old readers and allows replay.");
     }
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr window, int id);
+
+    private static void CheckInteractiveWindowHotkeys()
+    {
+        var routes = (IList)Field(owner, "interactiveRoutes");
+        var route = Route("sequential");
+        var hotkey = New("InteractiveHotkey");
+        Set(hotkey, "KeyCode", Keys.F24);
+        Set(hotkey, "Modifiers", Enum.ToObject(Nested("HotkeyModifiers"), 7));
+        Set(route, "Hotkey", hotkey);
+        routes.Add(route);
+        SetField("interactiveWindowOpen", false);
+        Form window = null;
+        using (var probe = new Form())
+        {
+            IntPtr probeHandle = probe.Handle;
+            const int probeId = 0x6201;
+            Check(RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24), "Lifecycle test hotkey is available");
+            UnregisterHotKey(probeHandle, probeId);
+            try
+            {
+                Invoke(owner, "BuildInteractiveWindow");
+                window = (Form)Field(owner, "interactiveForm");
+                window.StartPosition = FormStartPosition.Manual;
+                window.Location = new System.Drawing.Point(-32000, -32000);
+                window.ShowInTaskbar = false;
+                IntPtr unused = window.Handle;
+                Invoke(window, "ReloadAll");
+                Check(!window.Visible && !(bool)Field(owner, "interactiveWindowOpen") &&
+                    ((IDictionary)Field(window, "registeredRoutes")).Count == 0, "Creating/reloading a hidden interactive window does not activate hotkeys");
+                Check(RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24), "Hidden window leaves the global shortcut available");
+                UnregisterHotKey(probeHandle, probeId);
+                int selection = (int)Get(route, "NextCombinationIndex");
+                Invoke(owner, "RequestInteractiveRoute", route, "hidden test");
+                Check((int)Get(route, "NextCombinationIndex") == selection && !(bool)Field(owner, "interactiveActive"), "Hidden-window triggers cannot select or start a project");
+
+                window.Show();
+                Check((bool)Field(owner, "interactiveWindowOpen") && ((IDictionary)Field(window, "registeredRoutes")).Count > 0,
+                    "Showing the interactive window enables route shortcuts");
+                Check(!RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24), "Visible interactive window actually owns its global shortcut");
+                window.WindowState = FormWindowState.Minimized;
+                Check((bool)Field(owner, "interactiveWindowOpen") && !RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24),
+                    "Minimized interactive window remains enabled");
+                window.Close();
+                Check(!window.Visible && !window.IsDisposed && !(bool)Field(owner, "interactiveWindowOpen") &&
+                    ((IDictionary)Field(window, "registeredRoutes")).Count == 0, "Closing the reusable window disables interaction and unregisters all shortcuts");
+                Check(RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24), "Closing releases the OS shortcut for other applications");
+                UnregisterHotKey(probeHandle, probeId);
+                Invoke(window, "ReloadAll");
+                Check(((IDictionary)Field(window, "registeredRoutes")).Count == 0, "Configuration reload cannot reactivate shortcuts while closed");
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x5100, IntPtr.Zero));
+                Check(!(bool)Field(owner, "interactiveActive"), "A late queued hotkey message cannot restart closed interaction");
+
+                window.WindowState = FormWindowState.Normal;
+                Invoke(owner, "OpenInteractiveWindow");
+                Check(window.Visible && !RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24), "Reopening registers shortcuts again");
+                window.Hide();
+                Check(!(bool)Field(owner, "interactiveWindowOpen") && RegisterHotKey(probeHandle, probeId, 7, (uint)Keys.F24),
+                    "Hiding also releases shortcuts and disables interaction");
+                UnregisterHotKey(probeHandle, probeId);
+            }
+            finally
+            {
+                UnregisterHotKey(probeHandle, probeId);
+                if (window != null) window.Dispose();
+                SetField("interactiveForm", null);
+                routes.Remove(route);
+                SetField("interactiveWindowOpen", true); // Remaining playback checks simulate an open interactive window.
+            }
+        }
+        Console.WriteLine("PASS: real Windows hotkeys follow show/close/hide/reopen, remain active while minimized, and ignore hidden reloads and late hotkey messages.");
+    }
+
     private static void CheckEditor(Assembly assembly)
     {
         var resources = new System.Resources.ResourceManager("OmniVCamController.Resources.AppStrings", assembly);
@@ -1055,6 +1233,7 @@ internal static class InteractivePlaybackChecks
             SetField("interactiveBackendEvents", Activator.CreateInstance(typeof(Queue<>).MakeGenericType(Nested("InteractiveBackendEvent"))));
             SetField("backendInputEvents", Activator.CreateInstance(typeof(Queue<>).MakeGenericType(Nested("BackendInputEvent"))));
             SetField("pendingScheduledObsEnds", Activator.CreateInstance(typeof(Queue<>).MakeGenericType(Nested("ScheduledObsAction"))));
+            CheckInteractiveWindowHotkeys();
             CheckSelection();
             CheckEditor(assembly);
             CheckFileGroups(assembly);
