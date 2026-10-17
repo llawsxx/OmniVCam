@@ -290,4 +290,31 @@
   <data name="InteractiveAddCombination" xml:space="preserve"><value>Add combination</value></data>
   <data name="InteractiveDuplicateCombination" xml:space="preserve"><value>Duplicate combination</value></data>
   <data name="InteractiveEmptyCombination" xml:space="preserve"><value>Add at least one combination and ensure each combination contains media.</value></data>
+  <data name="InteractiveAddFileGroup" xml:space="preserve"><value>Add file group</value></data>
+  <data name="InteractiveEditFileGroup" xml:space="preserve"><value>Edit file group</value></data>
+  <data name="InteractiveFileGroupTag" xml:space="preserve"><value>[File group]</value></data>
+  <data name="InteractiveFileGroupPlayback" xml:space="preserve"><value>File selection</value></data>
+  <data name="InteractiveFileGroupNoRepeat" xml:space="preserve"><value>No repeats within a round</value></data>
+  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>One file: each use selects the next or a random file; no-repeat rounds apply across triggers. All files: play the complete list in order or shuffle it, playing each file once. Set looping in the media library to repeat the entire group.</value></data>
+  <data name="InteractiveFileGroupFiles" xml:space="preserve"><value>Files in group</value></data>
+  <data name="InteractiveFileGroupRequired" xml:space="preserve"><value>Enter a group title and add at least one file.</value></data>
+  <data name="InteractiveFileGroupSummary" xml:space="preserve"><value>{0} files; {1}</value></data>
+  <data name="InteractiveFileGroupScope" xml:space="preserve"><value>Play on each trigger</value></data>
+  <data name="InteractiveFileGroupOne" xml:space="preserve"><value>One file</value></data>
+  <data name="InteractiveFileGroupAll" xml:space="preserve"><value>All files</value></data>
+  <data name="InteractivePreventInterrupt" xml:space="preserve"><value>Do not interrupt</value></data>
+  <data name="InteractiveToggleProtection" xml:space="preserve"><value>Toggle interrupt protection</value></data>
+  <data name="InteractiveWaitingProtected" xml:space="preserve"><value>Waiting for protected media to finish: </value></data>
+  <data name="InteractiveBackendDisconnected" xml:space="preserve"><value>Camera connection lost. The interactive queue is retained while actual playback is verified.</value></data>
+  <data name="InteractiveVerifyingPlayback" xml:space="preserve"><value>Verifying playback: </value></data>
+  <data name="InteractivePlaybackVerified" xml:space="preserve"><value>Playback verified: </value></data>
+  <data name="InteractivePlaybackAutoNext" xml:space="preserve">
+    <value>Actual playback could not be verified for 10 seconds. Starting next: </value>
+  </data>
+  <data name="InteractivePlaybackRetry" xml:space="preserve">
+    <value>Unable to start; keeping this item for retry: </value>
+  </data>
+  <data name="InteractivePlaybackNoNext" xml:space="preserve">
+    <value>Actual playback could not be verified for 10 seconds; no next item is queued. Cleared the stale playing state.</value>
+  </data>
 </root>

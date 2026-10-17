@@ -100,7 +100,7 @@ namespace OmniVCamController
             EnableDoubleBuffering(playlistView);
             EnableDoubleBuffering(scheduledPlaylistView);
             ApplyLocalizedDesignerText();
-            commandClient = new TcpCommandClient(AppendRemoteLog, HandleBackendEvent);
+            commandClient = new TcpCommandClient(AppendRemoteLog, HandleBackendEvent, HandleBackendConnectionClosed);
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             BuildManualPanel(mainContentPanel);
             BuildPlayoutWindow();
@@ -3621,12 +3621,7 @@ namespace OmniVCamController
                         new XAttribute("title", item.Title),
                         new XAttribute("options", item.Options)))),
                 new XElement("InteractivePlayback",
-                    new XElement("Media", state.InteractiveMedia.Select(item => new XElement("Item",
-                        new XAttribute("id", item.RuntimeId),
-                        new XAttribute("title", item.Title),
-                        new XAttribute("path", item.Path),
-                        new XAttribute("options", item.Options),
-                        new XAttribute("loop", item.Loop ? "1" : "0")))),
+                    new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
                     new XElement("Routes", state.InteractiveRoutes.Select(SaveInteractiveRouteElement))));
         }
 
@@ -3767,16 +3762,7 @@ namespace OmniVCamController
             {
                 foreach (XElement itemElement in mediaElement.Elements("Item"))
                 {
-                    Guid id;
-                    if (!Guid.TryParse(GetAttribute(itemElement, "id", null), out id)) id = Guid.NewGuid();
-                    interactiveMedia.Add(new InteractiveMediaItem
-                    {
-                        RuntimeId = id,
-                        Title = GetAttribute(itemElement, "title", string.Empty),
-                        Path = GetAttribute(itemElement, "path", string.Empty),
-                        Options = GetAttribute(itemElement, "options", string.Empty),
-                        Loop = GetAttribute(itemElement, "loop", "0") == "1"
-                    });
+                    interactiveMedia.Add(LoadInteractiveMediaElement(itemElement));
                 }
             }
 
@@ -4245,9 +4231,12 @@ namespace OmniVCamController
             AppendLog(log.ToString().TrimEnd());
         }
 
-        private Task<string> SendRawCommandAsync(string command)
+        private async Task<string> SendRawCommandAsync(string command)
         {
-            return commandClient.SendAsync(hostBox.Text.Trim(), (int)portBox.Value, command);
+            ObserveBackendConnectionLoss();
+            string reply = await commandClient.SendAsync(hostBox.Text.Trim(), (int)portBox.Value, command);
+            ObserveBackendConnectionLoss();
+            return reply;
         }
 
         private async Task ShowFrameInfoAsync()
@@ -4312,9 +4301,20 @@ namespace OmniVCamController
             try
             {
                 int statusGeneration = commandClient.Generation;
+                int interactiveVersion = interactiveRuntimeVersion;
+                int interactiveRevision = interactiveStatusRevision;
                 ConnectionTabState statusState = activeState;
                 string reply = await SendRawCommandAsync("STATUS");
-                if (statusGeneration != commandClient.Generation || !ReferenceEquals(statusState, activeState)) return;
+                if (!ReferenceEquals(statusState, activeState)) return;
+                if (statusGeneration != commandClient.Generation &&
+                    (reply == null || !reply.StartsWith("OK seconds=", StringComparison.OrdinalIgnoreCase)))
+                {
+                    // Failed connection attempts also change the TCP generation. They still count toward
+                    // the playback watchdog, which must be able to choose (and retain) the next item offline.
+                    await ReconcileInteractiveBackendStatusAsync(null, interactiveRuntimeVersion, interactiveStatusRevision, true);
+                    return;
+                }
+                await ReconcileInteractiveBackendStatusAsync(reply, interactiveVersion, interactiveRevision, true);
                 if (reply == null || !reply.StartsWith("OK seconds=", StringComparison.OrdinalIgnoreCase)) return;
             string value = reply.Substring("OK seconds=".Length);
             int space = value.IndexOf(' ');
@@ -4907,48 +4907,61 @@ namespace OmniVCamController
             private const int ConnectTimeoutMs = 3000;
             private readonly Action<string, int> logCallback;
             private readonly Action<string, int> eventCallback;
+            private readonly Action connectionClosedCallback;
             private readonly SemaphoreSlim writeLock = new SemaphoreSlim(1, 1);
-            private readonly ConcurrentQueue<TaskCompletionSource<string>> pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
+            private ConcurrentQueue<TaskCompletionSource<string>> pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
             private readonly object sync = new object();
             private TcpClient client;
             private TcpClient connectingClient;
             private NetworkStream stream;
-            private CancellationTokenSource cts = new CancellationTokenSource();
+            private CancellationTokenSource cts;
             private Task readTask;
             private string host;
             private int port;
             private bool disposed;
             private int generation;
+            private int connectionLossVersion;
 
-            public TcpCommandClient(Action<string, int> logCallback, Action<string, int> eventCallback)
+            public TcpCommandClient(Action<string, int> logCallback, Action<string, int> eventCallback, Action connectionClosedCallback = null)
             {
                 this.logCallback = logCallback;
                 this.eventCallback = eventCallback;
+                this.connectionClosedCallback = connectionClosedCallback;
             }
 
-            public int Generation { get { return generation; } }
+            public int Generation { get { return Volatile.Read(ref generation); } }
+            public int ConnectionLossVersion { get { return Volatile.Read(ref connectionLossVersion); } }
 
             public void Reset()
             {
-                generation++;
+                Interlocked.Increment(ref generation);
                 Disconnect();
             }
 
             public async Task<string> SendAsync(string host, int port, string command)
             {
                 if (disposed) return "ERR client disposed";
-                int requestGeneration = generation;
+                int requestGeneration = Generation;
                 try
                 {
-                    await EnsureConnectedAsync(host, port);
-                    var tcs = new TaskCompletionSource<string>();
+                    requestGeneration = await EnsureConnectedAsync(host, port);
+                    var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
                     await writeLock.WaitAsync();
                     try
                     {
-                        pendingReplies.Enqueue(tcs);
+                        NetworkStream requestStream;
+                        CancellationToken requestToken;
+                        lock (sync)
+                        {
+                            if (disposed || requestGeneration != generation || stream == null)
+                                throw new OperationCanceledException("connection changed");
+                            requestStream = stream;
+                            requestToken = cts.Token;
+                            pendingReplies.Enqueue(tcs);
+                        }
                         byte[] data = Encoding.UTF8.GetBytes(command + "\n");
-                        await stream.WriteAsync(data, 0, data.Length, cts.Token);
-                        await stream.FlushAsync(cts.Token);
+                        await requestStream.WriteAsync(data, 0, data.Length, requestToken);
+                        await requestStream.FlushAsync(requestToken);
                     }
                     finally
                     {
@@ -4969,73 +4982,79 @@ namespace OmniVCamController
                 }
             }
 
-            private async Task EnsureConnectedAsync(string host, int port)
+            private async Task<int> EnsureConnectedAsync(string host, int port)
             {
                 lock (sync)
                 {
-                    if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return;
+                    if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return generation;
                 }
 
                 await writeLock.WaitAsync();
+                TcpClient newClient = null;
                 try
                 {
                     lock (sync)
                     {
-                        if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return;
+                        if (client != null && client.Connected && string.Equals(this.host, host, StringComparison.OrdinalIgnoreCase) && this.port == port) return generation;
                     }
                     Disconnect();
-                    cts = new CancellationTokenSource();
-                    var newClient = new TcpClient();
-                    int connectGeneration = generation;
-                    lock (sync) connectingClient = newClient;
+                    newClient = new TcpClient();
+                    int connectGeneration;
+                    lock (sync)
+                    {
+                        if (disposed) throw new ObjectDisposedException(nameof(TcpCommandClient));
+                        connectGeneration = generation;
+                        connectingClient = newClient;
+                    }
                     Task connectTask = newClient.ConnectAsync(host, port);
                     Task finished = await Task.WhenAny(connectTask, Task.Delay(ConnectTimeoutMs));
-                    if (finished != connectTask)
-                    {
-                        try { newClient.Close(); } catch { }
-                        throw new TimeoutException("connection timeout");
-                    }
+                    if (finished != connectTask) throw new TimeoutException("connection timeout");
                     await connectTask;
                     lock (sync)
                     {
-                        if (connectGeneration != generation)
-                        {
-                            newClient.Close();
+                        if (disposed || connectGeneration != generation)
                             throw new OperationCanceledException("connection was cancelled");
-                        }
                         connectingClient = null;
                         client = newClient;
                         stream = client.GetStream();
+                        cts = new CancellationTokenSource();
+                        pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
                         this.host = host;
                         this.port = port;
-                        int readGeneration = generation;
-                        readTask = Task.Run(() => ReadLoopAsync(cts.Token, readGeneration));
+                        int readGeneration = Interlocked.Increment(ref generation);
+                        // Each reader owns its stream, token and replies. An old reader must never drain a new session's replies.
+                        var readStream = stream;
+                        var readToken = cts.Token;
+                        var readReplies = pendingReplies;
+                        readTask = Task.Run(() => ReadLoopAsync(readStream, readToken, readGeneration, readReplies));
+                        return readGeneration;
                     }
                 }
                 finally
                 {
                     lock (sync)
                     {
-                        if (connectingClient != null && !ReferenceEquals(connectingClient, client))
+                        if (ReferenceEquals(connectingClient, newClient)) connectingClient = null;
+                        if (newClient != null && !ReferenceEquals(client, newClient))
                         {
-                            try { connectingClient.Close(); } catch { }
-                            connectingClient = null;
+                            try { newClient.Close(); } catch { }
                         }
                     }
                     writeLock.Release();
                 }
             }
 
-            private async Task ReadLoopAsync(CancellationToken token, int readGeneration)
+            private async Task ReadLoopAsync(NetworkStream readStream, CancellationToken token, int readGeneration,
+                ConcurrentQueue<TaskCompletionSource<string>> readReplies)
             {
                 try
                 {
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    using (var reader = new StreamReader(readStream, Encoding.UTF8))
                     {
                         while (!token.IsCancellationRequested)
                         {
                             string line = await reader.ReadLineAsync();
-                            if (line == null) break;
+                            if (line == null || readGeneration != Generation) break;
                             if (line.StartsWith("LOG ", StringComparison.OrdinalIgnoreCase))
                             {
                                 logCallback(ParseLogLine(line), readGeneration);
@@ -5046,7 +5065,7 @@ namespace OmniVCamController
                                 eventCallback?.Invoke(line.Substring(6).TrimStart(), readGeneration);
                                 continue;
                             }
-                            if (pendingReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult(line);
+                            if (readReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult(line);
                         }
                     }
                 }
@@ -5056,8 +5075,8 @@ namespace OmniVCamController
                 }
                 finally
                 {
-                    while (pendingReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult("ERR connection closed");
-                    if (readGeneration == generation) Disconnect();
+                    DisconnectIfGeneration(readGeneration);
+                    while (readReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult("ERR connection closed");
                 }
             }
 
@@ -5068,36 +5087,46 @@ namespace OmniVCamController
                 return index >= 0 ? line.Substring(index + marker.Length) : line.Substring(4).TrimStart();
             }
 
-            private void Disconnect()
+            private void Disconnect(int? expectedGeneration = null)
             {
-                TcpClient oldClient = null;
-                TcpClient oldConnectingClient = null;
+                TcpClient oldClient;
+                TcpClient oldConnectingClient;
+                CancellationTokenSource oldCts;
+                ConcurrentQueue<TaskCompletionSource<string>> oldReplies;
                 lock (sync)
                 {
-                    if (cts != null && !cts.IsCancellationRequested) cts.Cancel();
+                    if (expectedGeneration.HasValue && expectedGeneration.Value != generation) return;
                     oldClient = client;
                     oldConnectingClient = connectingClient;
+                    oldCts = cts;
+                    oldReplies = pendingReplies;
+                    if (oldClient != null || oldConnectingClient != null) Interlocked.Increment(ref generation);
                     client = null;
                     connectingClient = null;
                     stream = null;
+                    cts = null;
+                    pendingReplies = new ConcurrentQueue<TaskCompletionSource<string>>();
                     host = null;
                     port = 0;
+                    if (oldClient != null) Interlocked.Increment(ref connectionLossVersion);
                 }
+                try { oldCts?.Cancel(); } catch (ObjectDisposedException) { }
                 try { oldConnectingClient?.Close(); } catch { }
                 try { oldClient?.Close(); } catch { }
+                while (oldReplies.TryDequeue(out TaskCompletionSource<string> tcs)) tcs.TrySetResult("ERR connection closed");
+                oldCts?.Dispose();
+                if (oldClient != null) connectionClosedCallback?.Invoke();
             }
 
             private void DisconnectIfGeneration(int expectedGeneration)
             {
-                if (expectedGeneration == generation) Disconnect();
+                Disconnect(expectedGeneration);
             }
 
             public void Dispose()
             {
                 disposed = true;
                 Disconnect();
-                cts.Dispose();
-                writeLock.Dispose();
             }
         }
         private sealed class PlaylistItem

@@ -580,4 +580,31 @@
   <data name="InteractiveAddCombination" xml:space="preserve"><value>新增組合</value></data>
   <data name="InteractiveDuplicateCombination" xml:space="preserve"><value>複製組合</value></data>
   <data name="InteractiveEmptyCombination" xml:space="preserve"><value>請至少新增一個組合，並確保每個組合都包含媒體。</value></data>
+  <data name="InteractiveAddFileGroup" xml:space="preserve"><value>新增檔案組合</value></data>
+  <data name="InteractiveEditFileGroup" xml:space="preserve"><value>編輯檔案組合</value></data>
+  <data name="InteractiveFileGroupTag" xml:space="preserve"><value>[檔案組合]</value></data>
+  <data name="InteractiveFileGroupPlayback" xml:space="preserve"><value>檔案選擇方式</value></data>
+  <data name="InteractiveFileGroupNoRepeat" xml:space="preserve"><value>一輪內不重複</value></data>
+  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>一個檔案：每次選取下一個或隨機檔案，可跨多次觸發一輪內不重複。全部檔案：按順序或打亂順序播放整組，每個檔案播放一次。在媒體庫外面的循環設定中開啟循環後，會循環整個檔案組合。</value></data>
+  <data name="InteractiveFileGroupFiles" xml:space="preserve"><value>組合內檔案</value></data>
+  <data name="InteractiveFileGroupRequired" xml:space="preserve"><value>請填寫組合標題，並至少新增一個檔案。</value></data>
+  <data name="InteractiveFileGroupSummary" xml:space="preserve"><value>{0} 個檔案；{1}</value></data>
+  <data name="InteractiveFileGroupScope" xml:space="preserve"><value>每次觸發播放</value></data>
+  <data name="InteractiveFileGroupOne" xml:space="preserve"><value>一個檔案</value></data>
+  <data name="InteractiveFileGroupAll" xml:space="preserve"><value>全部檔案</value></data>
+  <data name="InteractivePreventInterrupt" xml:space="preserve"><value>不允許中途打斷</value></data>
+  <data name="InteractiveToggleProtection" xml:space="preserve"><value>切換打斷保護</value></data>
+  <data name="InteractiveWaitingProtected" xml:space="preserve"><value>等待不可打斷媒體播放完成：</value></data>
+  <data name="InteractiveBackendDisconnected" xml:space="preserve"><value>攝影機連線已中斷，保留互動佇列，等待核實實際播放狀態。</value></data>
+  <data name="InteractiveVerifyingPlayback" xml:space="preserve"><value>等待核實播放：</value></data>
+  <data name="InteractivePlaybackVerified" xml:space="preserve"><value>已核實正在播放：</value></data>
+  <data name="InteractivePlaybackAutoNext" xml:space="preserve">
+    <value>連續 10 秒無法確認實際播放，自動啟動下一項：</value>
+  </data>
+  <data name="InteractivePlaybackRetry" xml:space="preserve">
+    <value>啟動失敗，保留此項等待重試：</value>
+  </data>
+  <data name="InteractivePlaybackNoNext" xml:space="preserve">
+    <value>連續 10 秒無法確認實際播放，且沒有待播放項目，已解除過期的正在播放狀態。</value>
+  </data>
 </root>
