@@ -225,7 +225,7 @@ namespace OmniVCamController
             List<InteractivePlaybackEntry> entries = BuildInteractiveEntries(route);
             if (entries.Count == 0)
             {
-                AppendInteractiveLog(source + " - " + T("InteractiveNoPlayableMedia"));
+                AppendInteractiveLog(source + " - " + T(route.RandomSelectionUnavailable ? "InteractiveCombinationUnavailable" : "InteractiveNoPlayableMedia"));
                 return;
             }
 
@@ -452,14 +452,7 @@ namespace OmniVCamController
 
         private List<InteractivePlaybackEntry> BuildInteractiveEntries(InteractiveRouteItem route)
         {
-            // Choose once per trigger, before asynchronous playback can queue other requests.
-            // Check alternatives without advancing file-group selection state.
-            var playable = route.Combinations.Where(combination => combination.MediaIds.Count > 0 &&
-                combination.MediaIds.All(id => CanPlayInteractiveMedia(interactiveMedia.FirstOrDefault(item => item.RuntimeId == id)))).ToList();
-            if (playable.Count == 0) return new List<InteractivePlaybackEntry>();
-            int index = route.RandomOrder ? random.Next(playable.Count) : route.NextCombinationIndex % playable.Count;
-            if (!route.RandomOrder) route.NextCombinationIndex = (index + 1) % playable.Count;
-            return BuildInteractiveCombinationEntries(playable[index]);
+            return BuildInteractiveEntriesAt(route, System.Diagnostics.Stopwatch.GetTimestamp());
         }
 
         private List<InteractivePlaybackEntry> BuildInteractiveCombinationEntries(InteractiveMediaCombination combination)
@@ -892,7 +885,7 @@ namespace OmniVCamController
                 {
                     foreach (var combination in route.Combinations) combination.MediaIds.RemoveAll(ids.Contains);
                     route.Combinations.RemoveAll(combination => combination.MediaIds.Count == 0);
-                    route.NextCombinationIndex = 0;
+                    ResetInteractiveCombinationSelection(route);
                 }
                 RefreshMedia();
                 RefreshRoutes();
@@ -1035,7 +1028,9 @@ namespace OmniVCamController
                 new XAttribute("hotkey", route.Hotkey == null ? string.Empty : route.Hotkey.KeyCode.ToString()),
                 new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
                 new XAttribute("selection", route.RandomOrder ? "random" : "sequential"),
+                new XAttribute("recentCount", route.RecentCombinationCount),
                 new XElement("Combinations", route.Combinations.Select(combination => new XElement("Combination",
+                    new XAttribute("weight", combination.Weight), new XAttribute("cooldownSeconds", combination.CooldownSeconds),
                     combination.MediaIds.Select(id => new XElement("MediaRef", new XAttribute("id", id)))))));
         }
 
@@ -1047,14 +1042,19 @@ namespace OmniVCamController
                 Immediate = GetAttribute(element, "immediate", "0") == "1",
                 Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty),
                     GetAttribute(element, "modifiers", string.Empty)),
-                RandomOrder = !string.Equals(GetAttribute(element, "selection", "random"), "sequential", StringComparison.OrdinalIgnoreCase)
+                RandomOrder = !string.Equals(GetAttribute(element, "selection", "random"), "sequential", StringComparison.OrdinalIgnoreCase),
+                RecentCombinationCount = GetInteractiveSelectionInt(element, "recentCount", 0, 0, MaxRecentCombinations)
             };
             XElement combinations = element.Element("Combinations");
             // Previous versions saved one sequence directly under Route.
             var sequences = combinations == null ? new[] { element } : combinations.Elements("Combination");
             foreach (XElement sequence in sequences)
             {
-                var combination = new InteractiveMediaCombination();
+                var combination = new InteractiveMediaCombination
+                {
+                    Weight = GetInteractiveSelectionInt(sequence, "weight", 1, 1, MaxCombinationWeight),
+                    CooldownSeconds = GetInteractiveSelectionInt(sequence, "cooldownSeconds", 0, 0, MaxCombinationCooldownSeconds)
+                };
                 foreach (XElement reference in sequence.Elements("MediaRef"))
                 {
                     Guid id;
@@ -1121,7 +1121,7 @@ namespace OmniVCamController
             }
         }
 
-        private sealed class RouteEditDialog : Form
+        private sealed partial class RouteEditDialog : Form
         {
             private readonly List<InteractiveMediaItem> media;
             private readonly TextBox nameBox = new TextBox();
@@ -1140,13 +1140,13 @@ namespace OmniVCamController
                 this.media = media;
                 Text = T("InteractiveEditProject");
                 ShowIcon = false;
-                Size = new Size(980, 640);
-                MinimumSize = new Size(840, 540);
+                Size = new Size(1040, 740);
+                MinimumSize = new Size(900, 640);
                 StartPosition = FormStartPosition.CenterParent;
-                var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 6, ColumnCount = 2, Padding = new Padding(10) };
+                var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 7, ColumnCount = 2, Padding = new Padding(10) };
                 root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
                 root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                for (int i = 0; i < 4; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                for (int i = 0; i < 5; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 Controls.Add(root);
@@ -1159,14 +1159,17 @@ namespace OmniVCamController
                 selectionBox.DropDownStyle = ComboBoxStyle.DropDownList;
                 selectionBox.Items.AddRange(new object[] { T("InteractiveRandom"), T("InteractiveSequential") });
                 selectionBox.SelectedIndex = 0;
-                AddDialogRow(root, T("InteractiveCombinationSelection"), selectionBox, 3);
+                AddDialogRow(root, T("InteractiveCombinationSelection"), BuildRandomSelectionBar(), 3);
+                var randomHint = new Label { Text = T("InteractiveCombinationRandomHint"), AutoSize = true, Dock = DockStyle.Fill };
+                root.Controls.Add(randomHint, 1, 4);
 
                 var editor = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
                 editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
                 editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-                var combinationPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+                var combinationPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
                 combinationPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 combinationPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                combinationPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 var combinationBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 combinationBar.Controls.Add(MakeButton(T("InteractiveAddCombination"), (_, __) => AddCombination(false)));
                 combinationBar.Controls.Add(MakeButton(T("InteractiveDuplicateCombination"), (_, __) => AddCombination(true)));
@@ -1175,8 +1178,9 @@ namespace OmniVCamController
                 combinationBar.Controls.Add(MakeButton(T("Down"), (_, __) => MoveCombination(1)));
                 combinationPanel.Controls.Add(combinationBar, 0, 0);
                 combinationsBox.Dock = DockStyle.Fill;
-                combinationsBox.SelectedIndexChanged += (_, __) => { if (!refreshingCombinations) RefreshSequence(); };
+                combinationsBox.SelectedIndexChanged += (_, __) => { if (!refreshingCombinations) { RefreshSequence(); RefreshCombinationRandomSettings(); } };
                 combinationPanel.Controls.Add(combinationsBox, 0, 1);
+                combinationPanel.Controls.Add(BuildCombinationRandomSettings(), 0, 2);
                 editor.Controls.Add(combinationPanel, 0, 0);
 
                 var sequencePanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
@@ -1196,8 +1200,8 @@ namespace OmniVCamController
                 sequenceBox.Dock = DockStyle.Fill;
                 sequencePanel.Controls.Add(sequenceBox, 0, 1);
                 editor.Controls.Add(sequencePanel, 1, 0);
-                root.Controls.Add(new Label { Text = T("InteractiveCombinations"), AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top, Padding = new Padding(0, 5, 0, 0) }, 0, 4);
-                root.Controls.Add(editor, 1, 4);
+                root.Controls.Add(new Label { Text = T("InteractiveCombinations"), AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top, Padding = new Padding(0, 5, 0, 0) }, 0, 5);
+                root.Controls.Add(editor, 1, 5);
 
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
                 var ok = MakeButton(T("InteractiveOk"), (_, __) =>
@@ -1213,7 +1217,7 @@ namespace OmniVCamController
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
                 buttons.Controls.Add(ok);
                 buttons.Controls.Add(cancel);
-                root.Controls.Add(buttons, 1, 5);
+                root.Controls.Add(buttons, 1, 6);
                 AcceptButton = ok;
                 CancelButton = cancel;
 
@@ -1223,9 +1227,11 @@ namespace OmniVCamController
                     hotkeyBox.Value = route.Hotkey == null ? null : route.Hotkey.Clone();
                     commandBox.SelectedItem = route.Immediate ? "PLAY" : "PLAY_NEXT";
                     selectionBox.SelectedIndex = route.RandomOrder ? 0 : 1;
+                    recentCountBox.Value = route.RecentCombinationCount;
                     combinations.AddRange(route.Combinations.Select(combination => new InteractiveMediaCombination
                     {
-                        MediaIds = combination.MediaIds.Where(id => media.Any(item => item.RuntimeId == id)).ToList()
+                        MediaIds = combination.MediaIds.Where(id => media.Any(item => item.RuntimeId == id)).ToList(),
+                        Weight = combination.Weight, CooldownSeconds = combination.CooldownSeconds
                     }));
                 }
                 if (combinations.Count == 0) combinations.Add(new InteractiveMediaCombination());
@@ -1235,7 +1241,7 @@ namespace OmniVCamController
             private void AddCombination(bool duplicate)
             {
                 var combination = new InteractiveMediaCombination();
-                if (duplicate && Sequence != null) combination.MediaIds.AddRange(Sequence);
+                if (duplicate && Sequence != null) combination = CopyInteractiveCombination(combinations[combinationsBox.SelectedIndex]);
                 combinations.Add(combination);
                 RefreshCombinations(combinations.Count - 1);
             }
@@ -1267,6 +1273,7 @@ namespace OmniVCamController
                 combinationsBox.SelectedIndex = selectedIndex;
                 refreshingCombinations = false;
                 RefreshSequence();
+                RefreshCombinationRandomSettings();
             }
 
             private void AddSelectedMedia()
@@ -1315,8 +1322,9 @@ namespace OmniVCamController
                 route.Hotkey = hotkeyBox.Value == null ? null : hotkeyBox.Value.Clone();
                 route.Immediate = string.Equals(commandBox.SelectedItem as string, "PLAY", StringComparison.Ordinal);
                 route.RandomOrder = selectionBox.SelectedIndex == 0;
-                route.Combinations = combinations.Select(combination => new InteractiveMediaCombination { MediaIds = combination.MediaIds.ToList() }).ToList();
-                route.NextCombinationIndex = 0;
+                route.RecentCombinationCount = (int)recentCountBox.Value;
+                route.Combinations = combinations.Select(CopyInteractiveCombination).ToList();
+                ResetInteractiveCombinationSelection(route);
             }
         }
 
@@ -1416,11 +1424,17 @@ namespace OmniVCamController
             public bool RandomOrder { get; set; } = true;
             public List<InteractiveMediaCombination> Combinations { get; set; } = new List<InteractiveMediaCombination>();
             public int NextCombinationIndex { get; set; }
+            public int RecentCombinationCount { get; set; }
+            public List<InteractiveMediaCombination> RecentCombinations { get; } = new List<InteractiveMediaCombination>();
+            public bool RandomSelectionUnavailable { get; set; }
         }
 
         private sealed class InteractiveMediaCombination
         {
             public List<Guid> MediaIds { get; set; } = new List<Guid>();
+            public int Weight { get; set; } = 1;
+            public int CooldownSeconds { get; set; }
+            public long? LastSelectedTimestamp { get; set; }
         }
 
         private sealed class InteractiveHotkey

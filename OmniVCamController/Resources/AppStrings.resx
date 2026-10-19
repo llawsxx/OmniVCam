@@ -404,4 +404,19 @@
   <data name="InteractiveTransitionMediaMissing" xml:space="preserve">
     <value>(Media unavailable)</value>
   </data>
+  <data name="InteractiveRecentCombinationCount" xml:space="preserve">
+    <value>Exclude last N selections (0 = off)</value>
+  </data>
+  <data name="InteractiveCombinationWeight" xml:space="preserve">
+    <value>Weight</value>
+  </data>
+  <data name="InteractiveCombinationCooldown" xml:space="preserve">
+    <value>Cooldown (seconds)</value>
+  </data>
+  <data name="InteractiveCombinationRandomHint" xml:space="preserve">
+    <value>Random mode only. Higher weights are more likely. Cooldown starts when selected; 0 disables it. Recent exclusions are capped at the available combination count minus one. If no combination qualifies, the trigger is skipped.</value>
+  </data>
+  <data name="InteractiveCombinationUnavailable" xml:space="preserve">
+    <value>Trigger skipped: combinations are cooling down or excluded by recent selection rules.</value>
+  </data>
 </root>

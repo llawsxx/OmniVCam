@@ -694,4 +694,19 @@
   <data name="InteractiveTransitionMediaMissing" xml:space="preserve">
     <value>（媒体不可用）</value>
   </data>
+  <data name="InteractiveRecentCombinationCount" xml:space="preserve">
+    <value>最近 N 次不重复（0 关闭）</value>
+  </data>
+  <data name="InteractiveCombinationWeight" xml:space="preserve">
+    <value>权重</value>
+  </data>
+  <data name="InteractiveCombinationCooldown" xml:space="preserve">
+    <value>冷却时间（秒）</value>
+  </data>
+  <data name="InteractiveCombinationRandomHint" xml:space="preserve">
+    <value>仅随机模式生效。权重越大越容易选中；冷却从选中时计时，0 为关闭。最近不重复范围最多为可用组合数减一；无符合条件的组合时跳过触发。</value>
+  </data>
+  <data name="InteractiveCombinationUnavailable" xml:space="preserve">
+    <value>本次触发已跳过：组合仍在冷却或受最近不重复规则限制。</value>
+  </data>
 </root>

@@ -132,6 +132,14 @@ Select **Interactive Playback** in the controller's main window to open the sepa
 
 Each trigger selects one whole combination. Random selection can repeat the previous combination; sequential selection advances through the configured order and wraps back to the first combination. Each project tracks its own position, which starts at the first combination after configuration reload or project editing. Existing single-sequence projects load as one combination. The Operations panel records the actual media sequence selected for each trigger.
 
+Random mode also supports the following settings; sequential selection remains unchanged:
+
+- **Weight**: select a combination and set its relative weight from 1 to 1000 (default 1). Two eligible combinations with weights 9 and 1 have approximately 90% and 10% selection probabilities.
+- **Exclude last N selections**: a project setting, with 0 disabling it. The most recent N successfully selected combinations are excluded. The effective limit is the current available combination count minus one; a single available combination may repeat.
+- **Cooldown**: each combination can have a cooldown of 0–86400 seconds; 0 disables it. Timing starts when the combination is selected for a playback request, including requests waiting in the queue.
+
+Recent and cooling-down combinations are excluded before weighted selection. If none qualify, the trigger is skipped and logged, preserving current playback and queued requests. Defaults retain equal-probability random selection with repeats and no cooldown. Projects have independent history and cooldown state. Only settings are persisted; reloading configuration, saving project edits, or deleting media that changes project contents resets selection state. Copied projects and duplicated combinations start without runtime history or cooldown.
+
 Use **Add file group** in the media library to create a reusable item containing several files. In its editor, add/remove/reorder files and set **Play on each trigger** to **One file** (default) or **All files**:
 
 - **One file**: sequential mode cycles through the files across uses. Random mode selects a file on each use; **No repeats within a round** selects every file once before starting a new round. Repeats across round boundaries are allowed.

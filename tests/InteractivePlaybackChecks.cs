@@ -91,6 +91,110 @@ internal static class InteractivePlaybackChecks
         Set(media[0], "Path", "A.mp4"); Set(media[1], "Loop", false); Set(media[1], "Options", "");
         Console.WriteLine("PASS: sequential wrap, independent projects, random whole combinations, unavailable media and playback snapshots.");
     }
+    private static string EntriesAt(object route, long timestamp)
+    {
+        return string.Join(",", ((IEnumerable)Invoke(owner, "BuildInteractiveEntriesAt", route, timestamp)).Cast<object>().Select(entry => (string)Get(entry, "Title")));
+    }
+    private static void CheckRandomSelectionPolicies()
+    {
+        object originalRandom = Field(owner, "random"), originalLog = Field(owner, "pendingLogText"), originalFlush = Field(owner, "lastLogFlushAt");
+        SetField("random", new Random(12345)); SetField("pendingLogText", new System.Text.StringBuilder()); SetField("lastLogFlushAt", DateTime.MaxValue);
+        try
+        {
+            var weighted = Route("random"); var combinations = (IList)Get(weighted, "Combinations");
+            Set(combinations[0], "Weight", 8);
+            var counts = new Dictionary<string, int> { { "A,B", 0 }, { "A2,B", 0 }, { "A2,B2", 0 } };
+            for (int i = 0; i < 12000; i++) counts[EntriesAt(weighted, 0)]++;
+            Check(counts["A,B"] > 9200 && counts["A,B"] < 10000 && counts["A2,B"] > 900 && counts["A2,B2"] > 900,
+                "Weighted selection follows relative probabilities without excluding rare combinations");
+            var recent = Route("random"); Set(recent, "RecentCombinationCount", 2);
+            var history = new Queue<string>();
+            for (int i = 0; i < 120; i++)
+            {
+                string selected = EntriesAt(recent, 0);
+                Check(selected.Length > 0 && !history.Contains(selected), "Recent-N exclusions prevent repeats across random draws");
+                history.Enqueue(selected); if (history.Count > 2) history.Dequeue();
+                Check(((IList)Get(recent, "RecentCombinations")).Count <= 2, "Runtime selection history stays bounded");
+            }
+            Set(recent, "RecentCombinationCount", 1000);
+            for (int i = 0; i < 60; i++) Check(EntriesAt(recent, 0).Length > 0, "Excessive recent-N settings cannot permanently exhaust a small project");
+            var one = Route("random"); ((IList)Get(one, "Combinations")).RemoveAt(2); ((IList)Get(one, "Combinations")).RemoveAt(1);
+            Set(one, "RecentCombinationCount", 1000);
+            Check(EntriesAt(one, 0) == "A,B" && EntriesAt(one, 0) == "A,B", "A single available combination can repeat regardless of recent-N");
+            Check(((IList)Get(Route("random"), "RecentCombinations")).Count == 0, "Other projects have independent selection history");
+            var cooling = Route("random"); combinations = (IList)Get(cooling, "Combinations");
+            foreach (var combination in combinations) Set(combination, "CooldownSeconds", 10);
+            var selectedRound = new HashSet<string>();
+            for (int i = 0; i < 3; i++) Check(selectedRound.Add(EntriesAt(cooling, 0)), "Each selected variant enters its own cooldown immediately");
+            long frequency = System.Diagnostics.Stopwatch.Frequency;
+            Check(EntriesAt(cooling, 9 * frequency) == "" && (bool)Get(cooling, "RandomSelectionUnavailable"), "All-cooling projects skip a trigger before expiry");
+            Check(EntriesAt(cooling, 10 * frequency).Length > 0, "A variant becomes eligible exactly at the cooldown boundary");
+            foreach (var combination in combinations) Set(combination, "LastSelectedTimestamp", 0L);
+            Set(combinations[0], "CooldownSeconds", 2);
+            Check(EntriesAt(cooling, 2 * frequency) == "A,B" && EntriesAt(cooling, 2 * frequency) == "", "Independent cooldowns filter candidates before weighted selection");
+            Set(cooling, "RecentCombinationCount", 1);
+            Check(EntriesAt(cooling, 4 * frequency) == "A,B", "An accepted random draw enters recent history");
+            Check(EntriesAt(cooling, 6 * frequency) == "", "Cooldown and recent exclusions are both respected when no candidate qualifies");
+            Check(EntriesAt(cooling, 10 * frequency).Length > 0, "Combined restrictions recover when another variant's cooldown ends");
+            var sequential = Route("sequential"); Set(sequential, "RecentCombinationCount", 1000);
+            foreach (var combination in (IList)Get(sequential, "Combinations"))
+            { Set(combination, "CooldownSeconds", 86400); Set(combination, "LastSelectedTimestamp", 0L); Set(combination, "Weight", 1000); }
+            for (int i = 0; i < 9; i++) Check(EntriesAt(sequential, 0) == new[] { "A,B", "A2,B", "A2,B2" }[i % 3], "Sequential order ignores random-only restrictions");
+
+            var group = FileGroup(); media.Add(group);
+            try
+            {
+                var route = New("InteractiveRouteItem"); var combination = New("InteractiveMediaCombination");
+                ((IList)Get(combination, "MediaIds")).Add(Get(group, "RuntimeId")); Set(combination, "CooldownSeconds", 5);
+                ((IList)Get(route, "Combinations")).Add(combination);
+                Check(EntriesAt(route, 0).Length > 0, "A group combination can be selected");
+                int position = (int)Get(group, "NextFileIndex");
+                Check(EntriesAt(route, frequency) == "" && (int)Get(group, "NextFileIndex") == position,
+                    "A rejected trigger cannot consume file-group progress");
+                Check(EntriesAt(route, 5 * frequency).Length > 0 && (int)Get(group, "NextFileIndex") != position,
+                    "Group progress advances again only after cooldown expires");
+            }
+            finally { media.Remove(group); }
+            var savedRoute = Route("random"); Set(savedRoute, "RecentCombinationCount", 2);
+            combinations = (IList)Get(savedRoute, "Combinations"); Set(combinations[0], "Weight", 9); Set(combinations[0], "CooldownSeconds", 17);
+            EntriesAt(savedRoute, 0);
+            var saved = Save(savedRoute); var loaded = Load(XElement.Parse(saved.ToString()));
+            Check(Save(loaded).ToString() == saved.ToString() && (int)Get(loaded, "RecentCombinationCount") == 2 &&
+                (int)Get(((IList)Get(loaded, "Combinations"))[0], "Weight") == 9 && (int)Get(((IList)Get(loaded, "Combinations"))[0], "CooldownSeconds") == 17,
+                "Weights, recent-N and per-combination cooldowns round-trip through project XML");
+            Check(((IList)Get(loaded, "RecentCombinations")).Count == 0 && ((IList)Get(loaded, "Combinations")).Cast<object>().All(combination => Get(combination, "LastSelectedTimestamp") == null),
+                "Reloading does not retain runtime cooldown or history");
+            var copied = CopyProject(savedRoute);
+            Check(Save(copied).ToString() == saved.ToString() && ((IList)Get(copied, "RecentCombinations")).Count == 0 &&
+                ((IList)Get(copied, "Combinations")).Cast<object>().All(combination => Get(combination, "LastSelectedTimestamp") == null),
+                "Copied projects preserve selection settings with independent runtime state");
+            var invalid = XElement.Parse(saved.ToString()); invalid.SetAttributeValue("recentCount", -1);
+            var first = invalid.Element("Combinations").Elements().First(); first.SetAttributeValue("weight", 0); first.SetAttributeValue("cooldownSeconds", -1);
+            loaded = Load(invalid);
+            Check((int)Get(loaded, "RecentCombinationCount") == 0 && (int)Get(((IList)Get(loaded, "Combinations"))[0], "Weight") == 1 &&
+                (int)Get(((IList)Get(loaded, "Combinations"))[0], "CooldownSeconds") == 0, "Invalid negative selection settings are clamped");
+            invalid.SetAttributeValue("recentCount", int.MaxValue); first.SetAttributeValue("weight", int.MaxValue); first.SetAttributeValue("cooldownSeconds", int.MaxValue);
+            loaded = Load(invalid);
+            Check((int)Get(loaded, "RecentCombinationCount") == 1000 && (int)Get(((IList)Get(loaded, "Combinations"))[0], "Weight") == 1000 &&
+                (int)Get(((IList)Get(loaded, "Combinations"))[0], "CooldownSeconds") == 86400, "Oversized persisted selection settings are bounded");
+            invalid.Attribute("recentCount").Remove(); foreach (var combination in invalid.Element("Combinations").Elements())
+            { combination.Attribute("weight").Remove(); combination.Attribute("cooldownSeconds").Remove(); }
+            loaded = Load(invalid);
+            Check((int)Get(loaded, "RecentCombinationCount") == 0 && ((IList)Get(loaded, "Combinations")).Cast<object>().All(combination =>
+                (int)Get(combination, "Weight") == 1 && (int)Get(combination, "CooldownSeconds") == 0), "Old configurations retain uniform random defaults");
+
+            Invoke(owner, "ClearInteractiveRuntime", true); SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", true);
+            cooling = Route("random"); foreach (var combination in (IList)Get(cooling, "Combinations")) Set(combination, "CooldownSeconds", 86400);
+            long now = System.Diagnostics.Stopwatch.GetTimestamp(); for (int i = 0; i < 3; i++) EntriesAt(cooling, now);
+            var current = GroupBatch(media[0])[0]; var pending = GroupBatch(media[1])[0]; var followup = GroupBatch(media[2])[0];
+            QueueState(current, pending, followup); SetField("interactiveActive", true);
+            Invoke(owner, "RequestInteractiveRoute", cooling, "blocked cooldown trigger");
+            Check(Field(owner, "interactiveCurrent") == current && Field(owner, "interactivePending") == pending && QueuedEntries().SequenceEqual(new[] { followup }) &&
+                !((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Any(), "Skipped triggers preserve current playback, pending output and the entire queue");
+        }
+        finally { Invoke(owner, "ClearInteractiveRuntime", true); SetField("processingInteractiveTriggers", false); SetField("random", originalRandom); SetField("pendingLogText", originalLog); SetField("lastLogFlushAt", originalFlush); }
+        Console.WriteLine("PASS: weighted random selection, bounded recent history, independent monotonic cooldowns, blocked-trigger preservation, sequential behavior and configuration/copy isolation.");
+    }
     private static void CheckPersistence()
     {
         var old = new XElement("Route", new XAttribute("name", "Legacy"), new XAttribute("hotkey", "F1"),
@@ -1240,6 +1344,8 @@ internal static class InteractivePlaybackChecks
         {
             System.Threading.Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo(language);
             var original = Route("sequential");
+            Set(original, "RecentCombinationCount", 2);
+            Set(((IList)Get(original, "Combinations"))[0], "Weight", 9); Set(((IList)Get(original, "Combinations"))[0], "CooldownSeconds", 17);
             string before = Save(original).ToString();
             using (var dialog = (Form)Activator.CreateInstance(Nested("RouteEditDialog"), new object[] { media, original }))
             {
@@ -1248,7 +1354,20 @@ internal static class InteractivePlaybackChecks
                 dialog.PerformLayout();
                 Check(((ListBox)Field(dialog, "sequenceBox")).Height > 100 && ((ListBox)Field(dialog, "combinationsBox")).Width > 150,
                     "Combination and media editors remain usable at minimum window size");
+                var weightBox = (NumericUpDown)Field(dialog, "combinationWeightBox"); var cooldownBox = (NumericUpDown)Field(dialog, "combinationCooldownBox");
+                var recentBox = (NumericUpDown)Field(dialog, "recentCountBox");
+                Check(weightBox.Value == 9 && cooldownBox.Value == 17 && recentBox.Value == 2 && !weightBox.Enabled && !cooldownBox.Enabled && !recentBox.Enabled,
+                    "Sequential mode loads but disables random policy controls");
+                ((ComboBox)Field(dialog, "selectionBox")).SelectedIndex = 0;
+                Check(weightBox.Enabled && cooldownBox.Enabled && recentBox.Enabled, "Random mode enables all selection settings");
+                weightBox.Value = 7; cooldownBox.Value = 23;
+                var comboList = (ListBox)Field(dialog, "combinationsBox"); comboList.SelectedIndex = 1;
+                Check(weightBox.Value == 1 && cooldownBox.Value == 0, "Each combination has independent editor settings");
+                comboList.SelectedIndex = 0;
+                Check(weightBox.Value == 7 && cooldownBox.Value == 23, "Changing combination selection preserves edited settings");
                 Invoke(dialog, "AddCombination", true);
+                Check(weightBox.Value == 7 && cooldownBox.Value == 23 && Get(((IList)Field(dialog, "combinations"))[3], "LastSelectedTimestamp") == null,
+                    "Duplicating a combination copies its settings without runtime cooldown");
                 Check(((IList)Field(dialog, "combinations")).Count == 4, "Duplicate creates a combination");
                 ((ComboBox)Field(dialog, "mediaBox")).SelectedIndex = 3;
                 Invoke(dialog, "AddSelectedMedia");
@@ -1263,9 +1382,14 @@ internal static class InteractivePlaybackChecks
                 Check(((IList)Get(original, "Combinations")).Count == 4, "Editor saves all combinations");
                 Check(((IList)Get(((IList)Get(original, "Combinations"))[3], "MediaIds")).Count == 1, "Media editing applies to the selected combination");
                 Check((int)Get(original, "NextCombinationIndex") == 0, "Saving changes resets the sequence position");
+                Check((int)Get(original, "RecentCombinationCount") == 2 && (int)Get(((IList)Get(original, "Combinations"))[0], "Weight") == 7 &&
+                    (int)Get(((IList)Get(original, "Combinations"))[0], "CooldownSeconds") == 23, "The editor saves recent-N and independent weights/cooldowns");
+                Check(((IList)Get(original, "RecentCombinations")).Count == 0 && ((IList)Get(original, "Combinations")).Cast<object>().All(combination => Get(combination, "LastSelectedTimestamp") == null),
+                    "Saving project edits clears runtime selection history and cooldown");
                 Invoke(dialog, "AddSelectedMedia");
                 Check(((IList)Get(((IList)Get(original, "Combinations"))[3], "MediaIds")).Count == 1, "Applied project does not share mutable editor lists");
                 foreach (string key in new[] { "Up", "Down", "InteractiveCombinationSelection", "InteractiveRandom", "InteractiveSequential", "InteractiveCombinations", "InteractiveAddCombination", "InteractiveDuplicateCombination", "InteractiveEmptyCombination",
+                    "InteractiveRecentCombinationCount", "InteractiveCombinationWeight", "InteractiveCombinationCooldown", "InteractiveCombinationRandomHint", "InteractiveCombinationUnavailable",
                     "InteractiveAddFileGroup", "InteractiveEditFileGroup", "InteractiveFileGroupTag", "InteractiveFileGroupPlayback", "InteractiveFileGroupNoRepeat",
                     "InteractiveFileGroupHint", "InteractiveFileGroupFiles", "InteractiveFileGroupRequired", "InteractiveFileGroupSummary",
                     "InteractiveFileGroupScope", "InteractiveFileGroupOne", "InteractiveFileGroupAll",
@@ -2091,6 +2215,7 @@ internal static class InteractivePlaybackChecks
             SetField("pendingScheduledObsEnds", Activator.CreateInstance(typeof(Queue<>).MakeGenericType(Nested("ScheduledObsAction"))));
             CheckInteractiveWindowHotkeys();
             CheckSelection();
+            CheckRandomSelectionPolicies();
             CheckEditor(assembly);
             CheckFileGroups(assembly);
             CheckGroupLooping();
