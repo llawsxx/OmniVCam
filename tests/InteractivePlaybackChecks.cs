@@ -1093,6 +1093,74 @@ internal static class InteractivePlaybackChecks
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr window, int id);
 
+    private static void CheckInteractiveDisplayOrder()
+    {
+        var routes = (IList)Field(owner, "interactiveRoutes");
+        object[] originalMedia = media.Cast<object>().ToArray(), originalRoutes = routes.Cast<object>().ToArray();
+        try
+        {
+            routes.Clear();
+            for (int i = 0; i < 3; i++)
+            {
+                var route = Route("sequential"); Set(route, "Name", "Display route " + i); routes.Add(route);
+            }
+            object firstRoute = routes[0];
+            Set(firstRoute, "NextCombinationIndex", 1);
+            string routeContents = Save(firstRoute).ToString();
+            var current = GroupBatch(media[0])[0]; var pending = GroupBatch(media[1])[0]; var queued = GroupBatch(media[2])[0];
+            QueueState(current, pending, queued); SetField("interactiveActive", true);
+            int runtimeVersion = (int)Field(owner, "interactiveRuntimeVersion");
+            using (var window = (Form)Activator.CreateInstance(Nested("InteractivePlaybackForm"), new object[] { owner }))
+            {
+                Invoke(window, "RefreshMedia"); Invoke(window, "RefreshRoutes");
+                var mediaView = (ListView)Field(window, "mediaView"); var routeView = (ListView)Field(window, "routeView");
+                IntPtr unused = mediaView.Handle; unused = routeView.Handle;
+                mediaView.Items[0].Selected = true;
+                Invoke(window, "MoveSelectedMedia", 1);
+                Check(media[1] == originalMedia[0] && mediaView.SelectedItems[0].Tag == originalMedia[0], "Moving media keeps its identity and selection");
+                Invoke(window, "MoveSelectedMedia", -1); Invoke(window, "MoveSelectedMedia", -1);
+                Check(media.Cast<object>().SequenceEqual(originalMedia), "Moving back and moving above the first item preserve media order");
+                Invoke(window, "MoveSelectedMedia", 1);
+
+                var hotkeys = (IDictionary)Field(window, "registeredRoutes");
+                hotkeys.Add(0x5100, firstRoute); hotkeys.Add(0x5101, routes[1]);
+                routeView.Items[0].Selected = true;
+                Invoke(window, "MoveSelectedRoute", 1); Invoke(window, "MoveSelectedRoute", 1);
+                Invoke(window, "MoveSelectedRoute", 1);
+                Check(routes[2] == firstRoute && routeView.SelectedItems[0].Tag == firstRoute, "Moving a project to the bottom keeps selection and ignores a move beyond the list");
+                Invoke(window, "MoveSelectedRoute", -1);
+                Check(routes[1] == firstRoute && hotkeys.Count == 2 && hotkeys[0x5100] == firstRoute,
+                    "Display reordering retains the existing shortcut-to-project mapping");
+                var buttons = (FlowLayoutPanel)Field(window, "routeButtons");
+                Check(buttons.Controls.Cast<Control>().Select(button => button.Text.Split('[')[0].Trim()).SequenceEqual(routes.Cast<object>().Select(route => (string)Get(route, "Name"))),
+                    "Project trigger buttons follow the reordered list");
+                Check(Save(firstRoute).ToString() == routeContents && (int)Get(firstRoute, "NextCombinationIndex") == 1,
+                    "Sorting cannot modify combinations, media references or sequential-selection progress");
+                Check(Field(owner, "interactiveCurrent") == current && Field(owner, "interactivePending") == pending && QueuedEntries().SequenceEqual(new[] { queued }) &&
+                    (bool)Field(owner, "interactiveActive") && (int)Field(owner, "interactiveRuntimeVersion") == runtimeVersion,
+                    "Sorting during playback preserves current, pending and queued playback snapshots");
+            }
+
+            var state = New("ConnectionTabState");
+            foreach (object item in media) ((IList)Get(state, "InteractiveMedia")).Add(item);
+            foreach (object route in routes) ((IList)Get(state, "InteractiveRoutes")).Add(route);
+            XElement saved = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
+            Guid[] mediaOrder = media.Cast<object>().Select(item => (Guid)Get(item, "RuntimeId")).ToArray();
+            string[] routeOrder = routes.Cast<object>().Select(route => Save(route).ToString()).ToArray();
+            Invoke(owner, "LoadInteractivePlaybackElement", XElement.Parse(saved.ToString()));
+            Check(media.Cast<object>().Select(item => (Guid)Get(item, "RuntimeId")).SequenceEqual(mediaOrder) &&
+                routes.Cast<object>().Select(route => Save(route).ToString()).SequenceEqual(routeOrder),
+                "Connection XML round trip retains both display orders and original media references");
+        }
+        finally
+        {
+            media.Clear(); foreach (object item in originalMedia) media.Add(item);
+            routes.Clear(); foreach (object route in originalRoutes) routes.Add(route);
+            Invoke(owner, "ClearInteractiveRuntime", true);
+        }
+        Console.WriteLine("PASS: media/project display sorting preserves shortcuts, combinations, selection progress, active playback and saved XML order.");
+    }
+
     private static void CheckInteractiveWindowHotkeys()
     {
         var routes = (IList)Field(owner, "interactiveRoutes");
@@ -1196,7 +1264,7 @@ internal static class InteractivePlaybackChecks
                 Check((int)Get(original, "NextCombinationIndex") == 0, "Saving changes resets the sequence position");
                 Invoke(dialog, "AddSelectedMedia");
                 Check(((IList)Get(((IList)Get(original, "Combinations"))[3], "MediaIds")).Count == 1, "Applied project does not share mutable editor lists");
-                foreach (string key in new[] { "InteractiveCombinationSelection", "InteractiveRandom", "InteractiveSequential", "InteractiveCombinations", "InteractiveAddCombination", "InteractiveDuplicateCombination", "InteractiveEmptyCombination",
+                foreach (string key in new[] { "Up", "Down", "InteractiveCombinationSelection", "InteractiveRandom", "InteractiveSequential", "InteractiveCombinations", "InteractiveAddCombination", "InteractiveDuplicateCombination", "InteractiveEmptyCombination",
                     "InteractiveAddFileGroup", "InteractiveEditFileGroup", "InteractiveFileGroupTag", "InteractiveFileGroupPlayback", "InteractiveFileGroupNoRepeat",
                     "InteractiveFileGroupHint", "InteractiveFileGroupFiles", "InteractiveFileGroupRequired", "InteractiveFileGroupSummary",
                     "InteractiveFileGroupScope", "InteractiveFileGroupOne", "InteractiveFileGroupAll",
@@ -1240,6 +1308,7 @@ internal static class InteractivePlaybackChecks
             CheckGroupLooping();
             CheckGroupQueueCommands();
             CheckPlaybackDuringConfigurationEdits();
+            CheckInteractiveDisplayOrder();
             CheckInteractiveEventOrdering();
             CheckInterruptProtection();
             CheckActualOutputVerification();

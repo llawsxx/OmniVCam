@@ -600,6 +600,8 @@ namespace OmniVCamController
                 bar.Controls.Add(MakeButton(T("InteractiveToggleLoop"), (_, __) => ToggleSelectedMediaLoop()));
                 bar.Controls.Add(MakeButton(T("InteractiveToggleProtection"), (_, __) => ToggleSelectedMediaProtection()));
                 bar.Controls.Add(MakeButton(T("Remove"), (_, __) => RemoveSelectedMedia()));
+                bar.Controls.Add(MakeButton(T("Up"), (_, __) => MoveSelectedMedia(-1)));
+                bar.Controls.Add(MakeButton(T("Down"), (_, __) => MoveSelectedMedia(1)));
                 panel.Controls.Add(bar, 0, 0);
                 ConfigureList(mediaView);
                 panel.Controls.Add(mediaView, 0, 1);
@@ -616,6 +618,8 @@ namespace OmniVCamController
                 bar.Controls.Add(MakeButton(T("InteractiveAdd"), (_, __) => EditRoute(null)));
                 bar.Controls.Add(MakeButton(T("InteractiveEdit"), (_, __) => EditSelectedRoute()));
                 bar.Controls.Add(MakeButton(T("Remove"), (_, __) => RemoveSelectedRoute()));
+                bar.Controls.Add(MakeButton(T("Up"), (_, __) => MoveSelectedRoute(-1)));
+                bar.Controls.Add(MakeButton(T("Down"), (_, __) => MoveSelectedRoute(1)));
                 bar.Controls.Add(MakeButton(T("InteractiveTrigger"), (_, __) => TriggerSelected(T("InteractiveClickedProject"))));
                 panel.Controls.Add(bar, 0, 0);
                 ConfigureList(routeView);
@@ -763,6 +767,34 @@ namespace OmniVCamController
             private InteractiveMediaItem SelectedMedia()
             {
                 return mediaView.SelectedItems.Count == 1 ? mediaView.SelectedItems[0].Tag as InteractiveMediaItem : null;
+            }
+
+            private void MoveSelectedMedia(int direction)
+            {
+                MoveSelectedDisplayItem(mediaView, owner.interactiveMedia, direction, RefreshMedia);
+            }
+
+            private void MoveSelectedRoute(int direction)
+            {
+                // Existing hotkey registrations reference these same route objects.
+                MoveSelectedDisplayItem(routeView, owner.interactiveRoutes, direction, RefreshRoutes);
+            }
+
+            private void MoveSelectedDisplayItem<T>(ListView view, List<T> items, int direction, Action refresh) where T : class
+            {
+                if (view.SelectedItems.Count != 1) return;
+                T item = view.SelectedItems[0].Tag as T;
+                int index = items.IndexOf(item), target = index + direction;
+                if (index < 0 || target < 0 || target >= items.Count) return;
+                items.RemoveAt(index);
+                items.Insert(target, item);
+                refresh();
+                ListViewItem row = view.Items.Cast<ListViewItem>().First(value => ReferenceEquals(value.Tag, item));
+                row.Selected = true;
+                row.Focused = true;
+                row.EnsureVisible();
+                view.Select();
+                owner.SaveActiveConnectionState();
             }
 
             private void EditSelectedMedia()
