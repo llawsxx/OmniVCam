@@ -1996,6 +1996,7 @@ internal static class InteractivePlaybackChecks
     {
         object oldGroups = Field(owner, "interactiveProjectGroups"), oldTransitions = Field(owner, "interactiveGroupTransitions"), oldRoutes = Field(owner, "interactiveRoutes");
         object oldActive = Field(owner, "activeInteractiveProjectGroupId"), oldVersion = Field(owner, "interactiveProjectGroupVersion");
+        object oldSwitchRandom = Field(owner, "interactiveGroupSwitchRandom"), oldSwitchHotkey = Field(owner, "interactiveGroupSwitchHotkey");
         object[] originalMedia = media.Cast<object>().ToArray();
         var context = SynchronizationContext.Current;
         try
@@ -2007,6 +2008,27 @@ internal static class InteractivePlaybackChecks
             Set(state, "ActiveInteractiveProjectGroupId", Get(a, "Id"));
             SetField("interactiveProjectGroups", groups); SetField("interactiveGroupTransitions", Get(state, "InteractiveGroupTransitions"));
             SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            SetField("interactiveGroupSwitchRandom", false); SetField("interactiveGroupSwitchHotkey", null);
+            foreach (var expected in new[] { b, c, a, b })
+            {
+                var selected = Invoke(owner, "SelectNextInteractiveProjectGroup");
+                Check(selected == expected, "General group switching follows list order and wraps around");
+                SetField("activeInteractiveProjectGroupId", Get(selected, "Id"));
+            }
+            SetField("interactiveGroupSwitchRandom", true);
+            var randomGroups = new HashSet<object>();
+            for (int i = 0; i < 120; i++)
+            {
+                object current = Field(owner, "activeInteractiveProjectGroupId");
+                var selected = Invoke(owner, "SelectNextInteractiveProjectGroup"); randomGroups.Add(selected);
+                Check(!Equals(current, Get(selected, "Id")), "Random group switching never selects the current group");
+                SetField("activeInteractiveProjectGroupId", Get(selected, "Id"));
+            }
+            Check(randomGroups.Count == 3, "Random group switching can reach every group");
+            groups.Remove(c); groups.Remove(b);
+            Check(Invoke(owner, "SelectNextInteractiveProjectGroup") == null, "One group has no switch target");
+            groups.Add(b); groups.Add(c);
+            SetField("interactiveGroupSwitchRandom", false); SetField("activeInteractiveProjectGroupId", Get(a, "Id"));
             var pairs = (IList)Invoke(owner, "BuildInteractiveTransitionPairs");
             Check(pairs.Count == 6 && pairs.Cast<object>().Select(item => Get(item, "FromId") + "/" + Get(item, "ToId")).Distinct().Count() == 6,
                 "Three groups expose exactly six independent directed transitions");
@@ -2051,6 +2073,9 @@ internal static class InteractivePlaybackChecks
 
             foreach (var item in media) ((IList)Get(state, "InteractiveMedia")).Add(item);
             Set(state, "ActiveInteractiveProjectGroupId", Get(b, "Id"));
+            var switchHotkey = New("InteractiveHotkey"); Set(switchHotkey, "KeyCode", Keys.F20);
+            Set(switchHotkey, "Modifiers", Enum.ToObject(Nested("HotkeyModifiers"), 7));
+            Set(state, "InteractiveGroupSwitchRandom", true); Set(state, "InteractiveGroupSwitchHotkey", switchHotkey);
             var saved = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
             Invoke(owner, "LoadInteractivePlaybackElement", XElement.Parse(saved.ToString()));
             Check(((IList)Field(owner, "interactiveProjectGroups")).Count == 3 &&
@@ -2058,6 +2083,10 @@ internal static class InteractivePlaybackChecks
                 ((IList)Field(owner, "interactiveGroupTransitions")).Count == 2 &&
                 (string)Get(((IList)Field(owner, "interactiveRoutes"))[0], "Name") == "Night project",
                 "Connection XML preserves groups, active selection, project lists, shortcuts and directed videos");
+            Check((bool)Field(owner, "interactiveGroupSwitchRandom") &&
+                (Keys)Get(Field(owner, "interactiveGroupSwitchHotkey"), "KeyCode") == Keys.F20 &&
+                Convert.ToInt32(Get(Field(owner, "interactiveGroupSwitchHotkey"), "Modifiers")) == 7,
+                "Connection XML preserves general switch mode and shortcut modifiers");
             var invalid = XElement.Parse(saved.ToString()); invalid.SetAttributeValue("activeGroup", Guid.NewGuid());
             invalid.Element("Transitions").Add(new XElement("Transition", new XAttribute("from", Get(a, "Id")), new XAttribute("to", Guid.NewGuid()), new XAttribute("media", Get(media[0], "RuntimeId"))));
             Invoke(owner, "LoadInteractivePlaybackElement", invalid);
@@ -2071,6 +2100,15 @@ internal static class InteractivePlaybackChecks
             Invoke(owner, "LoadInteractivePlaybackElement", new object[] { null });
             Check(((IList)Field(owner, "interactiveProjectGroups")).Count == 1 && ((IList)Field(owner, "interactiveRoutes")).Count == 0,
                 "A missing configuration creates one empty default group");
+            Check(!(bool)Field(owner, "interactiveGroupSwitchRandom") && Field(owner, "interactiveGroupSwitchHotkey") == null,
+                "Legacy and missing settings default to sequential switching without a shortcut");
+            var otherState = New("ConnectionTabState");
+            Invoke(owner, "BindInteractiveProjectGroups", otherState);
+            Check(!(bool)Field(owner, "interactiveGroupSwitchRandom") && Field(owner, "interactiveGroupSwitchHotkey") == null,
+                "A different connection has independent group switching settings");
+            Invoke(owner, "BindInteractiveProjectGroups", state);
+            Check((bool)Field(owner, "interactiveGroupSwitchRandom") && Field(owner, "interactiveGroupSwitchHotkey") == switchHotkey,
+                "Returning to a connection restores its general switch settings");
             media.Clear(); foreach (var item in originalMedia) media.Add(item);
             // XML loading replaces the working route list; restore the fixture's source project.
             ((IList)Get(a, "Routes")).Clear(); ((IList)Get(a, "Routes")).Add(route);
@@ -2078,6 +2116,30 @@ internal static class InteractivePlaybackChecks
             SetField("interactiveProjectGroups", groups); SetField("interactiveGroupTransitions", Get(state, "InteractiveGroupTransitions"));
             SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
             ((IList)Field(owner, "interactiveGroupTransitions")).Clear();
+            var uiCulture = Thread.CurrentThread.CurrentUICulture;
+            try
+            {
+                foreach (string language in new[] { "en", "zh-CN", "zh-TW" })
+                {
+                    Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo(language);
+                    using (var dialog = (Form)Activator.CreateInstance(Nested("GroupSwitchSettingsDialog"), new object[] { true, switchHotkey }))
+                    {
+                        dialog.Size = dialog.MinimumSize; IntPtr dialogHandle = dialog.Handle; dialog.PerformLayout();
+                        var modes = (ComboBox)Field(dialog, "modeBox"); var hotkeyBox = (TextBox)Field(dialog, "hotkeyBox");
+                        Check((bool)Get(dialog, "RandomOrder") && (Keys)Get(Get(dialog, "Hotkey"), "KeyCode") == Keys.F20,
+                            "The switch editor loads mode and shortcut in " + language);
+                        Check(modes.Width > 150 && hotkeyBox.Width > 150 && hotkeyBox.Bottom < dialog.ClientSize.Height,
+                            "The switch editor keeps its settings visible at minimum size in " + language);
+                        modes.SelectedIndex = 0;
+                        Invoke(hotkeyBox, "CaptureKey", hotkeyBox, new KeyEventArgs(Keys.Back));
+                        Check(!(bool)Get(dialog, "RandomOrder") && Get(dialog, "Hotkey") == null && (Keys)Get(switchHotkey, "KeyCode") == Keys.F20,
+                            "Editing or clearing a detached shortcut leaves the saved shortcut unchanged");
+                    }
+                }
+            }
+            finally { Thread.CurrentThread.CurrentUICulture = uiCulture; }
+            SetField("interactiveGroupSwitchRandom", false); SetField("interactiveGroupSwitchHotkey", switchHotkey);
+            Check((bool)Invoke(owner, "IsInteractiveGroupSwitchHotkey", Invoke(switchHotkey, "Clone")), "Group and project edits detect the general switch shortcut as reserved");
             SetField("interactiveWindowOpen", false);
             using (var window = (Form)Activator.CreateInstance(Nested("InteractivePlaybackForm"), new object[] { owner }))
             using (var probe = new Form())
@@ -2086,7 +2148,8 @@ internal static class InteractivePlaybackChecks
                 window.Location = new System.Drawing.Point(-32000, -32000); window.ShowInTaskbar = false;
                 IntPtr unused = window.Handle; IntPtr probeHandle = probe.Handle;
                 Invoke(window, "ReloadAll");
-                Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 0, "Hidden windows do not bind group shortcuts");
+                Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 0 && !(bool)Field(window, "groupSwitchHotkeyRegistered"),
+                    "Hidden windows do not bind group or general switch shortcuts");
                 window.Show(); window.Size = window.MinimumSize; window.PerformLayout();
                 Check(((ListView)Field(window, "routeView")).Height > 90 && ((ListView)Field(window, "mediaView")).Height > 90 &&
                     ((FlowLayoutPanel)Field(window, "projectGroupButtons")).Height > 20,
@@ -2096,16 +2159,31 @@ internal static class InteractivePlaybackChecks
                     "The open window binds all group shortcuts and only the active group's project shortcuts: groups=" + ((IDictionary)Field(window, "registeredProjectGroups")).Count +
                     " routes=" + ((IDictionary)Field(window, "registeredRoutes")).Count + " log=" + ((TextBox)Field(window, "operationBox")).Text);
                 Check(!RegisterHotKey(probeHandle, 0x7201, 7, (uint)Keys.F21), "A group switching shortcut is actually registered with Windows");
+                Check((bool)Field(window, "groupSwitchHotkeyRegistered") && !RegisterHotKey(probeHandle, 0x7202, 7, (uint)Keys.F20),
+                    "The general switch shortcut is actually registered with Windows");
                 Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6101, IntPtr.Zero));
                 Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")) &&
                     ((IDictionary)Field(window, "registeredRoutes"))[0x5100] == ((IList)Get(b, "Routes"))[0],
                     "A group shortcut switches the displayed projects and rebinds the shared project shortcut to the target version");
                 var buttons = (FlowLayoutPanel)Field(window, "projectGroupButtons"); ((Button)buttons.Controls[0]).PerformClick();
                 Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")), "Clicking a group button switches back manually");
+                ((Button)Field(window, "switchProjectGroupButton")).PerformClick();
+                Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")), "The general switch button selects the next group");
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6000, IntPtr.Zero));
+                Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(c, "Id")), "The general switch shortcut uses the same sequence as the button");
+                SetField("interactiveGroupSwitchRandom", true);
+                ((Button)Field(window, "switchProjectGroupButton")).PerformClick();
+                Check(!Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(c, "Id")), "The button respects random switching without repeating the current group");
+                SetField("interactiveGroupSwitchRandom", false);
+                ((Button)((FlowLayoutPanel)Field(window, "projectGroupButtons")).Controls[0]).PerformClick();
                 window.Hide();
                 Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 0 &&
                     RegisterHotKey(probeHandle, 0x7201, 7, (uint)Keys.F21), "Hiding the window releases all group shortcuts");
                 UnregisterHotKey(probeHandle, 0x7201);
+                Check(!(bool)Field(window, "groupSwitchHotkeyRegistered") && RegisterHotKey(probeHandle, 0x7202, 7, (uint)Keys.F20),
+                    "Hiding the window releases the general switch shortcut");
+                UnregisterHotKey(probeHandle, 0x7202);
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6000, IntPtr.Zero));
                 Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6101, IntPtr.Zero));
                 Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")), "A late group shortcut cannot switch hidden interaction");
             }
@@ -2118,7 +2196,7 @@ internal static class InteractivePlaybackChecks
             {
                 Set(ab, "MediaId", Get(transitionMedia, "RuntimeId")); Set(ba, "MediaId", Get(transitionMedia, "RuntimeId"));
                 ((IList)Field(owner, "interactiveGroupTransitions")).Add(ab); ((IList)Field(owner, "interactiveGroupTransitions")).Add(ba);
-                Invoke(owner, "SwitchInteractiveProjectGroup", b, "test");
+                Invoke(owner, "SwitchNextInteractiveProjectGroup", "test");
                 var request = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single();
                 Check((bool)Get(request, "IsGroupTransition") && ((IList)Get(request, "Entries")).Count == 1, "Switching requests the configured transition exactly once");
                 Invoke(owner, "SwitchInteractiveProjectGroup", b, "test");
@@ -2172,7 +2250,8 @@ internal static class InteractivePlaybackChecks
                     "InteractiveGroupName", "InteractiveCopyCurrentGroup", "InteractiveCopyProject", "InteractiveCopyProjectHint", "InteractiveGroupNameExists", "InteractiveGroupHotkeyConflict",
                     "InteractiveConfirmRemoveGroup", "InteractiveGroupTransitionTitle", "InteractiveGroupSwitch", "InteractiveGroupSwitched", "InteractiveTransitionFileMissing", "InteractiveTransitionHint",
                     "InteractiveTransitionFrom", "InteractiveTransitionTo", "InteractiveChooseTransition", "InteractiveClearTransition", "InteractiveNoTransitionMedia", "InteractiveTransitionMediaMissing",
-                    "InteractiveGroupDefaultVideo", "InteractiveGroupDefaultTitle", "InteractiveGroupDefaultHint", "InteractiveDefaultVideoMissing", "InteractiveNoDefaultMedia" })
+                    "InteractiveGroupDefaultVideo", "InteractiveGroupDefaultTitle", "InteractiveGroupDefaultHint", "InteractiveDefaultVideoMissing", "InteractiveNoDefaultMedia",
+                    "InteractiveGroupSwitchSettings", "InteractiveGroupSwitchMode", "InteractiveGroupSwitchHint" })
                 {
                     string text = resources.GetString(key, CultureInfo.GetCultureInfo(language));
                     Check(!string.IsNullOrWhiteSpace(text), "A group resource exists: " + language + "/" + key);
@@ -2184,11 +2263,12 @@ internal static class InteractivePlaybackChecks
             SetField("interactiveForm", null); Invoke(owner, "ClearInteractiveRuntime", true);
             SetField("interactiveProjectGroups", oldGroups); SetField("interactiveGroupTransitions", oldTransitions); SetField("interactiveRoutes", oldRoutes);
             SetField("activeInteractiveProjectGroupId", oldActive); SetField("interactiveProjectGroupVersion", oldVersion);
+            SetField("interactiveGroupSwitchRandom", oldSwitchRandom); SetField("interactiveGroupSwitchHotkey", oldSwitchHotkey);
             SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", false);
             media.Clear(); foreach (var item in originalMedia) media.Add(item);
             SynchronizationContext.SetSynchronizationContext(context);
         }
-        Console.WriteLine("PASS: project group migration/persistence, six directed transitions, independent copies, actual Windows group switching hotkeys, rapid switches and protected transition handoff.");
+        Console.WriteLine("PASS: project group migration/persistence, random/sequential switch controls, per-connection settings, translated editors, Windows hotkey lifecycle, six directed transitions and protected transition handoff.");
     }
     [STAThread]
     private static int Main(string[] args)

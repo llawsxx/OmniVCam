@@ -14,6 +14,31 @@ namespace OmniVCamController
         private List<InteractiveGroupTransition> interactiveGroupTransitions = new List<InteractiveGroupTransition>();
         private Guid activeInteractiveProjectGroupId;
         private int interactiveProjectGroupVersion;
+        private bool interactiveGroupSwitchRandom;
+        private InteractiveHotkey interactiveGroupSwitchHotkey;
+
+        private InteractiveProjectGroup SelectNextInteractiveProjectGroup()
+        {
+            EnsureInteractiveProjectGroups();
+            if (interactiveProjectGroups.Count < 2) return null;
+            var current = CurrentInteractiveProjectGroup;
+            if (!interactiveGroupSwitchRandom)
+                return interactiveProjectGroups[(interactiveProjectGroups.IndexOf(current) + 1) % interactiveProjectGroups.Count];
+            var candidates = interactiveProjectGroups.Where(group => group.Id != current.Id).ToList();
+            return candidates[random.Next(candidates.Count)];
+        }
+
+        private void SwitchNextInteractiveProjectGroup(string source)
+        {
+            if (!interactiveWindowOpen || closingMainForm) return;
+            var target = SelectNextInteractiveProjectGroup();
+            if (target != null) SwitchInteractiveProjectGroup(target, source);
+        }
+
+        private bool IsInteractiveGroupSwitchHotkey(InteractiveHotkey hotkey)
+        {
+            return SameInteractiveHotkey(interactiveGroupSwitchHotkey, hotkey);
+        }
 
         private sealed class InteractiveProjectGroup
         {
@@ -64,6 +89,8 @@ namespace OmniVCamController
         {
             interactiveProjectGroups = state.InteractiveProjectGroups;
             interactiveGroupTransitions = state.InteractiveGroupTransitions;
+            interactiveGroupSwitchRandom = state.InteractiveGroupSwitchRandom;
+            interactiveGroupSwitchHotkey = state.InteractiveGroupSwitchHotkey;
             activeInteractiveProjectGroupId = state.ActiveInteractiveProjectGroupId;
             EnsureInteractiveProjectGroups();
             activeInteractiveProjectGroupId = CurrentInteractiveProjectGroup.Id;
@@ -232,6 +259,9 @@ namespace OmniVCamController
             Guid activeId = groups.Any(group => group.Id == state.ActiveInteractiveProjectGroupId)
                 ? state.ActiveInteractiveProjectGroupId : groups[0].Id;
             return new XElement("InteractivePlayback", new XAttribute("activeGroup", activeId),
+                new XElement("GroupSwitch", new XAttribute("random", state.InteractiveGroupSwitchRandom),
+                    new XAttribute("hotkey", state.InteractiveGroupSwitchHotkey == null ? string.Empty : state.InteractiveGroupSwitchHotkey.KeyCode.ToString()),
+                    new XAttribute("modifiers", state.InteractiveGroupSwitchHotkey == null ? string.Empty : state.InteractiveGroupSwitchHotkey.Modifiers.ToString())),
                 new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
                 new XElement("Groups", groups.Select(group => new XElement("Group",
                     new XAttribute("id", group.Id), new XAttribute("name", group.Name), new XAttribute("defaultMedia", group.DefaultMediaId),
@@ -249,6 +279,11 @@ namespace OmniVCamController
             interactiveProjectGroups = new List<InteractiveProjectGroup>();
             interactiveGroupTransitions = new List<InteractiveGroupTransition>();
             activeInteractiveProjectGroupId = Guid.Empty;
+            var switchSettings = element?.Element("GroupSwitch") ?? new XElement("GroupSwitch");
+            bool randomOrder;
+            interactiveGroupSwitchRandom = bool.TryParse(GetAttribute(switchSettings, "random", "false"), out randomOrder) && randomOrder;
+            interactiveGroupSwitchHotkey = ParseInteractiveHotkey(GetAttribute(switchSettings, "hotkey", string.Empty),
+                GetAttribute(switchSettings, "modifiers", string.Empty));
             var groups = element?.Element("Groups");
             if (groups != null)
                 foreach (var node in groups.Elements("Group"))
@@ -293,12 +328,15 @@ namespace OmniVCamController
         private sealed partial class InteractivePlaybackForm
         {
             private const int ProjectGroupHotkeyBaseId = 0x6100;
+            private const int GroupSwitchHotkeyId = 0x6000;
+            private bool groupSwitchHotkeyRegistered;
+            private Button switchProjectGroupButton;
             private readonly FlowLayoutPanel projectGroupButtons = new FlowLayoutPanel();
             private readonly Dictionary<int, InteractiveProjectGroup> registeredProjectGroups = new Dictionary<int, InteractiveProjectGroup>();
 
             private Control BuildProjectGroupPanel()
             {
-                var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2 };
+                var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 3 };
                 var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 bar.Controls.Add(new Label { Text = T("InteractiveProjectGroups"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 6, 8, 0) });
                 bar.Controls.Add(MakeButton(T("InteractiveAddGroup"), (_, __) => EditProjectGroup(true)));
@@ -309,12 +347,23 @@ namespace OmniVCamController
                 projectGroupButtons.Dock = DockStyle.Fill;
                 projectGroupButtons.AutoSize = true;
                 panel.Controls.Add(projectGroupButtons, 0, 1);
+                var switchBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+                switchProjectGroupButton = MakeButton(T("InteractiveGroupSwitch"),
+                    (_, __) => owner.SwitchNextInteractiveProjectGroup(T("InteractiveGroupSwitch")));
+                switchBar.Controls.Add(switchProjectGroupButton);
+                switchBar.Controls.Add(MakeButton(T("InteractiveGroupSwitchSettings"), (_, __) => EditGroupSwitchSettings()));
+                panel.Controls.Add(switchBar, 0, 2);
                 return panel;
             }
 
             private void RefreshProjectGroups()
             {
                 owner.EnsureInteractiveProjectGroups();
+                string switchHotkey = FormatHotkey(owner.interactiveGroupSwitchHotkey);
+                switchProjectGroupButton.Text = T("InteractiveGroupSwitch") + " · " +
+                    T(owner.interactiveGroupSwitchRandom ? "InteractiveRandom" : "InteractiveSequential") +
+                    (switchHotkey.Length > 0 ? "  [" + switchHotkey + "]" : string.Empty);
+                switchProjectGroupButton.Enabled = owner.interactiveProjectGroups.Count > 1;
                 foreach (Control button in projectGroupButtons.Controls.Cast<Control>().ToList()) button.Dispose();
                 projectGroupButtons.Controls.Clear();
                 foreach (var group in owner.interactiveProjectGroups)
@@ -333,6 +382,22 @@ namespace OmniVCamController
                 }
             }
 
+            private void EditGroupSwitchSettings()
+            {
+                using (var dialog = new GroupSwitchSettingsDialog(owner.interactiveGroupSwitchRandom, owner.interactiveGroupSwitchHotkey))
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    if (dialog.Hotkey != null && (owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
+                        owner.AllInteractiveProjectRoutes().Any(route => SameInteractiveHotkey(route.Hotkey, dialog.Hotkey))))
+                    { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
+                    owner.interactiveGroupSwitchRandom = dialog.RandomOrder;
+                    owner.interactiveGroupSwitchHotkey = dialog.Hotkey;
+                }
+                RefreshProjectGroups();
+                RegisterRouteHotkeys();
+                owner.SaveActiveConnectionState();
+            }
+
             private void EditProjectGroup(bool create)
             {
                 var current = owner.CurrentInteractiveProjectGroup;
@@ -342,7 +407,7 @@ namespace OmniVCamController
                     string name = dialog.GroupName;
                     if (owner.interactiveProjectGroups.Any(group => (create || group != current) && string.Equals(group.Name, name, StringComparison.OrdinalIgnoreCase)))
                     { MessageBox.Show(this, T("InteractiveGroupNameExists")); return; }
-                    if (dialog.Hotkey != null && (owner.interactiveProjectGroups.Any(group => (create || group != current) && SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
+                    if (dialog.Hotkey != null && (owner.IsInteractiveGroupSwitchHotkey(dialog.Hotkey) || owner.interactiveProjectGroups.Any(group => (create || group != current) && SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
                         owner.AllInteractiveProjectRoutes().Any(route => SameInteractiveHotkey(route.Hotkey, dialog.Hotkey))))
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (create)
@@ -408,6 +473,15 @@ namespace OmniVCamController
             private void RegisterProjectGroupHotkeys()
             {
                 owner.EnsureInteractiveProjectGroups();
+                var switchHotkey = owner.interactiveGroupSwitchHotkey;
+                if (switchHotkey != null && switchHotkey.KeyCode != Keys.None)
+                {
+                    groupSwitchHotkeyRegistered = RegisterHotKey(Handle, GroupSwitchHotkeyId,
+                        (uint)switchHotkey.Modifiers | 0x4000, (uint)switchHotkey.KeyCode);
+                    if (!groupSwitchHotkeyRegistered)
+                        AppendOperation(DateTime.Now.ToString("HH:mm:ss") + " " + T("InteractiveHotkeyRegisterFailed") +
+                            FormatHotkey(switchHotkey) + " - " + T("InteractiveGroupSwitch"));
+                }
                 int index = 0;
                 foreach (var group in owner.interactiveProjectGroups)
                 {
@@ -420,6 +494,8 @@ namespace OmniVCamController
 
             private void UnregisterProjectGroupHotkeys()
             {
+                if (IsHandleCreated && groupSwitchHotkeyRegistered) UnregisterHotKey(Handle, GroupSwitchHotkeyId);
+                groupSwitchHotkeyRegistered = false;
                 if (IsHandleCreated)
                     foreach (int id in registeredProjectGroups.Keys.ToList()) UnregisterHotKey(Handle, id);
                 registeredProjectGroups.Clear();
@@ -466,6 +542,36 @@ namespace OmniVCamController
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => { if (GroupName.Length > 0) DialogResult = DialogResult.OK; });
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
                 buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 5);
+                Controls.Add(grid); AcceptButton = ok; CancelButton = cancel;
+            }
+        }
+
+        private sealed class GroupSwitchSettingsDialog : Form
+        {
+            private readonly ComboBox modeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
+            public bool RandomOrder => modeBox.SelectedIndex == 1;
+            public InteractiveHotkey Hotkey => hotkeyBox.Value?.Clone();
+
+            public GroupSwitchSettingsDialog(bool randomOrder, InteractiveHotkey hotkey)
+            {
+                Text = T("InteractiveGroupSwitchSettings"); Size = new Size(660, 290); MinimumSize = new Size(580, 290);
+                ShowIcon = false; StartPosition = FormStartPosition.CenterParent;
+                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 4 };
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                grid.RowStyles.Add(new RowStyle(SizeType.AutoSize)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                modeBox.Items.AddRange(new object[] { T("InteractiveSequential"), T("InteractiveRandom") });
+                modeBox.SelectedIndex = randomOrder ? 1 : 0; hotkeyBox.Value = hotkey?.Clone();
+                AddDialogRow(grid, T("InteractiveGroupSwitchMode"), modeBox, 0);
+                AddDialogRow(grid, T("InteractiveHotkey"), hotkeyBox, 1);
+                var hint = new Label { Text = T("InteractiveGroupSwitchHint"), AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 0) };
+                grid.Controls.Add(hint, 0, 2); grid.SetColumnSpan(hint, 2);
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
+                var ok = MakeButton(T("InteractiveOk"), (_, __) => DialogResult = DialogResult.OK);
+                var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
+                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 3);
                 Controls.Add(grid); AcceptButton = ok; CancelButton = cancel;
             }
         }

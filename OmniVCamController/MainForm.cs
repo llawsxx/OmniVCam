@@ -424,6 +424,8 @@ namespace OmniVCamController
             activeState.InteractiveProjectGroups = interactiveProjectGroups;
             activeState.ActiveInteractiveProjectGroupId = activeInteractiveProjectGroupId;
             activeState.InteractiveGroupTransitions = interactiveGroupTransitions;
+            activeState.InteractiveGroupSwitchRandom = interactiveGroupSwitchRandom;
+            activeState.InteractiveGroupSwitchHotkey = interactiveGroupSwitchHotkey;
             activeState.CurrentIndex = currentIndex;
             activeState.CurrentScheduledIndex = currentScheduledIndex;
             activeState.CurrentScheduledItem = CloneScheduledItem(currentScheduledItem);
@@ -5353,6 +5355,8 @@ namespace OmniVCamController
             public List<InteractiveRouteItem> InteractiveRoutes { get; set; } = new List<InteractiveRouteItem>();
             public List<InteractiveProjectGroup> InteractiveProjectGroups { get; set; } = new List<InteractiveProjectGroup>();
             public Guid ActiveInteractiveProjectGroupId { get; set; }
+            public bool InteractiveGroupSwitchRandom { get; set; }
+            public InteractiveHotkey InteractiveGroupSwitchHotkey { get; set; }
             public List<InteractiveGroupTransition> InteractiveGroupTransitions { get; set; } = new List<InteractiveGroupTransition>();
             public int CurrentIndex { get; set; } = -1;
             public int CurrentScheduledIndex { get; set; } = -1;

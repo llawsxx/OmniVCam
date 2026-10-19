@@ -709,4 +709,13 @@
   <data name="InteractiveCombinationUnavailable" xml:space="preserve">
     <value>本次觸發已略過：組合仍在冷卻或受最近不重複規則限制。</value>
   </data>
+  <data name="InteractiveGroupSwitchSettings" xml:space="preserve">
+    <value>切換分組設定</value>
+  </data>
+  <data name="InteractiveGroupSwitchMode" xml:space="preserve">
+    <value>切換方式</value>
+  </data>
+  <data name="InteractiveGroupSwitchHint" xml:space="preserve">
+    <value>按鈕和快捷鍵使用相同的切換方式。順序模式依分組清單循環切換；隨機模式選擇目前組以外的分組。只有一個分組時不切換。沿用轉場及禁止中斷設定。按退格、Delete 或 Esc 清除快捷鍵。</value>
+  </data>
 </root>

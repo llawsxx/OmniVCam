@@ -911,7 +911,7 @@ namespace OmniVCamController
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var edited = new InteractiveRouteItem();
                     dialog.Apply(edited);
-                    if (owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, edited.Hotkey)))
+                    if (owner.IsInteractiveGroupSwitchHotkey(edited.Hotkey) || owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, edited.Hotkey)))
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (route == null)
                     {
@@ -988,6 +988,12 @@ namespace OmniVCamController
             protected override void WndProc(ref Message m)
             {
                 const int WM_HOTKEY = 0x0312;
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm &&
+                    groupSwitchHotkeyRegistered && m.WParam.ToInt32() == GroupSwitchHotkeyId)
+                {
+                    owner.SwitchNextInteractiveProjectGroup(T("InteractiveHotkeySource") + FormatHotkey(owner.interactiveGroupSwitchHotkey));
+                    return;
+                }
                 if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm &&
                     registeredProjectGroups.TryGetValue(m.WParam.ToInt32(), out InteractiveProjectGroup group))
                 {

@@ -419,4 +419,13 @@
   <data name="InteractiveCombinationUnavailable" xml:space="preserve">
     <value>Trigger skipped: combinations are cooling down or excluded by recent selection rules.</value>
   </data>
+  <data name="InteractiveGroupSwitchSettings" xml:space="preserve">
+    <value>Group switching settings</value>
+  </data>
+  <data name="InteractiveGroupSwitchMode" xml:space="preserve">
+    <value>Switching mode</value>
+  </data>
+  <data name="InteractiveGroupSwitchHint" xml:space="preserve">
+    <value>The button and shortcut use the same mode. Sequential mode follows the group list and wraps around; random mode chooses another group. With only one group, switching does nothing. Transitions and interruption protection still apply. Backspace, Delete or Esc clears the shortcut.</value>
+  </data>
 </root>
