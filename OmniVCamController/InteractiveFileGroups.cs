@@ -72,6 +72,7 @@ namespace OmniVCamController
             public InteractiveMediaItem Media { get; set; }
             public int Iteration { get; set; }
             public bool Cancelled { get; set; }
+            public bool IsGroupDefault { get; set; }
         }
 
         private static InteractiveMediaItem SnapshotInteractiveFileGroup(InteractiveMediaItem item)
@@ -159,7 +160,7 @@ namespace OmniVCamController
         {
             // Finish a group pass already playing; discard an unstarted loop destination or prefetched next pass.
             if (interactiveCurrent != null && interactiveCurrent.GroupLoop != null) interactiveCurrent.GroupLoop.Cancelled = true;
-            var retained = interactiveQueue.ToList();
+            var retained = interactiveQueue.Where(entry => !entry.IsGroupDefault).ToList();
             while (retained.Count > 0)
             {
                 var tail = retained[retained.Count - 1];
@@ -172,7 +173,7 @@ namespace OmniVCamController
             }
             interactiveQueue.Clear();
             foreach (var entry in retained) interactiveQueue.Enqueue(entry);
-            if (interactivePending != null && (interactivePending.Loop ||
+            if (interactivePending != null && (interactivePending.IsGroupDefault || interactivePending.Loop ||
                 (interactivePending.GroupLoop != null && interactiveQueue.Count == 0 && !SameInteractiveGroupPass(interactivePending, interactiveCurrent))))
             {
                 var replaced = interactivePending;

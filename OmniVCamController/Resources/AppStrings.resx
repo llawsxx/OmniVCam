@@ -317,4 +317,91 @@
   <data name="InteractivePlaybackNoNext" xml:space="preserve">
     <value>Actual playback could not be verified for 10 seconds; no next item is queued. Cleared the stale playing state.</value>
   </data>
+  <data name="InteractiveProjectGroups" xml:space="preserve">
+    <value>Project groups</value>
+  </data>
+  <data name="InteractiveDefaultGroup" xml:space="preserve">
+    <value>Default group</value>
+  </data>
+  <data name="InteractiveAddGroup" xml:space="preserve">
+    <value>Add group</value>
+  </data>
+  <data name="InteractiveEditGroup" xml:space="preserve">
+    <value>Edit current group</value>
+  </data>
+  <data name="InteractiveRemoveGroup" xml:space="preserve">
+    <value>Remove current group</value>
+  </data>
+  <data name="InteractiveGroupTransitions" xml:space="preserve">
+    <value>Group transitions</value>
+  </data>
+  <data name="InteractiveGroupName" xml:space="preserve">
+    <value>Group name</value>
+  </data>
+  <data name="InteractiveCopyCurrentGroup" xml:space="preserve">
+    <value>Copy all projects from the current group</value>
+  </data>
+  <data name="InteractiveCopyProject" xml:space="preserve">
+    <value>Copy to group...</value>
+  </data>
+  <data name="InteractiveCopyProjectHint" xml:space="preserve">
+    <value>Choose a target group, or type a name to create a new group.</value>
+  </data>
+  <data name="InteractiveGroupNameExists" xml:space="preserve">
+    <value>A group with this name already exists. Please use another name.</value>
+  </data>
+  <data name="InteractiveGroupHotkeyConflict" xml:space="preserve">
+    <value>This shortcut is already assigned to a group or project. Please choose another shortcut.</value>
+  </data>
+  <data name="InteractiveConfirmRemoveGroup" xml:space="preserve">
+    <value>Remove group "{0}" and its projects and transitions?</value>
+  </data>
+  <data name="InteractiveGroupTransitionTitle" xml:space="preserve">
+    <value>Transition: {0} → {1}</value>
+  </data>
+  <data name="InteractiveGroupSwitch" xml:space="preserve">
+    <value>Switch group</value>
+  </data>
+  <data name="InteractiveGroupSwitched" xml:space="preserve">
+    <value>Group: {0} → {1}</value>
+  </data>
+  <data name="InteractiveTransitionFileMissing" xml:space="preserve">
+    <value>Cannot switch groups: transition media is unavailable or contains missing files: </value>
+  </data>
+  <data name="InteractiveTransitionHint" xml:space="preserve">
+    <value>Select a direction, then choose library media. Uses its one/all and selection settings and interruption protection, but ignores looping. Select no transition to switch directly.</value>
+  </data>
+  <data name="InteractiveTransitionFrom" xml:space="preserve">
+    <value>From group</value>
+  </data>
+  <data name="InteractiveTransitionTo" xml:space="preserve">
+    <value>To group</value>
+  </data>
+  <data name="InteractiveChooseTransition" xml:space="preserve">
+    <value>Transition media</value>
+  </data>
+  <data name="InteractiveClearTransition" xml:space="preserve">
+    <value>Clear transition</value>
+  </data>
+  <data name="InteractiveGroupDefaultVideo" xml:space="preserve">
+    <value>Default media</value>
+  </data>
+  <data name="InteractiveGroupDefaultTitle" xml:space="preserve">
+    <value>{0}: default media</value>
+  </data>
+  <data name="InteractiveGroupDefaultHint" xml:space="preserve">
+    <value>Choose a library file or file group. Repeats while idle and resumes after projects finish. Switching groups or triggering projects respects its interruption protection.</value>
+  </data>
+  <data name="InteractiveDefaultVideoMissing" xml:space="preserve">
+    <value>Default media is unavailable or contains missing files: </value>
+  </data>
+  <data name="InteractiveNoDefaultMedia" xml:space="preserve">
+    <value>(No default media)</value>
+  </data>
+  <data name="InteractiveNoTransitionMedia" xml:space="preserve">
+    <value>(No transition)</value>
+  </data>
+  <data name="InteractiveTransitionMediaMissing" xml:space="preserve">
+    <value>(Media unavailable)</value>
+  </data>
 </root>

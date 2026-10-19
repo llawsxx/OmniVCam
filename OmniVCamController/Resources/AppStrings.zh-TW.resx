@@ -607,4 +607,91 @@
   <data name="InteractivePlaybackNoNext" xml:space="preserve">
     <value>連續 10 秒無法確認實際播放，且沒有待播放項目，已解除過期的正在播放狀態。</value>
   </data>
+  <data name="InteractiveProjectGroups" xml:space="preserve">
+    <value>互動分組</value>
+  </data>
+  <data name="InteractiveDefaultGroup" xml:space="preserve">
+    <value>預設分組</value>
+  </data>
+  <data name="InteractiveAddGroup" xml:space="preserve">
+    <value>新增分組</value>
+  </data>
+  <data name="InteractiveEditGroup" xml:space="preserve">
+    <value>編輯目前分組</value>
+  </data>
+  <data name="InteractiveRemoveGroup" xml:space="preserve">
+    <value>刪除目前分組</value>
+  </data>
+  <data name="InteractiveGroupTransitions" xml:space="preserve">
+    <value>分組轉場</value>
+  </data>
+  <data name="InteractiveGroupName" xml:space="preserve">
+    <value>分組名稱</value>
+  </data>
+  <data name="InteractiveCopyCurrentGroup" xml:space="preserve">
+    <value>複製目前分組的全部互動項目</value>
+  </data>
+  <data name="InteractiveCopyProject" xml:space="preserve">
+    <value>複製到分組…</value>
+  </data>
+  <data name="InteractiveCopyProjectHint" xml:space="preserve">
+    <value>選擇目標分組，或輸入名稱建立分組。</value>
+  </data>
+  <data name="InteractiveGroupNameExists" xml:space="preserve">
+    <value>已存在同名分組，請使用其他名稱。</value>
+  </data>
+  <data name="InteractiveGroupHotkeyConflict" xml:space="preserve">
+    <value>該快捷鍵已被分組或互動項目使用，請使用其他快捷鍵。</value>
+  </data>
+  <data name="InteractiveConfirmRemoveGroup" xml:space="preserve">
+    <value>刪除分組「{0}」及其互動項目和相關轉場？</value>
+  </data>
+  <data name="InteractiveGroupTransitionTitle" xml:space="preserve">
+    <value>轉場：{0} → {1}</value>
+  </data>
+  <data name="InteractiveGroupSwitch" xml:space="preserve">
+    <value>切換分組</value>
+  </data>
+  <data name="InteractiveGroupSwitched" xml:space="preserve">
+    <value>分組：{0} → {1}</value>
+  </data>
+  <data name="InteractiveTransitionFileMissing" xml:space="preserve">
+    <value>無法切換分組，轉場媒體無法使用或包含不存在的檔案：</value>
+  </data>
+  <data name="InteractiveTransitionHint" xml:space="preserve">
+    <value>選取方向後，從媒體庫選擇檔案或檔案組合。沿用播放範圍、選擇方式及禁止中斷設定，忽略循環，只播放一遍。選擇「不使用轉場」則直接切組。</value>
+  </data>
+  <data name="InteractiveTransitionFrom" xml:space="preserve">
+    <value>來源分組</value>
+  </data>
+  <data name="InteractiveTransitionTo" xml:space="preserve">
+    <value>目標分組</value>
+  </data>
+  <data name="InteractiveChooseTransition" xml:space="preserve">
+    <value>轉場媒體</value>
+  </data>
+  <data name="InteractiveClearTransition" xml:space="preserve">
+    <value>清除轉場</value>
+  </data>
+  <data name="InteractiveGroupDefaultVideo" xml:space="preserve">
+    <value>預設播放媒體</value>
+  </data>
+  <data name="InteractiveGroupDefaultTitle" xml:space="preserve">
+    <value>{0}：預設媒體</value>
+  </data>
+  <data name="InteractiveGroupDefaultHint" xml:space="preserve">
+    <value>從媒體庫選擇檔案或檔案組合，閒置時持續循環，互動結束後返回。切組或觸發互動時遵守媒體庫的禁止中斷設定。</value>
+  </data>
+  <data name="InteractiveDefaultVideoMissing" xml:space="preserve">
+    <value>預設媒體無法使用或包含不存在的檔案：</value>
+  </data>
+  <data name="InteractiveNoDefaultMedia" xml:space="preserve">
+    <value>（不啟用預設播放）</value>
+  </data>
+  <data name="InteractiveNoTransitionMedia" xml:space="preserve">
+    <value>（不使用轉場）</value>
+  </data>
+  <data name="InteractiveTransitionMediaMissing" xml:space="preserve">
+    <value>（媒體無法使用）</value>
+  </data>
 </root>

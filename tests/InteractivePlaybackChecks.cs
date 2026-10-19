@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -1148,6 +1148,7 @@ internal static class InteractivePlaybackChecks
             Guid[] mediaOrder = media.Cast<object>().Select(item => (Guid)Get(item, "RuntimeId")).ToArray();
             string[] routeOrder = routes.Cast<object>().Select(route => Save(route).ToString()).ToArray();
             Invoke(owner, "LoadInteractivePlaybackElement", XElement.Parse(saved.ToString()));
+            routes = (IList)Field(owner, "interactiveRoutes");
             Check(media.Cast<object>().Select(item => (Guid)Get(item, "RuntimeId")).SequenceEqual(mediaOrder) &&
                 routes.Cast<object>().Select(route => Save(route).ToString()).SequenceEqual(routeOrder),
                 "Connection XML round trip retains both display orders and original media references");
@@ -1278,6 +1279,793 @@ internal static class InteractivePlaybackChecks
         }
         Console.WriteLine("PASS: editor add/duplicate/reorder/remove, cancellation isolation, independent saved lists and three-language resources.");
     }
+    private static object CopyProject(object route)
+    {
+        return main.GetMethod("CopyInteractiveProject", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new[] { route });
+    }
+    private static object ProjectGroup(string name, Keys key, int firstMedia)
+    {
+        var group = New("InteractiveProjectGroup"); Set(group, "Name", name);
+        var hotkey = New("InteractiveHotkey"); Set(hotkey, "KeyCode", key); Set(hotkey, "Modifiers", Enum.ToObject(Nested("HotkeyModifiers"), 7));
+        Set(group, "Hotkey", hotkey);
+        var route = Route("sequential"); Set(route, "Name", name + " project");
+        var routeKey = New("InteractiveHotkey"); Set(routeKey, "KeyCode", Keys.F23); Set(routeKey, "Modifiers", Enum.ToObject(Nested("HotkeyModifiers"), 7)); Set(route, "Hotkey", routeKey);
+        ((IList)Get(route, "Combinations")).Clear();
+        var combination = New("InteractiveMediaCombination"); ((IList)Get(combination, "MediaIds")).Add(Get(media[firstMedia], "RuntimeId"));
+        ((IList)Get(route, "Combinations")).Add(combination);
+        ((IList)Get(group, "Routes")).Add(route); return group;
+    }
+    private static async Task CheckProjectGroupDispatchAsync(TcpListener listener, object a, object b, bool defaults, bool protectTransition)
+    {
+        Action<string, int> ignore = (text, generation) => { };
+        var client = Activator.CreateInstance(Nested("TcpCommandClient"), new object[] { ignore, ignore, (Action)(() => { }) });
+        TcpClient peer = null;
+        var mapping = ((IList)Field(owner, "interactiveGroupTransitions")).Cast<object>().First(item =>
+            Equals(Get(item, "FromId"), Get(a, "Id")) && Equals(Get(item, "ToId"), Get(b, "Id")));
+        var transitionMedia = media.Cast<object>().First(item => Equals(Get(item, "RuntimeId"), Get(mapping, "MediaId")));
+        object originalProtection = Get(transitionMedia, "PreventInterrupt"); Set(transitionMedia, "PreventInterrupt", protectTransition);
+        SetField("commandClient", client); SetField("observedBackendConnectionLoss", 0);
+        try
+        {
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            var source = GroupBatch(media[0])[0]; Set(source, "PreventInterrupt", false); Set(source, "BackendFrameId", 100L);
+            QueueState(source, null); SetField("interactiveActive", true);
+            SetField("processingInteractiveTriggers", true); Invoke(owner, "SwitchInteractiveProjectGroup", b, "TCP switch"); SetField("processingInteractiveTriggers", false);
+            var accept = listener.AcceptTcpClientAsync();
+            var connecting = ClientSend(client, (int)((NumericUpDown)Field(owner, "portBox")).Value, "STATUS");
+            peer = await CompleteSoon(accept, "Group switching connects to the backend");
+            var reader = new StreamReader(peer.GetStream()); var writer = new StreamWriter(peer.GetStream()) { AutoFlush = true };
+            Check(await CompleteSoon(reader.ReadLineAsync(), "The fixture establishes its initial connection") == "STATUS", "The fixture connects before testing group dispatch");
+            await writer.WriteLineAsync(BackendStatus(source, "playing", source) + " actual_frame_id=100 input_frame_id=100");
+            await CompleteSoon(connecting, "The initial connection generation is established");
+            var dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "Group switching verifies the current output") == "STATUS", "A configured group switch uses existing playback verification");
+            await writer.WriteLineAsync(BackendStatus(source, "playing", source) + " actual_frame_id=100 input_frame_id=100");
+            string command = await CompleteSoon(reader.ReadLineAsync(), "A group switch sends the transition");
+            Check(command.StartsWith("PLAY ") && !command.StartsWith("PLAY_NEXT "), "An interruptible source switches immediately to the transition");
+            await writer.WriteLineAsync("OK playing transition");
+            if (defaults)
+            {
+                command = await CompleteSoon(reader.ReadLineAsync(), "The transition prequeues the group's idle video");
+                Check(command.StartsWith("PLAY_NEXT " + DefaultPath(b)) && command.Contains("loop=1"),
+                    "Switching groups prequeues the target group's looping default after the transition");
+                await writer.WriteLineAsync("OK idle queued");
+            }
+            await CompleteSoon(dispatch, "The transition command is acknowledged");
+            var transition = Field(owner, "interactiveCurrent");
+            Check((bool)Get(transition, "IsGroupTransition") && (defaults || command.StartsWith("PLAY " + Get(transition, "Path"))), "The actual PLAY contains the configured direction's video");
+            Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(transition, "playing", defaults ? Field(owner, "interactivePending") : transition) +
+                " actual_frame_id=200 input_frame_id=" + (defaults ? "201" : "200"));
+            SetField("processingInteractiveTriggers", true);
+            Invoke(owner, "RequestInteractiveRoute", ((IList)Get(b, "Routes"))[0], "TCP target");
+            SetField("processingInteractiveTriggers", false); dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "A target trigger verifies the transition") == "STATUS", "The target trigger verifies actual transition playback");
+            await writer.WriteLineAsync(BackendStatus(transition, "playing", defaults ? Field(owner, "interactivePending") : transition) +
+                " actual_frame_id=200 input_frame_id=" + (defaults ? "201" : "200"));
+            command = await CompleteSoon(reader.ReadLineAsync(), "A target trigger waits at the transition boundary");
+            if (!protectTransition)
+            {
+                Check(command.StartsWith("PLAY " + Get(media[2], "Path")), "An unprotected transition can be interrupted immediately by a PLAY project");
+                await writer.WriteLineAsync("OK immediate project");
+                if (defaults)
+                {
+                    Check((await CompleteSoon(reader.ReadLineAsync(), "The interrupted transition is replaced by the project/default sequence")).StartsWith("PLAY_NEXT " + DefaultPath(b)),
+                        "An interrupted transition discards its old tail and returns to the target default after the project");
+                    await writer.WriteLineAsync("OK return default");
+                }
+                await CompleteSoon(dispatch, "An interruptible transition does not hold the project dispatcher");
+                Check(!(bool)Get(Field(owner, "interactiveCurrent"), "IsGroupTransition") && Field(owner, "interactiveProtectedHandoff") == null,
+                    "An interruptible transition has no protected wait");
+                return;
+            }
+            Check(command.StartsWith("PLAY_NEXT " + Get(media[2], "Path")), "The target group's actual media is sent as PLAY_NEXT during the protected transition");
+            await writer.WriteLineAsync("OK target queued");
+            await CompleteSoon((Task)Field(owner, "interactiveNextQueueTask"), "The target next command is acknowledged");
+            var target = Field(owner, "interactivePending");
+            Check(!dispatch.IsCompleted && Field(owner, "interactiveCurrent") == transition && target != null,
+                "The trigger remains protected until the target actually reaches output");
+            Set(target, "PreventInterrupt", false);
+            Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(target, "playing", target) +
+                " actual_frame_id=" + (defaults ? "202" : "201") + " input_frame_id=" + (defaults ? "202" : "201"));
+            await CompleteSoon(dispatch, "Actual target output completes the group handoff");
+            Check(Field(owner, "interactiveCurrent") == target, "The active playback item is the new group's project");
+            if (defaults)
+            {
+                var returning = (Task)Invoke(owner, "EnsureInteractiveNextQueuedAsync");
+                command = await CompleteSoon(reader.ReadLineAsync(), "Project playback queues the group's default video again");
+                Check(command.StartsWith("PLAY_NEXT " + DefaultPath(b)), "A completed target project returns to its own group's default");
+                await writer.WriteLineAsync("OK returning idle"); await CompleteSoon(returning, "The return default is acknowledged");
+                var idle = Field(owner, "interactivePending");
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(idle, "playing", idle) + " actual_frame_id=201 input_frame_id=203") && Field(owner, "interactiveCurrent") == target,
+                    "The default batch discarded before the project cannot be mistaken for its return default");
+                Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(target, "playing", idle) + " actual_frame_id=202 input_frame_id=203");
+                Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(idle, "playing", idle) + " actual_frame_id=203 input_frame_id=203");
+                Check(Field(owner, "interactiveCurrent") == idle && (bool)Get(idle, "IsGroupDefault"), "The default resumes once its new batch actually reaches output");
+                SetField("processingInteractiveTriggers", true); Invoke(owner, "RequestInteractiveRoute", ((IList)Get(b, "Routes"))[0], "idle trigger"); SetField("processingInteractiveTriggers", false);
+                dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+                Check(await CompleteSoon(reader.ReadLineAsync(), "A trigger verifies default playback") == "STATUS", "Triggers verify actual default output");
+                await writer.WriteLineAsync(BackendStatus(idle, "playing", idle) + " actual_frame_id=203 input_frame_id=204");
+                Check((await CompleteSoon(reader.ReadLineAsync(), "An immediate project interrupts the default")).StartsWith("PLAY " + Get(media[2], "Path")),
+                    "The default video permits an immediate interactive trigger");
+                await writer.WriteLineAsync("OK project playing");
+                Check((await CompleteSoon(reader.ReadLineAsync(), "The second project prequeues the same default")).StartsWith("PLAY_NEXT " + DefaultPath(b)),
+                    "Repeated triggers keep a bounded return-to-default slot");
+                await writer.WriteLineAsync("OK default queued again"); await CompleteSoon(dispatch, "The repeated project is dispatched");
+                var repeated = Field(owner, "interactiveCurrent"); var repeatedIdle = Field(owner, "interactivePending");
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(idle, "playing", repeatedIdle) + " actual_frame_id=204 input_frame_id=206") && Field(owner, "interactiveCurrent") == repeated,
+                    "A predecoded old default loop cannot complete the new project before its first output frame is observed");
+                Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(repeated, "playing", repeatedIdle) + " actual_frame_id=205 input_frame_id=206");
+                Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(repeatedIdle, "playing", repeatedIdle) + " actual_frame_id=206 input_frame_id=206");
+                Check(Field(owner, "interactiveCurrent") == repeatedIdle, "Repeated project playback returns to a distinct new default batch");
+                return;
+            }
+
+            SetField("processingInteractiveTriggers", true); Invoke(owner, "RequestInteractiveRoute", ((IList)Get(b, "Routes"))[0], "obsolete target"); SetField("processingInteractiveTriggers", false);
+            dispatch = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "An old group trigger is awaiting verification") == "STATUS", "The race includes an in-flight old-group STATUS");
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "TCP return");
+            await writer.WriteLineAsync(BackendStatus(target, "playing", target) + " actual_frame_id=201 input_frame_id=201");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "The stale trigger is discarded before dispatch") == "STATUS",
+                "A late old-group reply starts verification for the return transition without replaying the old project");
+            await writer.WriteLineAsync(BackendStatus(target, "playing", target) + " actual_frame_id=201 input_frame_id=201");
+            command = await CompleteSoon(reader.ReadLineAsync(), "The reverse transition plays after the race");
+            Check(command.StartsWith("PLAY "), "The requested return transition wins over the obsolete project");
+            await writer.WriteLineAsync("OK returning transition"); await CompleteSoon(dispatch, "The reverse transition finishes dispatch");
+            Check((bool)Get(Field(owner, "interactiveCurrent"), "IsGroupTransition") && Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")),
+                "The current group and playback remain synchronized after a delayed STATUS race");
+        }
+        finally
+        {
+            Set(transitionMedia, "PreventInterrupt", originalProtection);
+            ((IDisposable)client).Dispose(); if (peer != null) peer.Close(); SetField("commandClient", null); SetField("observedBackendConnectionLoss", 0);
+            Invoke(owner, "ClearInteractiveRuntime", true);
+        }
+    }
+    private static void CheckProjectGroupDispatch(object a, object b, bool defaults = false, bool protectTransition = true)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using (var host = new TextBox { Text = "127.0.0.1" })
+        using (var portBox = new NumericUpDown { Maximum = 65535, Value = port })
+        {
+            SetField("hostBox", host); SetField("portBox", portBox);
+            var context = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try { CheckProjectGroupDispatchAsync(listener, a, b, defaults, protectTransition).GetAwaiter().GetResult(); }
+            finally
+            {
+                listener.Stop(); SetField("hostBox", null); SetField("portBox", null);
+                SynchronizationContext.SetSynchronizationContext(context);
+            }
+        }
+    }
+    private static string DefaultPath(object group)
+    {
+        return (string)Get(media.Cast<object>().First(item => Equals(Get(item, "RuntimeId"), Get(group, "DefaultMediaId"))), "Path");
+    }
+    private static object[] DefaultBatch(object group)
+    {
+        return ((IEnumerable)Invoke(owner, "BuildInteractiveGroupDefault", group, false)).Cast<object>().ToArray();
+    }
+    private static void CheckGroupDefaults(object a, object b)
+    {
+        string day = Path.GetTempFileName(), night = Path.GetTempFileName();
+        var dayMedia = New("InteractiveMediaItem"); Set(dayMedia, "Path", day); Set(dayMedia, "Title", "Day idle");
+        var nightMedia = New("InteractiveMediaItem"); Set(nightMedia, "Path", night); Set(nightMedia, "Title", "Night idle");
+        media.Add(dayMedia); media.Add(nightMedia);
+        object oldConnections = Field(owner, "connectionStates"), oldTimer = Field(owner, "playoutTimer"), oldLabel = Field(owner, "playoutStatusLabel"), oldStatus = Field(owner, "currentStatusState");
+        var context = SynchronizationContext.Current;
+        using (var timer = new System.Windows.Forms.Timer())
+        using (var label = new Label())
+        try
+        {
+            Set(a, "DefaultMediaId", Get(dayMedia, "RuntimeId")); Set(b, "DefaultMediaId", Get(nightMedia, "RuntimeId"));
+            SetField("connectionStates", Activator.CreateInstance(typeof(List<>).MakeGenericType(Nested("ConnectionTabState"))));
+            SetField("playoutTimer", timer); SetField("playoutStatusLabel", label); SetField("currentStatusState", "stopped");
+            SynchronizationContext.SetSynchronizationContext(null);
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            var idle = DefaultBatch(a).Single();
+            Check((bool)Get(idle, "IsGroupDefault") && (bool)Get(idle, "Loop") && !(bool)Get(idle, "PreventInterrupt") && ((string)Get(idle, "Options")).Contains("loop=1"),
+                "The per-group default loops without interrupt protection");
+            using (var dialog = (Form)Activator.CreateInstance(Nested("ProjectGroupEditDialog"), new object[] { media, a }))
+            {
+                Check(Equals(Get(dialog, "DefaultMediaId"), Get(dayMedia, "RuntimeId")), "The group editor loads its library default");
+                var box = (ComboBox)Field(dialog, "defaultMediaBox");
+                box.SelectedIndex = media.IndexOf(nightMedia) + 1;
+                dialog.PerformLayout();
+                Check(Equals(Get(dialog, "DefaultMediaId"), Get(nightMedia, "RuntimeId")) && Equals(Get(a, "DefaultMediaId"), Get(dayMedia, "RuntimeId")),
+                    "Default media editing supports independent cancellation");
+                Check(box.Width > 100 && box.DropDownStyle == ComboBoxStyle.DropDownList, "Default selection uses a usable library-only picker");
+                box.SelectedIndex = 0;
+                Check((Guid)Get(dialog, "DefaultMediaId") == Guid.Empty, "The picker can disable default playback");
+            }
+            var state = New("ConnectionTabState"); Set(state, "InteractiveProjectGroups", Field(owner, "interactiveProjectGroups"));
+            Set(state, "InteractiveMedia", media);
+            Set(state, "ActiveInteractiveProjectGroupId", Get(b, "Id"));
+            var xml = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
+            var isolated = FormatterServices.GetUninitializedObject(main);
+            main.GetField("interactiveMedia", PrivateInstance).SetValue(isolated, Activator.CreateInstance(media.GetType()));
+            main.GetField("interactiveRoutes", PrivateInstance).SetValue(isolated, Activator.CreateInstance(typeof(List<>).MakeGenericType(Nested("InteractiveRouteItem"))));
+            Invoke(isolated, "LoadInteractivePlaybackElement", XElement.Parse(xml.ToString()));
+            var loaded = ((IList)Field(isolated, "interactiveProjectGroups")).Cast<object>().ToArray();
+            Check(Equals(Get(loaded.First(group => Equals(Get(group, "Id"), Get(a, "Id"))), "DefaultMediaId"), Get(dayMedia, "RuntimeId")) &&
+                Equals(Get(loaded.First(group => Equals(Get(group, "Id"), Get(b, "Id"))), "DefaultMediaId"), Get(nightMedia, "RuntimeId")),
+                "Each group's independent default library reference survives connection XML round trips");
+            Check(!xml.Descendants("Group").Any(group => group.Attribute("defaultVideo") != null), "No default video path is saved");
+            foreach (var group in xml.Element("Groups").Elements("Group")) group.Attribute("defaultMedia").Remove();
+            Invoke(isolated, "LoadInteractivePlaybackElement", xml);
+            Check(((IList)Field(isolated, "interactiveProjectGroups")).Cast<object>().All(group => (Guid)Get(group, "DefaultMediaId") == Guid.Empty),
+                "Groups without a default library reference have no implicit default media");
+
+            SetField("processingInteractiveTriggers", true); SetField("interactiveWindowOpen", false);
+            Invoke(owner, "SetInteractiveWindowOpen", true);
+            var requests = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().ToArray();
+            Check(requests.Length == 1 && (bool)Get(((IList)Get(requests[0], "Entries"))[0], "IsGroupDefault") && (bool)Field(owner, "interactiveActive"),
+                "Opening the interactive window starts its active group's default even before any project trigger");
+            Invoke(owner, "RequestInteractiveGroupDefaultIfIdle");
+            Check(((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Count() == 1, "Repeated idle activation cannot enqueue duplicate default requests");
+            SetField("closingMainForm", true); Invoke(owner, "SetInteractiveWindowOpen", false); SetField("closingMainForm", false);
+            Invoke(owner, "RequestInteractiveGroupDefaultIfIdle");
+            Check(!(bool)Field(owner, "interactiveActive") && !((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Any(),
+                "A hidden or closing window cannot restart its default video");
+            SetField("interactiveWindowOpen", true);
+
+            var source = GroupBatch(media[0])[0]; Set(source, "Loop", false); Set(source, "BackendFrameId", 500L);
+            QueueState(source, null); SetField("interactiveActive", true);
+            Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded"); Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
+            Check(QueuedEntries().Length == 1 && (string)Get(QueuedEntries()[0], "Path") == day, "A finite project prequeues exactly one default for its active group");
+            string command = null; Func<string, Task<string>> send = value => { command = value; return Task.FromResult("OK queued"); };
+            ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+            Check(command.StartsWith("PLAY_NEXT " + day) && Field(owner, "interactiveCurrent") == source && (bool)Get(Field(owner, "interactivePending"), "IsGroupDefault"),
+                "Returning to default uses PLAY_NEXT without truncating the interactive project's tail");
+            var followup = GroupBatch(media[2])[0];
+            Set(source, "PreventInterrupt", true);
+            var handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", ProtectedRequest(followup));
+            ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+            Check(command.StartsWith("PLAY_NEXT " + Get(followup, "Path")) && command.Contains("after_frame_id=500") && Field(owner, "interactiveCurrent") == source,
+                "A new protected trigger replaces the predecoded default while preserving the current media tail");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            QueueState(source, null); SetField("interactiveActive", true);
+            var idleRequest = ProtectedRequest(idle);
+            handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", idleRequest);
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", ProtectedRequest(idle));
+            Invoke(owner, "RequestInteractiveRoute", ((IList)Get(a, "Routes"))[0], "priority trigger");
+            Check(HandoffTask(handoff).IsCompleted && ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().All(request =>
+                    !((IList)Get(request, "Entries")).Cast<object>().All(entry => (bool)Get(entry, "IsGroupDefault"))),
+                "A real trigger replaces queued idle requests and releases an idle-only protected wait");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            QueueState(idle, null); SetField("interactiveActive", true); Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
+            Check(QueuedEntries().Length == 0, "A looping default never queues another copy of itself");
+            QueueState(source, null, followup); Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
+            Check(QueuedEntries().SequenceEqual(new[] { followup }), "The default cannot displace an explicit project successor");
+            var groupLoop = FileGroup(); Set(groupLoop, "FileGroupPlayAll", true); Set(groupLoop, "Loop", true);
+            var batch = GroupBatch(groupLoop); QueueState(batch[batch.Length - 1], null); Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
+            Check(QueuedEntries().Length == 0, "Explicit whole-group loops retain their configured playback behavior");
+            Invoke(owner, "ClearInteractiveRuntime", true); QueueState(source, null); SetField("interactiveActive", true);
+            Check((bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(source, "ended", source) + " actual_frame_id=500") && QueuedEntries().Length == 1,
+                "A short project's ended status can return to the default without a ten-second mismatch timeout");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            var transitions = (IList)Field(owner, "interactiveGroupTransitions");
+            object[] savedTransitions = transitions.Cast<object>().ToArray();
+            transitions.Clear();
+            try
+            {
+                Invoke(owner, "SwitchInteractiveProjectGroup", b, "no transition");
+                var noTransition = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single();
+                Check(!(bool)Get(noTransition, "IsGroupTransition") && ((IList)Get(noTransition, "Entries")).Count == 1 &&
+                    (string)Get(((IList)Get(noTransition, "Entries"))[0], "Path") == night,
+                    "Without a transition, selecting a group immediately requests that group's default video");
+                Invoke(owner, "SwitchInteractiveProjectGroup", a, "rapid idle switch");
+                var latest = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single();
+                Check((string)Get(((IList)Get(latest, "Entries"))[0], "Path") == day,
+                    "Rapid switches discard obsolete default-only requests and keep the latest group's idle video");
+            }
+            finally { transitions.Clear(); foreach (var item in savedTransitions) transitions.Add(item); }
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("processingInteractiveTriggers", false);
+            CheckProjectGroupDispatch(a, b, true);
+            CheckProjectGroupDispatch(a, b, true, false);
+            CheckLibraryGroupDefaults(a, b, day, night);
+            CheckLibraryGroupTransitions(a, b, day, night);
+            CheckProtectedGroupDefaults(a, b, dayMedia, day, night);
+        }
+        finally
+        {
+            Set(a, "DefaultMediaId", Guid.Empty); Set(b, "DefaultMediaId", Guid.Empty);
+            media.Remove(dayMedia); media.Remove(nightMedia);
+            SetField("closingMainForm", false); SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", false);
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("connectionStates", oldConnections); SetField("playoutTimer", oldTimer); SetField("playoutStatusLabel", oldLabel); SetField("currentStatusState", oldStatus);
+            SynchronizationContext.SetSynchronizationContext(context); File.Delete(day); File.Delete(night);
+        }
+        Console.WriteLine("PASS: per-group default configuration, idle activation, looping return, protected replacement, short projects and actual TCP transition/project/default cycles.");
+    }
+    private static void CheckLibraryGroupDefaults(object a, object b, string day, string night)
+    {
+        string third = Path.GetTempFileName();
+        var group = FileGroup();
+        var files = (IList)Get(group, "FilePaths"); files.Clear(); files.Add(day); files.Add(night); files.Add(third);
+        Set(group, "FileGroupPlayAll", true); Set(group, "PreventInterrupt", true); Set(group, "Options", "loop=1,custom=1");
+        media.Add(group);
+        object originalDefault = Get(a, "DefaultMediaId");
+        try
+        {
+            Set(a, "DefaultMediaId", Get(group, "RuntimeId"));
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            SetField("processingInteractiveTriggers", true); SetField("interactiveWindowOpen", true);
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            var batch = DefaultBatch(a);
+            Check(batch.Length == 3 && batch.Select(entry => (string)Get(entry, "Path")).SequenceEqual(new[] { day, night, third }),
+                "A default file group selects all files in configured order");
+            Check(batch.All(entry => (bool)Get(entry, "IsGroupDefault") && !(bool)Get(entry, "Loop") && (bool)Get(entry, "PreventInterrupt") &&
+                !((string)Get(entry, "Options")).Contains("loop=") && ((string)Get(entry, "Options")).Contains("custom=1")),
+                "Default groups repeat as a group and retain media options and interruption protection");
+            Check(!(bool)Get(group, "Loop") && (bool)Get(group, "PreventInterrupt"), "Building defaults does not edit library loop or protection settings");
+            for (int pass = 0; pass < 5; pass++)
+            {
+                QueueState(batch[batch.Length - 1], null);
+                Invoke(owner, "QueueInteractiveGroupContinuation"); batch = QueuedEntries();
+                Check(batch.Length == 3 && batch.All(entry => (bool)Get(entry, "IsGroupDefault") && (bool)Get(entry, "PreventInterrupt")) &&
+                    (string)Get(batch[0], "Path") == day && (string)Get(batch[2], "Path") == third,
+                    "Every default pass repeats the full group and retains its default identity");
+            }
+            using (var dialog = (Form)Activator.CreateInstance(Nested("ProjectGroupEditDialog"), new object[] { media, a }))
+                Check(Equals(Get(dialog, "DefaultMediaId"), Get(group, "RuntimeId")), "The default picker selects a library file group");
+            var state = New("ConnectionTabState"); Set(state, "InteractiveMedia", media);
+            Set(state, "InteractiveProjectGroups", Field(owner, "interactiveProjectGroups")); Set(state, "ActiveInteractiveProjectGroupId", Get(a, "Id"));
+            var xml = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
+            var isolated = FormatterServices.GetUninitializedObject(main);
+            main.GetField("interactiveMedia", PrivateInstance).SetValue(isolated, Activator.CreateInstance(media.GetType()));
+            main.GetField("interactiveRoutes", PrivateInstance).SetValue(isolated, Activator.CreateInstance(typeof(List<>).MakeGenericType(Nested("InteractiveRouteItem"))));
+            Invoke(isolated, "LoadInteractivePlaybackElement", xml);
+            var loadedGroup = ((IList)Field(isolated, "interactiveProjectGroups")).Cast<object>().First(item => Equals(Get(item, "Id"), Get(a, "Id")));
+            var loadedBatch = ((IEnumerable)Invoke(isolated, "BuildInteractiveGroupDefault", loadedGroup, false)).Cast<object>().ToArray();
+            Check(loadedBatch.Length == 3 && loadedBatch.Select(entry => (string)Get(entry, "Path")).SequenceEqual(new[] { day, night, third }),
+                "A group's default library reference and file-group settings survive real connection XML");
+
+            var source = GroupBatch(media[0])[0]; Set(source, "Loop", false); Set(source, "BackendFrameId", 710L);
+            Invoke(owner, "ClearInteractiveRuntime", true); QueueState(source, null); SetField("interactiveActive", true);
+            Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded"); Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
+            Check(QueuedEntries().Length == 3, "Returning from a project queues the entire default group exactly once");
+            string command = null;
+            Func<string, Task<string>> send = text => { command = text; return Task.FromResult("OK"); };
+            ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+            Check(command.StartsWith("PLAY_NEXT " + day) && QueuedEntries().Length == 2 &&
+                (bool)Get(Field(owner, "interactivePending"), "IsGroupDefault"), "The default group's first file is prequeued behind a finite project");
+            Set(group, "PreventInterrupt", false);
+            batch = DefaultBatch(a);
+            QueueState(batch[0], batch[1], batch[2]);
+            Check(Invoke(owner, "PrepareInteractiveRouteAppend") == batch[1] && Field(owner, "interactivePending") == null && QueuedEntries().Length == 0 &&
+                (bool)Get(Get(batch[0], "GroupLoop"), "Cancelled"), "A real PLAY_NEXT trigger replaces the prefetched default and drops the rest of its group");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            Set(source, "PreventInterrupt", true); QueueState(source, null); SetField("interactiveActive", true);
+            var idleRequest = ProtectedRequest(batch);
+            var handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", idleRequest);
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", ProtectedRequest(batch));
+            Invoke(owner, "RequestInteractiveRoute", ((IList)Get(a, "Routes"))[0], "priority over idle group");
+            Check(HandoffTask(handoff).IsCompleted && ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().All(request =>
+                !((IList)Get(request, "Entries")).Cast<object>().All(entry => (bool)Get(entry, "IsGroupDefault"))),
+                "Real projects replace queued multi-file defaults and release their protected wait");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            Invoke(owner, "RequestInteractiveGroupDefaultIfIdle");
+            var requestEntries = (IList)Get(((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single(), "Entries");
+            Check(requestEntries.Count == 3, "Opening an idle group requests all selected default files");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("activeInteractiveProjectGroupId", Get(b, "Id")); SetField("interactiveRoutes", Get(b, "Routes"));
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "switch to default group");
+            requestEntries = (IList)Get(((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single(), "Entries");
+            Check(requestEntries.Count == 4 && (bool)Get(requestEntries[0], "IsGroupTransition") &&
+                requestEntries.Cast<object>().Skip(1).All(entry => (bool)Get(entry, "IsGroupDefault")),
+                "Switching groups queues the complete default file group after its transition");
+
+            Set(group, "FileGroupPlayAll", false); Set(group, "FileGroupRandom", true); Set(group, "FileGroupNoRepeat", true);
+            for (int round = 0; round < 4; round++)
+            {
+                var seen = new HashSet<string>(); batch = DefaultBatch(a);
+                for (int draw = 0; draw < 3; draw++)
+                {
+                    Check(batch.Length == 1 && seen.Add((string)Get(batch[0], "Path")), "Default one-file random mode does not repeat within a round");
+                    if (draw < 2) { QueueState(batch[0], null); Invoke(owner, "QueueInteractiveGroupContinuation"); batch = QueuedEntries(); }
+                }
+            }
+            Set(group, "FileGroupPlayAll", true);
+            var orders = new HashSet<string>();
+            for (int pass = 0; pass < 12; pass++)
+            {
+                batch = DefaultBatch(a); orders.Add(string.Join("|", batch.Select(entry => (string)Get(entry, "Path"))));
+                Check(batch.Length == 3 && batch.Select(entry => (string)Get(entry, "Path")).Distinct().Count() == 3,
+                    "Default random all-files mode plays every file once per pass");
+            }
+            Check(orders.Count > 1, "Random default groups vary playback order");
+            Set(group, "FileGroupPlayAll", false); Set(group, "FileGroupRandom", false); Set(group, "NextFileIndex", 0);
+            batch = DefaultBatch(a); Check((string)Get(batch[0], "Path") == day, "Sequential one-file default starts at the configured position");
+            QueueState(batch[0], null); Invoke(owner, "QueueInteractiveGroupContinuation");
+            Check((string)Get(QueuedEntries().Single(), "Path") == night, "Sequential default loops advance to the next group file");
+            files[1] = night + ".missing";
+            Check(DefaultBatch(a).Length == 0, "An incomplete default file group cannot start");
+            Set(a, "DefaultMediaId", Guid.NewGuid()); Check(DefaultBatch(a).Length == 0, "A missing library reference has no path fallback");
+        }
+        finally
+        {
+            Set(a, "DefaultMediaId", originalDefault); media.Remove(group); File.Delete(third);
+            Invoke(owner, "ClearInteractiveRuntime", true); SetField("processingInteractiveTriggers", false);
+        }
+        Console.WriteLine("PASS: library-only defaults, full-group cycling, random/no-repeat and sequential selection, persistence, prequeue replacement and group transitions.");
+    }
+    private static void CheckLibraryGroupTransitions(object a, object b, string day, string night)
+    {
+        string third = Path.GetTempFileName();
+        var transition = ((IList)Field(owner, "interactiveGroupTransitions")).Cast<object>().First(item =>
+            Equals(Get(item, "FromId"), Get(a, "Id")) && Equals(Get(item, "ToId"), Get(b, "Id")));
+        object originalMedia = Get(transition, "MediaId");
+        var group = FileGroup(); Set(group, "Loop", true); Set(group, "PreventInterrupt", false);
+        Set(group, "Options", "loop=1,custom=1"); Set(group, "FileGroupPlayAll", true);
+        var files = (IList)Get(group, "FilePaths"); files.Clear(); files.Add(day); files.Add(night); files.Add(third);
+        media.Add(group); Set(transition, "MediaId", Get(group, "RuntimeId"));
+        try
+        {
+            var interruptible = ((IList)Get(Invoke(owner, "BuildInteractiveGroupTransition", a, b), "Entries")).Cast<object>().ToArray();
+            Check(interruptible.Length == 3 && interruptible.All(entry => !(bool)Get(entry, "PreventInterrupt") && !(bool)Get(entry, "Loop") && Get(entry, "GroupLoop") == null),
+                "Unprotected library transition groups remain interruptible while looping is disabled");
+            Set(group, "PreventInterrupt", true);
+            var request = Invoke(owner, "BuildInteractiveGroupTransition", a, b);
+            var entries = ((IList)Get(request, "Entries")).Cast<object>().ToArray();
+            Check(entries.Length == 3 && entries.Select(entry => (string)Get(entry, "Path")).SequenceEqual(new[] { day, night, third }),
+                "A transition selects the configured library group's complete sequence");
+            Check(entries.All(entry => (bool)Get(entry, "IsGroupTransition") && (bool)Get(entry, "PreventInterrupt") && !(bool)Get(entry, "Loop") &&
+                Get(entry, "GroupLoop") == null && Equals(Get(entry, "PlaybackUnitId"), Get(entries[0], "PlaybackUnitId")) &&
+                !((string)Get(entry, "Options")).Contains("loop=") && ((string)Get(entry, "Options")).Contains("custom=1")),
+                "All transition files share one protection boundary, play once and ignore both loop flags and loop options");
+            Check((bool)Get(group, "Loop") && (bool)Get(group, "PreventInterrupt") && ((string)Get(group, "Options")).Contains("loop=1"),
+                "Transition overrides do not alter the library item");
+            var state = New("ConnectionTabState"); Set(state, "InteractiveMedia", media);
+            Set(state, "InteractiveProjectGroups", Field(owner, "interactiveProjectGroups"));
+            Set(state, "InteractiveGroupTransitions", Field(owner, "interactiveGroupTransitions"));
+            var xml = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
+            var saved = xml.Element("Transitions").Elements("Transition").First(item => item.Attribute("from").Value == Get(a, "Id").ToString() &&
+                item.Attribute("to").Value == Get(b, "Id").ToString());
+            Check(saved.Attribute("media").Value == Get(group, "RuntimeId").ToString() && saved.Attribute("path") == null,
+                "Transition configuration saves a library reference without a file path");
+            var isolated = FormatterServices.GetUninitializedObject(main);
+            main.GetField("interactiveMedia", PrivateInstance).SetValue(isolated, Activator.CreateInstance(media.GetType()));
+            main.GetField("interactiveRoutes", PrivateInstance).SetValue(isolated, Activator.CreateInstance(typeof(List<>).MakeGenericType(Nested("InteractiveRouteItem"))));
+            Invoke(isolated, "LoadInteractivePlaybackElement", xml);
+            Check(((IList)Field(isolated, "interactiveGroupTransitions")).Cast<object>().Any(item => Equals(Get(item, "MediaId"), Get(group, "RuntimeId"))),
+                "A transition's file-group reference survives connection XML loading");
+
+            Invoke(owner, "ClearInteractiveRuntime", true); SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", true);
+            Set(entries[0], "BackendFrameId", 800L);
+            var project = GroupBatch(media[2])[0]; var idle = DefaultBatch(b).Single();
+            QueueState(entries[0], entries[1], entries[2], idle); SetField("interactiveActive", true);
+            var handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", ProtectedRequest(project));
+            var waiting = HandoffTask(handoff);
+            Check(Field(owner, "interactivePending") == entries[1] && QueuedEntries().SequenceEqual(new[] { entries[2], project }),
+                "A project triggered during a multi-file transition retains every remaining transition member");
+            var commands = new List<string>(); Func<string, Task<string>> send = text => { commands.Add(text); return Task.FromResult("OK"); };
+            for (int index = 1; index < entries.Length; index++)
+            {
+                Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                    Enum.Parse(Nested("BackendInputEventType"), "Started"), 800L + index, Get(entries[index], "InputSummary") }));
+                Check(Field(owner, "interactiveCurrent") == entries[index] && !waiting.IsCompleted,
+                    "An internal transition boundary cannot release a waiting project");
+                ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+            }
+            Check(commands.Count == 2 && commands[0].StartsWith("PLAY_NEXT " + third) && commands[1].StartsWith("PLAY_NEXT " + Get(project, "Path")),
+                "Protected transitions queue their remaining files and then the waiting project without any immediate PLAY");
+            Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                Enum.Parse(Nested("BackendInputEventType"), "Started"), 803L, Get(project, "InputSummary") }));
+            Check(waiting.IsCompleted && Field(owner, "interactiveCurrent") == project, "A trigger is released only after the complete transition reaches the next project");
+            QueueState(entries[entries.Length - 1], null); Invoke(owner, "QueueInteractiveGroupContinuation");
+            Check(QueuedEntries().Length == 0, "A completed transition group never schedules another pass");
+
+            Set(group, "PreventInterrupt", false);
+            Check(((IList)Get(Invoke(owner, "BuildInteractiveGroupTransition", a, b), "Entries")).Cast<object>().All(entry => !(bool)Get(entry, "PreventInterrupt")) &&
+                entries.All(entry => (bool)Get(entry, "PreventInterrupt")), "Library edits apply to new transition snapshots without changing the running protected sequence");
+            Set(group, "FileGroupPlayAll", false); Set(group, "NextFileIndex", 0);
+            for (int draw = 0; draw < 6; draw++)
+            {
+                entries = ((IList)Get(Invoke(owner, "BuildInteractiveGroupTransition", a, b), "Entries")).Cast<object>().ToArray();
+                Check(entries.Length == 1 && (string)Get(entries[0], "Path") == new[] { day, night, third }[draw % 3],
+                    "A one-file transition group advances sequentially once per switch");
+            }
+            Set(group, "FileGroupRandom", true); Set(group, "FileGroupNoRepeat", true);
+            for (int round = 0; round < 3; round++)
+            {
+                var seen = new HashSet<string>();
+                for (int draw = 0; draw < 3; draw++)
+                {
+                    entries = ((IList)Get(Invoke(owner, "BuildInteractiveGroupTransition", a, b), "Entries")).Cast<object>().ToArray();
+                    Check(entries.Length == 1 && seen.Add((string)Get(entries[0], "Path")), "Random transition selection retains no-repeat rounds");
+                }
+            }
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            files[2] = third + ".missing";
+            object selection = Get(group, "NextFileIndex");
+            Invoke(owner, "SwitchInteractiveProjectGroup", b, "missing group member");
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")) &&
+                !((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Any() && Equals(Get(group, "NextFileIndex"), selection),
+                "An unavailable transition member prevents group switching before selecting or sending partial playback");
+        }
+        finally
+        {
+            Set(transition, "MediaId", originalMedia); media.Remove(group); File.Delete(third);
+            Invoke(owner, "ClearInteractiveRuntime", true); SetField("processingInteractiveTriggers", false);
+        }
+        Console.WriteLine("PASS: library transition groups, one-shot loop overrides, complete-sequence protection, file selection, persistence and missing-member rejection.");
+    }
+    private static void CheckProtectedGroupDefaults(object a, object b, object dayMedia, string day, string night)
+    {
+        var context = SynchronizationContext.Current; SynchronizationContext.SetSynchronizationContext(null);
+        object originalDefault = Get(a, "DefaultMediaId"), originalProtection = Get(dayMedia, "PreventInterrupt");
+        var group = FileGroup(); Set(group, "FileGroupPlayAll", true); Set(group, "PreventInterrupt", true);
+        var files = (IList)Get(group, "FilePaths"); files.Clear(); files.Add(day); files.Add(night); media.Add(group);
+        try
+        {
+            SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", true);
+            Set(dayMedia, "PreventInterrupt", true);
+            var idle = DefaultBatch(a).Single();
+            Check((bool)Get(idle, "PreventInterrupt") && (bool)Get(idle, "Loop"), "Single-file defaults inherit library protection while looping");
+            Set(dayMedia, "PreventInterrupt", false);
+            Check(!(bool)Get(DefaultBatch(a).Single(), "PreventInterrupt") && (bool)Get(idle, "PreventInterrupt"),
+                "Default snapshots preserve their selected interruption policy when the library is edited");
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            Set(idle, "BackendFrameId", 900L); QueueState(idle, null); SetField("interactiveActive", true);
+            var project = GroupBatch(media[2])[0];
+            var request = ProtectedRequest(project); var handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", request);
+            string command = null; Func<string, Task<string>> send = text => { command = text; return Task.FromResult("OK"); };
+            ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+            Check(command.StartsWith("PLAY_NEXT " + Get(project, "Path")) && Field(owner, "interactiveCurrent") == idle && !HandoffTask(handoff).IsCompleted,
+                "A protected single-file default finishes the current pass through PLAY_NEXT instead of being interrupted");
+            Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                Enum.Parse(Nested("BackendInputEventType"), "Started"), 901L, Get(project, "InputSummary") }));
+            Check(HandoffTask(handoff).IsCompleted && Field(owner, "interactiveCurrent") == project, "A protected looping default yields after one pass, without waiting forever");
+
+            Set(a, "DefaultMediaId", Get(group, "RuntimeId"));
+            foreach (string action in new[] { "PLAY", "PLAY_NEXT", "group switch" })
+            {
+                Invoke(owner, "ClearInteractiveRuntime", true);
+                SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+                var batch = DefaultBatch(a); var tail = DefaultBatch(b).Single();
+                Set(batch[0], "BackendFrameId", 1000L);
+                QueueState(batch[0], batch[1], tail); SetField("interactiveActive", true); SetField("interactiveNextQueueTask", null);
+                request = ProtectedRequest(GroupBatch(media[2])[0]);
+                if (action == "group switch")
+                {
+                    Invoke(owner, "SwitchInteractiveProjectGroup", b, "protected idle switch");
+                    request = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single();
+                    Invoke(Field(owner, "interactiveTriggerRequests"), "Clear");
+                    Check((bool)Get(((IList)Get(request, "Entries"))[0], "IsGroupTransition"), "A protected default defers the real configured group transition");
+                }
+                string method = action == "PLAY_NEXT" ? "AppendInteractiveRouteAsync" : "StartInteractiveImmediatelyAsync";
+                var task = (Task)Invoke(owner, method, request);
+                var firstTarget = ((IList)Get(request, "Entries"))[0];
+                Check(!task.IsCompleted && Field(owner, "interactiveCurrent") == batch[0] && Field(owner, "interactivePending") == batch[1] &&
+                    QueuedEntries()[0] == firstTarget && (bool)Get(Get(batch[0], "GroupLoop"), "Cancelled"),
+                    action + " waits for the complete protected default pass and cancels further repeats");
+                Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                    Enum.Parse(Nested("BackendInputEventType"), "Started"), 1001L, Get(batch[1], "InputSummary") }));
+                Check(!task.IsCompleted && Field(owner, "interactiveCurrent") == batch[1], action + " cannot start at an internal default group boundary");
+                ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+                Check(command.StartsWith("PLAY_NEXT " + Get(firstTarget, "Path")), action + " is prequeued after the final protected default member");
+                Invoke(owner, "ApplyInteractiveOutputStarted", Activator.CreateInstance(Nested("BackendInputEvent"), new object[] {
+                    Enum.Parse(Nested("BackendInputEventType"), "Started"), 1002L, Get(firstTarget, "InputSummary") }));
+                CompleteSoon(task, action + " releases its protected wait").GetAwaiter().GetResult();
+                Check(Field(owner, "interactiveCurrent") == firstTarget, action + " proceeds once the protected default has fully finished");
+            }
+            Set(group, "FileGroupPlayAll", false);
+            Check(DefaultBatch(a).Length == 1 && (bool)Get(DefaultBatch(a).Single(), "PreventInterrupt"), "One-file default group mode protects the selected file");
+            Set(group, "PreventInterrupt", false);
+            Check(DefaultBatch(a).All(entry => !(bool)Get(entry, "PreventInterrupt")), "Default file groups also honor permission to interrupt");
+        }
+        finally
+        {
+            Set(a, "DefaultMediaId", originalDefault); Set(dayMedia, "PreventInterrupt", originalProtection); media.Remove(group);
+            Invoke(owner, "ClearInteractiveRuntime", true); SetField("processingInteractiveTriggers", false);
+            SynchronizationContext.SetSynchronizationContext(context);
+        }
+        Console.WriteLine("PASS: default library interruption policy, protected single-file loop handoff, complete default group protection for PLAY/PLAY_NEXT and group-switch transitions.");
+    }
+    private static void CheckProjectGroups(Assembly assembly)
+    {
+        object oldGroups = Field(owner, "interactiveProjectGroups"), oldTransitions = Field(owner, "interactiveGroupTransitions"), oldRoutes = Field(owner, "interactiveRoutes");
+        object oldActive = Field(owner, "activeInteractiveProjectGroupId"), oldVersion = Field(owner, "interactiveProjectGroupVersion");
+        object[] originalMedia = media.Cast<object>().ToArray();
+        var context = SynchronizationContext.Current;
+        try
+        {
+            Invoke(owner, "ClearInteractiveRuntime", true);
+            var a = ProjectGroup("Day", Keys.F21, 0); var b = ProjectGroup("Night", Keys.F22, 2); var c = ProjectGroup("Other", Keys.F24, 3);
+            var state = New("ConnectionTabState");
+            var groups = (IList)Get(state, "InteractiveProjectGroups"); groups.Add(a); groups.Add(b); groups.Add(c);
+            Set(state, "ActiveInteractiveProjectGroupId", Get(a, "Id"));
+            SetField("interactiveProjectGroups", groups); SetField("interactiveGroupTransitions", Get(state, "InteractiveGroupTransitions"));
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            var pairs = (IList)Invoke(owner, "BuildInteractiveTransitionPairs");
+            Check(pairs.Count == 6 && pairs.Cast<object>().Select(item => Get(item, "FromId") + "/" + Get(item, "ToId")).Distinct().Count() == 6,
+                "Three groups expose exactly six independent directed transitions");
+            var ab = pairs.Cast<object>().First(item => Equals(Get(item, "FromId"), Get(a, "Id")) && Equals(Get(item, "ToId"), Get(b, "Id")));
+            var ba = pairs.Cast<object>().First(item => Equals(Get(item, "FromId"), Get(b, "Id")) && Equals(Get(item, "ToId"), Get(a, "Id")));
+            Set(ab, "MediaId", Get(media[0], "RuntimeId")); Set(ba, "MediaId", Get(media[2], "RuntimeId"));
+            ((IList)Field(owner, "interactiveGroupTransitions")).Add(ab); ((IList)Field(owner, "interactiveGroupTransitions")).Add(ba);
+            var forward = Invoke(owner, "BuildInteractiveGroupTransition", a, b); var reverse = Invoke(owner, "BuildInteractiveGroupTransition", b, a);
+            var transitionEntry = ((IList)Get(forward, "Entries"))[0];
+            Check((string)Get(transitionEntry, "Path") == (string)Get(media[0], "Path") &&
+                (string)Get(((IList)Get(reverse, "Entries"))[0], "Path") == (string)Get(media[2], "Path") && Invoke(owner, "BuildInteractiveGroupTransition", a, c) == null,
+                "Each direction uses its own video and an unset direction has no transition");
+            Check((bool)Get(forward, "Immediate") && (bool)Get(transitionEntry, "PreventInterrupt") == (bool)Get(media[0], "PreventInterrupt") && !(bool)Get(transitionEntry, "Loop"),
+                "A transition plays once and inherits library interruption protection");
+            object previousMedia = Get(ab, "MediaId");
+            Set(ab, "MediaId", Guid.NewGuid());
+            int groupVersion = (int)Field(owner, "interactiveProjectGroupVersion");
+            Invoke(owner, "SwitchInteractiveProjectGroup", b, "missing transition");
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")) &&
+                (int)Field(owner, "interactiveProjectGroupVersion") == groupVersion,
+                "A missing transition video retains the current group without dispatching playback");
+            Set(ab, "MediaId", previousMedia);
+            using (var dialog = (Form)Activator.CreateInstance(Nested("GroupTransitionsDialog"), new object[] { groups, Invoke(owner, "BuildInteractiveTransitionPairs"), media }))
+            {
+                var view = (ListView)Field(dialog, "pairs"); IntPtr unused = view.Handle;
+                Check(view.Items.Count == 6, "The transition editor displays all six directed pairs");
+                view.Items[0].Selected = true;
+                var box = (ComboBox)Field(dialog, "mediaBox");
+                Check(box.Enabled && box.DropDownStyle == ComboBoxStyle.DropDownList, "Transition media is selected only from the library");
+                box.SelectedIndex = 3;
+                Check(Equals(Get(ab, "MediaId"), previousMedia), "Cancelling transition editing cannot mutate saved library references");
+                Check(Equals(Get(((IList)Get(dialog, "Transitions"))[0], "MediaId"), Get(media[2], "RuntimeId")), "Choosing library media edits only the detached transition");
+                box.SelectedIndex = 0;
+                Check((Guid)Get(((IList)Get(dialog, "Transitions"))[0], "MediaId") == Guid.Empty, "Selecting no transition clears the optional mapping");
+            }
+            var route = ((IList)Get(a, "Routes"))[0]; Set(route, "NextCombinationIndex", 8);
+            var copy = CopyProject(route); var ids = (IList)Get(((IList)Get(copy, "Combinations"))[0], "MediaIds");
+            ids.Add(Get(media[1], "RuntimeId")); Set(Get(copy, "Hotkey"), "KeyCode", Keys.F20);
+            Check(((IList)Get(((IList)Get(route, "Combinations"))[0], "MediaIds")).Count == 1 &&
+                (Keys)Get(Get(route, "Hotkey"), "KeyCode") == Keys.F23 && (int)Get(copy, "NextCombinationIndex") == 0 && (int)Get(route, "NextCombinationIndex") == 8,
+                "Copied projects have independent combinations, shortcuts and selection progress");
+
+            foreach (var item in media) ((IList)Get(state, "InteractiveMedia")).Add(item);
+            Set(state, "ActiveInteractiveProjectGroupId", Get(b, "Id"));
+            var saved = ((XElement)Invoke(owner, "SaveConnectionTabElement", state)).Element("InteractivePlayback");
+            Invoke(owner, "LoadInteractivePlaybackElement", XElement.Parse(saved.ToString()));
+            Check(((IList)Field(owner, "interactiveProjectGroups")).Count == 3 &&
+                Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")) &&
+                ((IList)Field(owner, "interactiveGroupTransitions")).Count == 2 &&
+                (string)Get(((IList)Field(owner, "interactiveRoutes"))[0], "Name") == "Night project",
+                "Connection XML preserves groups, active selection, project lists, shortcuts and directed videos");
+            var invalid = XElement.Parse(saved.ToString()); invalid.SetAttributeValue("activeGroup", Guid.NewGuid());
+            invalid.Element("Transitions").Add(new XElement("Transition", new XAttribute("from", Get(a, "Id")), new XAttribute("to", Guid.NewGuid()), new XAttribute("media", Get(media[0], "RuntimeId"))));
+            Invoke(owner, "LoadInteractivePlaybackElement", invalid);
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")) && ((IList)Field(owner, "interactiveGroupTransitions")).Count == 2,
+                "Invalid selected groups fall back safely and orphan transitions are ignored");
+            var legacy = new XElement("InteractivePlayback", saved.Element("Media"), new XElement("Routes", Save(route)));
+            Invoke(owner, "LoadInteractivePlaybackElement", legacy);
+            Check(((IList)Field(owner, "interactiveProjectGroups")).Count == 1 &&
+                Save(((IList)Field(owner, "interactiveRoutes"))[0]).ToString() == Save(route).ToString(),
+                "Legacy project configurations migrate into a default group without changing media references or shortcuts");
+            Invoke(owner, "LoadInteractivePlaybackElement", new object[] { null });
+            Check(((IList)Field(owner, "interactiveProjectGroups")).Count == 1 && ((IList)Field(owner, "interactiveRoutes")).Count == 0,
+                "A missing configuration creates one empty default group");
+            media.Clear(); foreach (var item in originalMedia) media.Add(item);
+            // XML loading replaces the working route list; restore the fixture's source project.
+            ((IList)Get(a, "Routes")).Clear(); ((IList)Get(a, "Routes")).Add(route);
+            // Restore the three real groups for OS shortcut and playback boundary checks.
+            SetField("interactiveProjectGroups", groups); SetField("interactiveGroupTransitions", Get(state, "InteractiveGroupTransitions"));
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            ((IList)Field(owner, "interactiveGroupTransitions")).Clear();
+            SetField("interactiveWindowOpen", false);
+            using (var window = (Form)Activator.CreateInstance(Nested("InteractivePlaybackForm"), new object[] { owner }))
+            using (var probe = new Form())
+            {
+                SetField("interactiveForm", window); window.StartPosition = FormStartPosition.Manual;
+                window.Location = new System.Drawing.Point(-32000, -32000); window.ShowInTaskbar = false;
+                IntPtr unused = window.Handle; IntPtr probeHandle = probe.Handle;
+                Invoke(window, "ReloadAll");
+                Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 0, "Hidden windows do not bind group shortcuts");
+                window.Show(); window.Size = window.MinimumSize; window.PerformLayout();
+                Check(((ListView)Field(window, "routeView")).Height > 90 && ((ListView)Field(window, "mediaView")).Height > 90 &&
+                    ((FlowLayoutPanel)Field(window, "projectGroupButtons")).Height > 20,
+                    "Group switching and both editors remain visible at the minimum window size: routes=" + ((ListView)Field(window, "routeView")).Height +
+                    " routeWidth=" + ((ListView)Field(window, "routeView")).Width + " media=" + ((ListView)Field(window, "mediaView")).Height + " mediaWidth=" + ((ListView)Field(window, "mediaView")).Width + " groups=" + ((FlowLayoutPanel)Field(window, "projectGroupButtons")).Height);
+                Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 3 && ((IDictionary)Field(window, "registeredRoutes")).Count == 1,
+                    "The open window binds all group shortcuts and only the active group's project shortcuts: groups=" + ((IDictionary)Field(window, "registeredProjectGroups")).Count +
+                    " routes=" + ((IDictionary)Field(window, "registeredRoutes")).Count + " log=" + ((TextBox)Field(window, "operationBox")).Text);
+                Check(!RegisterHotKey(probeHandle, 0x7201, 7, (uint)Keys.F21), "A group switching shortcut is actually registered with Windows");
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6101, IntPtr.Zero));
+                Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")) &&
+                    ((IDictionary)Field(window, "registeredRoutes"))[0x5100] == ((IList)Get(b, "Routes"))[0],
+                    "A group shortcut switches the displayed projects and rebinds the shared project shortcut to the target version");
+                var buttons = (FlowLayoutPanel)Field(window, "projectGroupButtons"); ((Button)buttons.Controls[0]).PerformClick();
+                Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")), "Clicking a group button switches back manually");
+                window.Hide();
+                Check(((IDictionary)Field(window, "registeredProjectGroups")).Count == 0 &&
+                    RegisterHotKey(probeHandle, 0x7201, 7, (uint)Keys.F21), "Hiding the window releases all group shortcuts");
+                UnregisterHotKey(probeHandle, 0x7201);
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6101, IntPtr.Zero));
+                Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")), "A late group shortcut cannot switch hidden interaction");
+            }
+            SetField("interactiveForm", null); SetField("interactiveWindowOpen", true);
+            SetField("processingInteractiveTriggers", true); // Inspect the exact requests before allowing network dispatch.
+            SetField("interactiveActive", true);
+            string video = Path.GetTempFileName();
+            var transitionMedia = New("InteractiveMediaItem"); Set(transitionMedia, "Path", video); Set(transitionMedia, "Title", "Transition"); Set(transitionMedia, "PreventInterrupt", true); media.Add(transitionMedia);
+            try
+            {
+                Set(ab, "MediaId", Get(transitionMedia, "RuntimeId")); Set(ba, "MediaId", Get(transitionMedia, "RuntimeId"));
+                ((IList)Field(owner, "interactiveGroupTransitions")).Add(ab); ((IList)Field(owner, "interactiveGroupTransitions")).Add(ba);
+                Invoke(owner, "SwitchInteractiveProjectGroup", b, "test");
+                var request = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Single();
+                Check((bool)Get(request, "IsGroupTransition") && ((IList)Get(request, "Entries")).Count == 1, "Switching requests the configured transition exactly once");
+                Invoke(owner, "SwitchInteractiveProjectGroup", b, "test");
+                Check(((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Count() == 1, "Selecting the current group does not replay its transition");
+                Invoke(owner, "RequestInteractiveRoute", ((IList)Get(b, "Routes"))[0], "target test");
+                var oldTrigger = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().Last();
+                Invoke(owner, "SwitchInteractiveProjectGroup", a, "test");
+                var requests = ((IEnumerable)Field(owner, "interactiveTriggerRequests")).Cast<object>().ToArray();
+                Check(requests.Length == 2 && requests.All(item => (bool)Get(item, "IsGroupTransition")) &&
+                    (bool)Invoke(owner, "IsStaleInteractiveGroupRequest", oldTrigger),
+                    "Rapid switches preserve transition order, discard waiting old-group project triggers and invalidate in-flight verification");
+                Invoke(owner, "ClearInteractiveRuntime", true);
+                Set(transitionEntry, "BackendFrameId", 123L);
+                QueueState(transitionEntry, null); SetField("interactiveActive", true);
+                var next = GroupBatch(media[2])[0];
+                var handoff = Invoke(owner, "PrepareInteractiveProtectedHandoff", ProtectedRequest(next));
+                string command = null;
+                Func<string, Task<string>> send = value => { command = value; return Task.FromResult("OK queued"); };
+                SynchronizationContext.SetSynchronizationContext(null);
+                ((Task)Invoke(owner, "QueueInteractiveNextCoreAsync", send)).GetAwaiter().GetResult();
+                Check(command.StartsWith("PLAY_NEXT ") && Field(owner, "interactivePending") == next && Field(owner, "interactiveCurrent") == transitionEntry,
+                    "A target project waits for the full transition output boundary instead of interrupting the transition");
+                Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(next, "playing", next));
+                Check(Field(owner, "interactiveCurrent") == next && HandoffTask(handoff).IsCompleted,
+                    "Verified target output completes the protected transition handoff");
+                Invoke(owner, "ClearInteractiveRuntime", true);
+                QueueState(transitionEntry, null); SetField("interactiveActive", true);
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(next, "ended", next)) && Field(owner, "interactiveCurrent") == transitionEntry,
+                    "An ended status from an older input cannot complete a newly requested transition");
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(transitionEntry, "ended", transitionEntry) + " actual_frame_id=122") && Field(owner, "interactiveCurrent") == transitionEntry,
+                    "An old invocation of the same transition cannot release the new transition's protection");
+                Check((bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(transitionEntry, "ended", transitionEntry)) &&
+                    !(bool)Field(owner, "interactiveActive") && Field(owner, "interactiveCurrent") == null,
+                    "A finished standalone transition releases protection immediately without the ten-second mismatch delay");
+                Invoke(owner, "ClearInteractiveRuntime", true);
+                Set(transitionEntry, "BackendFrameId", 0L); Set(transitionEntry, "MinimumBackendFrameId", 123L);
+                QueueState(transitionEntry, null); SetField("interactiveActive", true);
+                Check(!(bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(transitionEntry, "ended", transitionEntry) + " actual_frame_id=123"),
+                    "An older identical transition cannot complete a new invocation before its first output is observed");
+                Check((bool)Invoke(owner, "ApplyInteractiveBackendStatus", BackendStatus(transitionEntry, "ended", transitionEntry) + " actual_frame_id=124") &&
+                    Field(owner, "interactiveCurrent") == null,
+                    "A very short transition can finish between status polls without leaving protection stuck");
+                SetField("processingInteractiveTriggers", false);
+                CheckProjectGroupDispatch(a, b);
+                CheckGroupDefaults(a, b);
+            }
+            finally { media.Remove(transitionMedia); File.Delete(video); SetField("processingInteractiveTriggers", false); }
+            var resources = new System.Resources.ResourceManager("OmniVCamController.Resources.AppStrings", assembly);
+            foreach (string language in new[] { "en", "zh-CN", "zh-TW" })
+                foreach (string key in new[] { "InteractiveProjectGroups", "InteractiveDefaultGroup", "InteractiveAddGroup", "InteractiveEditGroup", "InteractiveRemoveGroup", "InteractiveGroupTransitions",
+                    "InteractiveGroupName", "InteractiveCopyCurrentGroup", "InteractiveCopyProject", "InteractiveCopyProjectHint", "InteractiveGroupNameExists", "InteractiveGroupHotkeyConflict",
+                    "InteractiveConfirmRemoveGroup", "InteractiveGroupTransitionTitle", "InteractiveGroupSwitch", "InteractiveGroupSwitched", "InteractiveTransitionFileMissing", "InteractiveTransitionHint",
+                    "InteractiveTransitionFrom", "InteractiveTransitionTo", "InteractiveChooseTransition", "InteractiveClearTransition", "InteractiveNoTransitionMedia", "InteractiveTransitionMediaMissing",
+                    "InteractiveGroupDefaultVideo", "InteractiveGroupDefaultTitle", "InteractiveGroupDefaultHint", "InteractiveDefaultVideoMissing", "InteractiveNoDefaultMedia" })
+                {
+                    string text = resources.GetString(key, CultureInfo.GetCultureInfo(language));
+                    Check(!string.IsNullOrWhiteSpace(text), "A group resource exists: " + language + "/" + key);
+                    if (language != "en") Check(text.Any(ch => ch >= '\u4e00' && ch <= '\u9fff'), "Chinese group UI uses translated resx strings");
+                }
+        }
+        finally
+        {
+            SetField("interactiveForm", null); Invoke(owner, "ClearInteractiveRuntime", true);
+            SetField("interactiveProjectGroups", oldGroups); SetField("interactiveGroupTransitions", oldTransitions); SetField("interactiveRoutes", oldRoutes);
+            SetField("activeInteractiveProjectGroupId", oldActive); SetField("interactiveProjectGroupVersion", oldVersion);
+            SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", false);
+            media.Clear(); foreach (var item in originalMedia) media.Add(item);
+            SynchronizationContext.SetSynchronizationContext(context);
+        }
+        Console.WriteLine("PASS: project group migration/persistence, six directed transitions, independent copies, actual Windows group switching hotkeys, rapid switches and protected transition handoff.");
+    }
     [STAThread]
     private static int Main(string[] args)
     {
@@ -1314,6 +2102,7 @@ internal static class InteractivePlaybackChecks
             CheckActualOutputVerification();
             CheckPlaybackWatchdog();
             CheckBackendRestartRecovery();
+            CheckProjectGroups(assembly);
             CheckPersistence();
             Console.WriteLine("All interactive combination checks passed.");
             return 0;

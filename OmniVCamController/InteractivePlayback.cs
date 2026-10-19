@@ -24,6 +24,7 @@ namespace OmniVCamController
         private readonly Queue<InteractiveBackendEvent> interactiveBackendEvents = new Queue<InteractiveBackendEvent>();
         private Task interactiveBackendEventTask;
         private long interactiveLastEndedFrameId;
+        private long interactiveObservedBackendFrameId;
         private InteractiveProtectedHandoff interactiveProtectedHandoff;
         private int interactiveRuntimeVersion;
         private int interactiveStatusRevision;
@@ -64,7 +65,11 @@ namespace OmniVCamController
             if (interactiveWindowOpen == open) return;
             interactiveWindowOpen = open;
             interactiveWindowVersion++;
-            if (open) return;
+            if (open)
+            {
+                RequestInteractiveGroupDefaultIfIdle();
+                return;
+            }
 
             bool hasPlayback = interactiveActive || interactiveCurrent != null || interactivePending != null ||
                 interactiveQueue.Count > 0 || interactiveTriggerRequests.Count > 0 ||
@@ -85,6 +90,7 @@ namespace OmniVCamController
             interactiveRuntimeVersion++;
             interactiveBackendEvents.Clear();
             interactiveLastEndedFrameId = 0;
+            interactiveObservedBackendFrameId = 0;
             interactiveCurrent = null;
             interactivePending = null;
             interactivePendingSource = string.Empty;
@@ -133,6 +139,7 @@ namespace OmniVCamController
                     continue;
                 }
                 if (interactiveNeedsStatusCheck) continue;
+                if (IsObsoleteInteractiveTransitionFrame(inputEvent.FrameId)) continue;
                 if (inputEvent.FrameId > 0 && inputEvent.FrameId <= interactiveLastEndedFrameId) continue;
                 if (inputEvent.Type == BackendInputEventType.Eof)
                 {
@@ -222,15 +229,25 @@ namespace OmniVCamController
                 return;
             }
 
+            // A waiting idle video yields to a real trigger, including a default waiting behind protected media.
+            var waiting = interactiveTriggerRequests.Where(request => request.IsGroupTransition ||
+                !request.Entries.All(entry => entry.IsGroupDefault)).ToList();
+            interactiveTriggerRequests.Clear();
+            foreach (var request in waiting) interactiveTriggerRequests.Enqueue(request);
             if (!interactiveActive && interactiveTriggerRequests.Count == 0) BeginInteractiveMode();
 
             interactiveTriggerRequests.Enqueue(new InteractiveTriggerRequest
             {
                 RouteName = route.Name,
+                ProjectGroupVersion = interactiveProjectGroupVersion,
+                ProjectGroupId = activeInteractiveProjectGroupId,
                 Immediate = route.Immediate,
                 Source = source,
                 Entries = entries
             });
+            if (interactiveProtectedHandoff != null && !interactiveProtectedHandoff.Request.IsGroupTransition &&
+                interactiveProtectedHandoff.Request.Entries.All(entry => entry.IsGroupDefault))
+                CancelInteractiveProtectedHandoff();
             AppendInteractiveLog(source + " - " + route.Name + " [" +
                 (route.Immediate ? "PLAY" : "PLAY_NEXT") + "] " +
                 string.Join(" → ", entries.Select(FormatInteractiveEntry)));
@@ -263,9 +280,11 @@ namespace OmniVCamController
                     interactiveTriggerRequests.Count > 0)
                 {
                     InteractiveTriggerRequest request = interactiveTriggerRequests.Dequeue();
+                    if (IsStaleInteractiveGroupRequest(request)) continue;
                     int version = interactiveRuntimeVersion;
                     bool verified = await VerifyInteractivePlaybackAsync();
                     if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion) return;
+                    if (IsStaleInteractiveGroupRequest(request)) continue;
                     if (!verified)
                     {
                         if (version == interactiveRuntimeVersion || interactiveNeedsStatusCheck) PrependInteractiveTrigger(request);
@@ -298,6 +317,10 @@ namespace OmniVCamController
                 await WaitForProtectedInteractiveMediaAsync(request);
                 return;
             }
+            request.Entries[0].MinimumBackendFrameId = Math.Max(request.Entries[0].MinimumBackendFrameId,
+                Math.Max(interactiveObservedBackendFrameId,
+                    Math.Max(Math.Max(interactiveCurrent?.BackendFrameId ?? 0, interactiveCurrent?.MinimumBackendFrameId ?? 0),
+                        interactivePending?.BackendFrameId ?? 0)));
             ResetInteractivePlaybackWatchdog();
             int playVersion = ++interactiveRuntimeVersion;
             interactiveBackendEvents.Clear();
@@ -371,13 +394,15 @@ namespace OmniVCamController
             int version = interactiveRuntimeVersion;
             if (!interactiveActive || interactiveNeedsStatusCheck || interactivePending != null) return;
             QueueInteractiveGroupContinuation();
+            QueueInteractiveGroupDefaultIfNeeded();
             if (interactiveQueue.Count == 0) return;
             InteractivePlaybackEntry next = interactiveQueue.Dequeue();
             interactiveSendingNext = next;
             string sourceSummary = interactiveCurrent != null
                 ? interactiveCurrent.InputSummary
                 : (!string.IsNullOrEmpty(currentActualStatusInput) ? currentActualStatusInput : currentStatusInput);
-            next.MinimumBackendFrameId = Math.Max(next.MinimumBackendFrameId, interactiveCurrent?.BackendFrameId ?? 0);
+            next.MinimumBackendFrameId = Math.Max(next.MinimumBackendFrameId,
+                Math.Max(interactiveCurrent?.BackendFrameId ?? 0, interactiveCurrent?.MinimumBackendFrameId ?? 0));
             if (next.RequiresOutputConfirmation)
             {
                 next.ReplaceAfterFrameId = interactiveCurrent?.BackendFrameId ?? 0;
@@ -461,6 +486,7 @@ namespace OmniVCamController
                 string options = NormalizeInteractiveLoopOption(NormalizeQueueOptions(path, media.Options, false), loop);
                 return new InteractivePlaybackEntry
                 {
+                    IsGroupDefault = groupLoop?.IsGroupDefault == true,
                     MediaId = media.RuntimeId,
                     PlaybackUnitId = playbackUnitId,
                     PreventInterrupt = media.PreventInterrupt,
@@ -517,7 +543,7 @@ namespace OmniVCamController
             return parts.Count == 0 ? T("InteractiveQueueEmpty") : string.Join(Environment.NewLine, parts);
         }
 
-        private sealed class InteractivePlaybackForm : Form
+        private sealed partial class InteractivePlaybackForm : Form
         {
             private const int HotkeyBaseId = 0x5100;
             private readonly MainForm owner;
@@ -542,7 +568,8 @@ namespace OmniVCamController
 
             private void BuildUi()
             {
-                var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
+                var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
+                root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
@@ -562,17 +589,18 @@ namespace OmniVCamController
                 routeButtons.AutoSize = true;
                 routeButtons.WrapContents = true;
                 routeButtons.Padding = new Padding(0, 6, 0, 6);
-                root.Controls.Add(routeButtons, 0, 1);
+                root.Controls.Add(BuildProjectGroupPanel(), 0, 1);
+                root.Controls.Add(routeButtons, 0, 2);
 
-                var lists = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
+                var lists = new SplitContainer { Size = new Size(1100, 400), Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
                 lists.Panel1.Controls.Add(BuildMediaPanel());
                 lists.Panel2.Controls.Add(BuildRoutePanel());
-                root.Controls.Add(lists, 0, 2);
+                root.Controls.Add(lists, 0, 3);
 
-                var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
+                var bottom = new SplitContainer { Size = new Size(1100, 400), Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
                 bottom.Panel1.Controls.Add(BuildTextPanel(T("InteractiveQueuePanel"), queueBox, true));
                 bottom.Panel2.Controls.Add(BuildTextPanel(T("InteractiveOperations"), operationBox, true));
-                root.Controls.Add(bottom, 0, 3);
+                root.Controls.Add(bottom, 0, 4);
 
                 mediaView.Columns.Add(T("ColumnTitle"), 150);
                 mediaView.Columns.Add(T("InteractiveLoop"), 60);
@@ -620,6 +648,7 @@ namespace OmniVCamController
                 bar.Controls.Add(MakeButton(T("Remove"), (_, __) => RemoveSelectedRoute()));
                 bar.Controls.Add(MakeButton(T("Up"), (_, __) => MoveSelectedRoute(-1)));
                 bar.Controls.Add(MakeButton(T("Down"), (_, __) => MoveSelectedRoute(1)));
+                bar.Controls.Add(MakeButton(T("InteractiveCopyProject"), (_, __) => CopySelectedProject()));
                 bar.Controls.Add(MakeButton(T("InteractiveTrigger"), (_, __) => TriggerSelected(T("InteractiveClickedProject"))));
                 panel.Controls.Add(bar, 0, 0);
                 ConfigureList(routeView);
@@ -655,6 +684,7 @@ namespace OmniVCamController
             {
                 connectionLabel.Text = T("InteractiveConnection") +
                     (owner.activeState == null ? "-" : owner.GetConnectionTabTitle(owner.activeState));
+                RefreshProjectGroups();
                 RefreshMedia();
                 RefreshRoutes();
                 RefreshRuntime();
@@ -683,6 +713,7 @@ namespace OmniVCamController
             {
                 routeView.BeginUpdate();
                 routeView.Items.Clear();
+                foreach (Control button in routeButtons.Controls.Cast<Control>().ToList()) button.Dispose();
                 routeButtons.Controls.Clear();
                 foreach (InteractiveRouteItem route in owner.interactiveRoutes)
                 {
@@ -852,7 +883,12 @@ namespace OmniVCamController
                     .Where(item => item != null).Select(item => item.RuntimeId).ToList();
                 if (ids.Count == 0) return;
                 owner.interactiveMedia.RemoveAll(item => ids.Contains(item.RuntimeId));
-                foreach (InteractiveRouteItem route in owner.interactiveRoutes)
+                foreach (var group in owner.interactiveProjectGroups.Where(group => ids.Contains(group.DefaultMediaId)))
+                {
+                    group.DefaultMediaId = Guid.Empty;
+                }
+                owner.interactiveGroupTransitions.RemoveAll(item => ids.Contains(item.MediaId));
+                foreach (InteractiveRouteItem route in owner.AllInteractiveProjectRoutes())
                 {
                     foreach (var combination in route.Combinations) combination.MediaIds.RemoveAll(ids.Contains);
                     route.Combinations.RemoveAll(combination => combination.MediaIds.Count == 0);
@@ -880,6 +916,10 @@ namespace OmniVCamController
                 using (var dialog = new RouteEditDialog(owner.interactiveMedia, route))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    var edited = new InteractiveRouteItem();
+                    dialog.Apply(edited);
+                    if (owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, edited.Hotkey)))
+                    { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (route == null)
                     {
                         route = new InteractiveRouteItem();
@@ -912,6 +952,7 @@ namespace OmniVCamController
             {
                 UnregisterRouteHotkeys();
                 if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm) return;
+                RegisterProjectGroupHotkeys();
                 int index = 0;
                 foreach (InteractiveRouteItem route in owner.interactiveRoutes)
                 {
@@ -929,6 +970,7 @@ namespace OmniVCamController
                 if (IsHandleCreated)
                     foreach (int id in registeredRoutes.Keys.ToList()) UnregisterHotKey(Handle, id);
                 registeredRoutes.Clear();
+                UnregisterProjectGroupHotkeys();
             }
 
             protected override void OnVisibleChanged(EventArgs e)
@@ -953,6 +995,12 @@ namespace OmniVCamController
             protected override void WndProc(ref Message m)
             {
                 const int WM_HOTKEY = 0x0312;
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm &&
+                    registeredProjectGroups.TryGetValue(m.WParam.ToInt32(), out InteractiveProjectGroup group))
+                {
+                    owner.SwitchInteractiveProjectGroup(group, T("InteractiveHotkeySource") + FormatHotkey(group.Hotkey));
+                    return;
+                }
                 if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && registeredRoutes.TryGetValue(m.WParam.ToInt32(), out InteractiveRouteItem route))
                 {
                     owner.RequestInteractiveRoute(route, T("InteractiveHotkeySource") + FormatHotkey(route.Hotkey));
@@ -1394,6 +1442,8 @@ namespace OmniVCamController
 
         private sealed class InteractivePlaybackEntry
         {
+            public bool IsGroupTransition { get; set; }
+            public bool IsGroupDefault { get; set; }
             public Guid MediaId { get; set; }
             public Guid PlaybackUnitId { get; set; }
             public long BackendFrameId { get; set; }
@@ -1413,6 +1463,9 @@ namespace OmniVCamController
 
         private sealed class InteractiveTriggerRequest
         {
+            public bool IsGroupTransition { get; set; }
+            public Guid ProjectGroupId { get; set; }
+            public int ProjectGroupVersion { get; set; }
             public string RouteName { get; set; } = string.Empty;
             public string Source { get; set; } = string.Empty;
             public bool Immediate { get; set; }

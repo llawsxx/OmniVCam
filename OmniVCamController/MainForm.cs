@@ -364,6 +364,7 @@ namespace OmniVCamController
                 if (activeState == null) return;
                 LoadConnectionStateToControls(activeState);
                 interactiveForm?.ReloadAll();
+                RequestInteractiveGroupDefaultIfIdle();
             }
             finally
             {
@@ -420,6 +421,9 @@ namespace OmniVCamController
             activeState.FavoriteInputs = favoriteInputs;
             activeState.InteractiveMedia = interactiveMedia;
             activeState.InteractiveRoutes = interactiveRoutes;
+            activeState.InteractiveProjectGroups = interactiveProjectGroups;
+            activeState.ActiveInteractiveProjectGroupId = activeInteractiveProjectGroupId;
+            activeState.InteractiveGroupTransitions = interactiveGroupTransitions;
             activeState.CurrentIndex = currentIndex;
             activeState.CurrentScheduledIndex = currentScheduledIndex;
             activeState.CurrentScheduledItem = CloneScheduledItem(currentScheduledItem);
@@ -456,6 +460,7 @@ namespace OmniVCamController
             favoriteInputs = state.FavoriteInputs;
             interactiveMedia = state.InteractiveMedia;
             interactiveRoutes = state.InteractiveRoutes;
+            BindInteractiveProjectGroups(state);
             currentIndex = state.CurrentIndex;
             currentScheduledIndex = state.CurrentScheduledIndex;
             currentScheduledItem = CloneScheduledItem(state.CurrentScheduledItem);
@@ -3618,9 +3623,7 @@ namespace OmniVCamController
                         new XAttribute("input", item.Input),
                         new XAttribute("title", item.Title),
                         new XAttribute("options", item.Options)))),
-                new XElement("InteractivePlayback",
-                    new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
-                    new XElement("Routes", state.InteractiveRoutes.Select(SaveInteractiveRouteElement))));
+                SaveInteractiveProjectGroupsElement(state));
         }
 
         private void LoadAutoConfig()
@@ -3753,21 +3756,14 @@ namespace OmniVCamController
         {
             interactiveMedia.Clear();
             interactiveRoutes.Clear();
-            if (element == null) return;
-
-            XElement mediaElement = element.Element("Media");
-            if (mediaElement != null)
+            if (element != null)
             {
-                foreach (XElement itemElement in mediaElement.Elements("Item"))
-                {
-                    interactiveMedia.Add(LoadInteractiveMediaElement(itemElement));
-                }
+                XElement mediaElement = element.Element("Media");
+                if (mediaElement != null)
+                    foreach (XElement item in mediaElement.Elements("Item"))
+                        interactiveMedia.Add(LoadInteractiveMediaElement(item));
             }
-
-            XElement routesElement = element.Element("Routes");
-            if (routesElement == null) return;
-            foreach (XElement routeElement in routesElement.Elements("Route"))
-                interactiveRoutes.Add(LoadInteractiveRouteElement(routeElement));
+            LoadInteractiveProjectGroups(element);
         }
 
         private void LoadSettingsElement(XElement settings)
@@ -5355,6 +5351,9 @@ namespace OmniVCamController
             public List<FavoriteInputItem> FavoriteInputs { get; set; } = new List<FavoriteInputItem>();
             public List<InteractiveMediaItem> InteractiveMedia { get; set; } = new List<InteractiveMediaItem>();
             public List<InteractiveRouteItem> InteractiveRoutes { get; set; } = new List<InteractiveRouteItem>();
+            public List<InteractiveProjectGroup> InteractiveProjectGroups { get; set; } = new List<InteractiveProjectGroup>();
+            public Guid ActiveInteractiveProjectGroupId { get; set; }
+            public List<InteractiveGroupTransition> InteractiveGroupTransitions { get; set; } = new List<InteractiveGroupTransition>();
             public int CurrentIndex { get; set; } = -1;
             public int CurrentScheduledIndex { get; set; } = -1;
             public ScheduledPlaylistItem CurrentScheduledItem { get; set; }
