@@ -465,6 +465,18 @@
     <value>Group OBS scenes...</value>
   </data>
   <data name="InteractiveGroupObsHint" xml:space="preserve">
-    <value>Uses the main window’s OBS connection and scene list. These are the default start/end scenes for interactive projects in the current group. Priority is resolved separately for each action: media combination &gt; project &gt; group. Blank means no action. Each trigger snapshots its scenes; editing settings or switching groups does not change accepted triggers.</value>
+    <value>Uses the main window’s OBS connection and scene list. Project start/end priority is media combination &gt; project &gt; group. Group entry/exit are separate: a successful group switch sends the old group’s exit scene, then the new group’s entry scene, including switches with no video transition. Opening or reopening the interactive page sends the current group’s entry scene once; activating an already open page does not repeat it. Selecting the current group again does nothing. Blank means no action. Requests run asynchronously; video transitions keep their library interruption policy.</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultStartScene" xml:space="preserve">
+    <value>Default project start scene</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultEndScene" xml:space="preserve">
+    <value>Default project end scene</value>
+  </data>
+  <data name="InteractiveGroupObsEnterScene" xml:space="preserve">
+    <value>Scene on entering group</value>
+  </data>
+  <data name="InteractiveGroupObsExitScene" xml:space="preserve">
+    <value>Scene on leaving group</value>
   </data>
 </root>

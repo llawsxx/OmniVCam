@@ -138,7 +138,8 @@ internal static partial class InteractivePlaybackChecks
     private static void CheckInteractiveGroupObs(ObsPeer peer)
     {
         string[] fields = { "interactiveProjectGroups", "interactiveRoutes", "activeInteractiveProjectGroupId",
-            "interactiveGroupTransitions", "interactiveGroupSwitchRandom", "interactiveGroupSwitchHotkey" };
+            "interactiveGroupTransitions", "interactiveGroupSwitchRandom", "interactiveGroupSwitchHotkey",
+            "interactiveWindowOpen", "interactiveWindowVersion", "interactiveForm", "activeState", "interactiveProjectGroupVersion" };
         var old = fields.ToDictionary(name => name, name => Field(owner, name));
         try
         {
@@ -180,26 +181,104 @@ internal static partial class InteractivePlaybackChecks
             Check(peer.Applied.Reverse().Take(2).Reverse().SequenceEqual(new[] { "Combination start", "Group A end" }),
                 "Inherited scene snapshots reach real OBS requests after settings and group changes");
 
+            Set(a, "ObsEnterScene", "Enter A"); Set(a, "ObsExitScene", "Exit A");
+            Set(b, "ObsEnterScene", "Enter B"); Set(b, "ObsExitScene", "Exit B");
+            SetField("interactiveWindowOpen", true); SetField("activeState", null); SetField("interactiveForm", null);
+            SetField("interactiveGroupTransitions", Get(state, "InteractiveGroupTransitions"));
+            Invoke(owner, "ClearInteractiveRuntime", true); WaitObs();
+            SetField("interactiveWindowOpen", false);
+            int openingScenes = peer.Applied.Length;
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.Applied.Skip(openingScenes).SequenceEqual(new[] { "Enter B" }),
+                "Opening the interactive page sends the selected group's entry scene exactly once with no exit scene");
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.Applied.Length == openingScenes + 1, "Repeated open notifications or activation do not repeat the entry scene");
+            Invoke(owner, "SetInteractiveWindowOpen", false); WaitObs();
+            SetField("activeInteractiveProjectGroupId", Get(a, "Id")); SetField("interactiveRoutes", Get(a, "Routes"));
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.Applied.Length == openingScenes + 2 && peer.Applied.Last() == "Enter A",
+                "Reopening the page sends one entry scene for the current group");
+            Invoke(owner, "SetInteractiveWindowOpen", false); WaitObs();
+            var openingEnabled = (CheckBox)Field(owner, "obsOperationsEnabledBox"); openingEnabled.Checked = false;
+            int openingConnections = peer.ConnectionCount;
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.ConnectionCount == openingConnections, "Opening with OBS disabled makes no connection");
+            openingEnabled.Checked = true;
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.ConnectionCount == openingConnections, "Enabling OBS while already open does not replay the entry action");
+            Invoke(owner, "SetInteractiveWindowOpen", false); WaitObs();
+            Set(a, "ObsEnterScene", "  ");
+            Invoke(owner, "SetInteractiveWindowOpen", true); WaitObs();
+            Check(peer.ConnectionCount == openingConnections, "Opening with a blank entry scene makes no connection");
+            Set(a, "ObsEnterScene", "Enter A");
+            SetField("activeInteractiveProjectGroupId", Get(b, "Id")); SetField("interactiveRoutes", Get(b, "Routes"));
+            int switchScenes = peer.Applied.Length;
+            // Hold the asynchronous action pump so edits cannot alter already accepted switch actions.
+            SetField("interactiveObsActionTask", new Task(() => { }));
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "OBS group test");
+            Invoke(owner, "SwitchInteractiveProjectGroup", b, "OBS group test");
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "OBS group test");
+            Check(peer.Applied.Length == switchScenes, "Group selection completes without waiting for OBS");
+            Set(b, "ObsEnterScene", "Edited B entry"); Set(b, "ObsExitScene", "Edited B exit");
+            var pump = (Task)Invoke(owner, "ProcessInteractiveObsActionsAsync"); SetField("interactiveObsActionTask", pump);
+            WaitObs();
+            Check(peer.Applied.Skip(switchScenes).SequenceEqual(new[] { "Exit B", "Enter A", "Exit A", "Enter B", "Exit B", "Enter A" }),
+                "Rapid switches snapshot old exit/new entry actions and preserve their order without transition videos");
+            switchScenes = peer.Applied.Length; int switchConnections = peer.ConnectionCount;
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "OBS group test");
+            Invoke(owner, "SwitchInteractiveProjectGroup", New("InteractiveProjectGroup"), "OBS group test");
+            Check(peer.Applied.Length == switchScenes && peer.ConnectionCount == switchConnections,
+                "Reselecting the current group or selecting an unknown group sends no OBS action");
+            var invalidTransition = New("InteractiveGroupTransition");
+            Set(invalidTransition, "FromId", Get(a, "Id")); Set(invalidTransition, "ToId", Get(b, "Id"));
+            Set(invalidTransition, "MediaId", Guid.NewGuid());
+            ((IList)Field(owner, "interactiveGroupTransitions")).Add(invalidTransition);
+            Invoke(owner, "SwitchInteractiveProjectGroup", b, "OBS group test");
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")) && peer.Applied.Length == switchScenes,
+                "A rejected switch with missing transition media sends neither exit nor entry scenes");
+            ((IList)Field(owner, "interactiveGroupTransitions")).Clear();
+            var enabled = (CheckBox)Field(owner, "obsOperationsEnabledBox"); enabled.Checked = false;
+            Invoke(owner, "SwitchInteractiveProjectGroup", b, "OBS group test"); WaitObs();
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")) && peer.ConnectionCount == switchConnections,
+                "Disabled OBS still allows group selection and makes no switch-scene connections");
+            enabled.Checked = true; WaitObs();
+            Check(peer.Applied.Length == switchScenes, "Re-enabling OBS does not replay disabled group entry/exit actions");
+            Set(b, "ObsExitScene", "  "); Set(a, "ObsEnterScene", "  ");
+            Invoke(owner, "SwitchInteractiveProjectGroup", a, "OBS group test"); WaitObs();
+            Check(peer.ConnectionCount == switchConnections, "Blank group entry/exit fields make no OBS connection");
+            Set(a, "ObsEnterScene", "Enter A"); Set(b, "ObsExitScene", "Exit B");
+
             var saveMethod = main.GetMethod("SaveInteractiveProjectGroupsElement", BindingFlags.Static | BindingFlags.NonPublic);
             var xml = (XElement)saveMethod.Invoke(null, new[] { state });
             Invoke(owner, "LoadInteractiveProjectGroups", xml);
             var loaded = (IList)Field(owner, "interactiveProjectGroups");
             Check((string)Get(loaded[0], "ObsStartScene") == "Group A start" && (string)Get(loaded[0], "ObsEndScene") == "Edited group end" &&
-                (string)Get(loaded[1], "ObsStartScene") == "Group B start", "Group scenes persist independently through XML save/load");
+                (string)Get(loaded[1], "ObsStartScene") == "Group B start" &&
+                (string)Get(loaded[0], "ObsEnterScene") == "Enter A" && (string)Get(loaded[0], "ObsExitScene") == "Exit A" &&
+                (string)Get(loaded[1], "ObsExitScene") == "Exit B", "Group scenes persist independently through XML save/load");
             int connections = peer.ConnectionCount;
             using (var dialog = (Form)Invoke(owner, "CreateInteractiveGroupObsScenesDialog", loaded[0]))
             {
                 Check(dialog.Text.Contains("Day") && (string)Get(dialog, "StartScene") == "Group A start" &&
-                    ((ComboBox)Field(dialog, "startSceneBox")).Items.Count == 2, "Group editor uses the shared catalog and identifies the edited group");
+                    ((ComboBox)Field(dialog, "startSceneBox")).Items.Count == 2 &&
+                    ((ComboBox)Field(dialog, "enterGroupSceneBox")).Items.Count == 2 &&
+                    ((ComboBox)Field(dialog, "exitGroupSceneBox")).Items.Count == 2 &&
+                    (string)Get(dialog, "GroupEnterScene") == "Enter A" && (string)Get(dialog, "GroupExitScene") == "Exit A",
+                    "Group editor uses the shared catalog for default, entry and exit scenes and identifies the edited group");
                 ((ComboBox)Field(dialog, "startSceneBox")).Text = "Canceled group edit";
+                ((ComboBox)Field(dialog, "enterGroupSceneBox")).Text = "Canceled entry edit";
+                ((ComboBox)Field(dialog, "exitGroupSceneBox")).Text = "Canceled exit edit";
             }
-            Check((string)Get(loaded[0], "ObsStartScene") == "Group A start" && peer.ConnectionCount == connections,
+            Check((string)Get(loaded[0], "ObsStartScene") == "Group A start" &&
+                (string)Get(loaded[0], "ObsEnterScene") == "Enter A" && (string)Get(loaded[0], "ObsExitScene") == "Exit A" && peer.ConnectionCount == connections,
                 "Opening and canceling group settings neither connects to OBS nor changes saved scenes");
             foreach (var node in xml.Element("Groups").Elements("Group"))
-            { node.Attribute("obsStartScene").Remove(); node.Attribute("obsEndScene").Remove(); }
+            { node.Attribute("obsStartScene").Remove(); node.Attribute("obsEndScene").Remove();
+              node.Attribute("obsEnterScene").Remove(); node.Attribute("obsExitScene").Remove(); }
             Invoke(owner, "LoadInteractiveProjectGroups", xml);
             Check(((IList)Field(owner, "interactiveProjectGroups")).Cast<object>().All(item =>
-                (string)Get(item, "ObsStartScene") == "" && (string)Get(item, "ObsEndScene") == ""),
+                (string)Get(item, "ObsStartScene") == "" && (string)Get(item, "ObsEndScene") == "" &&
+                (string)Get(item, "ObsEnterScene") == "" && (string)Get(item, "ObsExitScene") == ""),
                 "Older groups without OBS scene attributes retain blank defaults");
         }
         finally
@@ -405,7 +484,8 @@ internal static partial class InteractivePlaybackChecks
                 foreach (string language in new[] { "en", "zh-CN", "zh-TW" })
                 foreach (string key in new[] { "ObsOperations", "ObsEnabled", "ObsSwitchScene", "ObsSceneRequired", "InteractiveProjectObsScenes", "InteractiveCombinationObsScenes",
                     "InteractiveObsStartScene", "InteractiveObsEndScene", "InteractiveProjectObsHint", "InteractiveCombinationObsHint",
-                    "InteractiveGroupObsScenes", "InteractiveGroupObsHint", "InteractiveObsStartSceneColumn", "InteractiveObsEndSceneColumn" })
+                    "InteractiveGroupObsScenes", "InteractiveGroupObsHint", "InteractiveObsStartSceneColumn", "InteractiveObsEndSceneColumn",
+                    "InteractiveGroupObsDefaultStartScene", "InteractiveGroupObsDefaultEndScene", "InteractiveGroupObsEnterScene", "InteractiveGroupObsExitScene" })
                 {
                     string text = resources.GetString(key, CultureInfo.GetCultureInfo(language));
                     Check(!string.IsNullOrWhiteSpace(text), "OBS resources are present: " + language + "/" + key);
@@ -443,6 +523,6 @@ internal static partial class InteractivePlaybackChecks
                 Thread.CurrentThread.CurrentUICulture = culture; SynchronizationContext.SetSynchronizationContext(context);
             }
         }
-        Console.WriteLine("PASS: real OBS WebSocket scene commands, shared scene catalogs without duplicate refresh, per-phase combination/project/group priority, group persistence and catalog sharing, snapshot/copy persistence, actual playback boundaries, direct scene handoffs without intermediate flashes, loops, clearing, errors, zero connections while disabled, re-enable behavior and translated editors.");
+        Console.WriteLine("PASS: real OBS WebSocket scene commands, shared scene catalogs without duplicate refresh, per-phase combination/project/group priority, page-open entry lifecycle, group entry/exit switching, group persistence and catalog sharing, snapshot/copy persistence, actual playback boundaries, direct scene handoffs without intermediate flashes, loops, clearing, errors, zero connections while disabled, re-enable behavior and translated editors.");
     }
 }

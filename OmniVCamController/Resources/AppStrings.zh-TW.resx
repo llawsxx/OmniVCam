@@ -755,6 +755,18 @@
     <value>分組 OBS 場景…</value>
   </data>
   <data name="InteractiveGroupObsHint" xml:space="preserve">
-    <value>使用主視窗的 OBS 連線和場景清單，為目前分組內的互動項目設定預設開始／結束場景。開始和結束分別按「媒體組合 &gt; 互動項目 &gt; 分組」取值，全部留空則不操作。每次觸發使用獨立快照，修改設定或切換分組不影響已接受的觸發。</value>
+    <value>使用主視窗的 OBS 連線和場景清單。項目開始／結束按「媒體組合 &gt; 互動項目 &gt; 分組」取值。進入／退出分組為獨立操作：切組成功時依序執行舊組退出場景、新組進入場景，無轉場影片時也執行；開啟或重新開啟互動播放頁面時執行一次目前組的進入場景，頁面已開啟時重複啟用不執行；重複選擇目前組不執行。留空不操作，OBS 非同步執行，轉場影片仍遵循媒體庫的打斷設定。</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultStartScene" xml:space="preserve">
+    <value>項目預設開始場景</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultEndScene" xml:space="preserve">
+    <value>項目預設結束場景</value>
+  </data>
+  <data name="InteractiveGroupObsEnterScene" xml:space="preserve">
+    <value>進入分組時的場景</value>
+  </data>
+  <data name="InteractiveGroupObsExitScene" xml:space="preserve">
+    <value>退出分組時的場景</value>
   </data>
 </root>

@@ -48,6 +48,8 @@ namespace OmniVCamController
             public Guid DefaultMediaId { get; set; }
             public string ObsStartScene { get; set; } = string.Empty;
             public string ObsEndScene { get; set; } = string.Empty;
+            public string ObsEnterScene { get; set; } = string.Empty;
+            public string ObsExitScene { get; set; } = string.Empty;
             public List<InteractiveRouteItem> Routes { get; set; } = new List<InteractiveRouteItem>();
             public override string ToString() { return Name; }
         }
@@ -242,6 +244,7 @@ namespace OmniVCamController
             SaveActiveConnectionState();
             interactiveForm?.ReloadAll();
             AppendInteractiveLog(source + " - " + string.Format(T("InteractiveGroupSwitched"), from.Name, target.Name));
+            QueueInteractiveObsGroupSwitch(from, target);
             if (transition == null) return;
             ObserveBackendConnectionLoss();
             if (!interactiveActive && interactiveTriggerRequests.Count == 0) BeginInteractiveMode();
@@ -268,6 +271,7 @@ namespace OmniVCamController
                 new XElement("Groups", groups.Select(group => new XElement("Group",
                     new XAttribute("id", group.Id), new XAttribute("name", group.Name), new XAttribute("defaultMedia", group.DefaultMediaId),
                     new XAttribute("obsStartScene", group.ObsStartScene), new XAttribute("obsEndScene", group.ObsEndScene),
+                    new XAttribute("obsEnterScene", group.ObsEnterScene), new XAttribute("obsExitScene", group.ObsExitScene),
                     new XAttribute("hotkey", group.Hotkey == null ? string.Empty : group.Hotkey.KeyCode.ToString()),
                     new XAttribute("modifiers", group.Hotkey == null ? string.Empty : group.Hotkey.Modifiers.ToString()),
                     new XElement("Routes", group.Routes.Select(SaveInteractiveRouteElement))))),
@@ -297,6 +301,8 @@ namespace OmniVCamController
                         Name = GetAttribute(node, "name", T("InteractiveDefaultGroup")),
                         ObsStartScene = GetAttribute(node, "obsStartScene", string.Empty),
                         ObsEndScene = GetAttribute(node, "obsEndScene", string.Empty),
+                        ObsEnterScene = GetAttribute(node, "obsEnterScene", string.Empty),
+                        ObsExitScene = GetAttribute(node, "obsExitScene", string.Empty),
                         DefaultMediaId = Guid.TryParse(GetAttribute(node, "defaultMedia", null), out defaultMediaId) ? defaultMediaId : Guid.Empty,
                         Hotkey = ParseInteractiveHotkey(GetAttribute(node, "hotkey", string.Empty), GetAttribute(node, "modifiers", string.Empty))
                     };

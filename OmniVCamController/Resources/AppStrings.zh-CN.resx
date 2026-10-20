@@ -755,6 +755,18 @@
     <value>分组 OBS 场景…</value>
   </data>
   <data name="InteractiveGroupObsHint" xml:space="preserve">
-    <value>使用主界面的 OBS 连接和场景列表，为当前分组内的互动项目设置默认开始／结束场景。开始和结束分别按“媒体组合 &gt; 互动项目 &gt; 分组”取值，全部留空则不操作。每次触发使用独立快照，修改设置或切换分组不影响已接受的触发。</value>
+    <value>使用主界面的 OBS 连接和场景列表。项目开始／结束按“媒体组合 &gt; 互动项目 &gt; 分组”取值。进入／退出分组为独立操作：切组成功时依次执行旧组退出场景、新组进入场景，无转场视频时也执行；打开或重新打开互动播放页面时执行一次当前组的进入场景，页面已打开时重复激活不执行；重复选择当前组不执行。留空不操作，OBS 异步执行，转场视频仍遵循媒体库的打断设置。</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultStartScene" xml:space="preserve">
+    <value>项目默认开始场景</value>
+  </data>
+  <data name="InteractiveGroupObsDefaultEndScene" xml:space="preserve">
+    <value>项目默认结束场景</value>
+  </data>
+  <data name="InteractiveGroupObsEnterScene" xml:space="preserve">
+    <value>进入分组时的场景</value>
+  </data>
+  <data name="InteractiveGroupObsExitScene" xml:space="preserve">
+    <value>退出分组时的场景</value>
   </data>
 </root>

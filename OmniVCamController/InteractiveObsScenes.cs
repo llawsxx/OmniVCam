@@ -118,6 +118,23 @@ namespace OmniVCamController
             }
         }
 
+        private void QueueInteractiveObsGroupSwitch(InteractiveProjectGroup from, InteractiveProjectGroup to)
+        {
+            QueueInteractiveObsGroupScenes(from.ObsExitScene, to.ObsEnterScene);
+        }
+
+        private void QueueInteractiveObsGroupScenes(string exitScene, string enterScene)
+        {
+            if (!ObsOperationsEnabled || (string.IsNullOrWhiteSpace(exitScene) &&
+                string.IsNullOrWhiteSpace(enterScene))) return;
+            var connection = new InteractiveObsPlayback
+            {
+                Url = mainObsUrlBox.Text.Trim(), Password = mainObsPasswordBox.Text
+            };
+            QueueInteractiveObsScene((exitScene ?? string.Empty).Trim(), connection);
+            QueueInteractiveObsScene((enterScene ?? string.Empty).Trim(), connection);
+        }
+
         private void QueueInteractiveObsScene(string scene, InteractiveObsPlayback playback)
         {
             if (!ObsOperationsEnabled || string.IsNullOrWhiteSpace(scene) || string.IsNullOrWhiteSpace(playback.Url)) return;
@@ -189,7 +206,8 @@ namespace OmniVCamController
         private InteractiveObsScenesDialog CreateInteractiveGroupObsScenesDialog(InteractiveProjectGroup group)
         {
             var dialog = new InteractiveObsScenesDialog("InteractiveGroupObsScenes", "InteractiveGroupObsHint",
-                group.ObsStartScene, group.ObsEndScene, mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text)
+                group.ObsStartScene, group.ObsEndScene, mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text,
+                group.ObsEnterScene, group.ObsExitScene)
             {
                 IsObsEnabled = () => ObsOperationsEnabled,
                 PublishSceneNames = scenes => UpdateSharedObsSceneChoices(scenes, string.Empty)
@@ -209,6 +227,8 @@ namespace OmniVCamController
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     group.ObsStartScene = dialog.StartScene;
                     group.ObsEndScene = dialog.EndScene;
+                    group.ObsEnterScene = dialog.GroupEnterScene;
+                    group.ObsExitScene = dialog.GroupExitScene;
                 }
                 RefreshRoutes();
                 owner.SaveActiveConnectionState();
@@ -253,6 +273,8 @@ namespace OmniVCamController
         {
             private readonly ComboBox startSceneBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
             private readonly ComboBox endSceneBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
+            private readonly ComboBox enterGroupSceneBox;
+            private readonly ComboBox exitGroupSceneBox;
             private readonly string url;
             private readonly string password;
             public Func<bool> IsObsEnabled { get; set; } = () => true;
@@ -261,9 +283,13 @@ namespace OmniVCamController
             {
                 UpdateObsSceneChoices(startSceneBox, scenes, string.Empty);
                 UpdateObsSceneChoices(endSceneBox, scenes, string.Empty);
+                UpdateObsSceneChoices(enterGroupSceneBox, scenes, string.Empty);
+                UpdateObsSceneChoices(exitGroupSceneBox, scenes, string.Empty);
             }
             public string StartScene => startSceneBox.Text.Trim();
             public string EndScene => endSceneBox.Text.Trim();
+            public string GroupEnterScene => enterGroupSceneBox?.Text.Trim() ?? string.Empty;
+            public string GroupExitScene => exitGroupSceneBox?.Text.Trim() ?? string.Empty;
 
             public InteractiveObsScenesDialog(bool combination, string start, string end, string url, string password)
                 : this(combination ? "InteractiveCombinationObsScenes" : "InteractiveProjectObsScenes",
@@ -272,28 +298,45 @@ namespace OmniVCamController
             }
 
             public InteractiveObsScenesDialog(string titleKey, string hintKey, string start, string end, string url, string password)
+                : this(titleKey, hintKey, start, end, url, password, null, null)
             {
+            }
+
+            public InteractiveObsScenesDialog(string titleKey, string hintKey, string start, string end, string url, string password,
+                string groupEnter, string groupExit)
+            {
+                bool groupSettings = groupEnter != null || groupExit != null;
                 this.url = url; this.password = password;
                 Text = T(titleKey);
-                Size = new Size(700, 330); MinimumSize = new Size(600, 330);
+                int height = groupSettings ? 430 : 330;
+                Size = new Size(700, height); MinimumSize = new Size(600, height);
                 ShowIcon = false; StartPosition = FormStartPosition.CenterParent;
-                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 5 };
+                int offset = groupSettings ? 2 : 0;
+                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 5 + offset };
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 grid.RowStyles.Add(new RowStyle(SizeType.AutoSize)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                for (int row = 0; row < offset; row++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 grid.RowStyles.Add(new RowStyle(SizeType.AutoSize)); grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 startSceneBox.Text = start ?? string.Empty; endSceneBox.Text = end ?? string.Empty;
-                AddDialogRow(grid, T("InteractiveObsStartScene"), startSceneBox, 0);
-                AddDialogRow(grid, T("InteractiveObsEndScene"), endSceneBox, 1);
+                AddDialogRow(grid, T(groupSettings ? "InteractiveGroupObsDefaultStartScene" : "InteractiveObsStartScene"), startSceneBox, 0);
+                AddDialogRow(grid, T(groupSettings ? "InteractiveGroupObsDefaultEndScene" : "InteractiveObsEndScene"), endSceneBox, 1);
+                if (groupSettings)
+                {
+                    enterGroupSceneBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Text = groupEnter ?? string.Empty };
+                    exitGroupSceneBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Text = groupExit ?? string.Empty };
+                    AddDialogRow(grid, T("InteractiveGroupObsEnterScene"), enterGroupSceneBox, 2);
+                    AddDialogRow(grid, T("InteractiveGroupObsExitScene"), exitGroupSceneBox, 3);
+                }
                 var refresh = MakeButton(T("ObsRefresh"), async (_, __) => await RefreshScenesAsync());
-                grid.Controls.Add(refresh, 1, 2);
+                grid.Controls.Add(refresh, 1, 2 + offset);
                 var hint = new Label { Text = T(hintKey),
                     AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 0) };
-                grid.Controls.Add(hint, 0, 3); grid.SetColumnSpan(hint, 2);
+                grid.Controls.Add(hint, 0, 3 + offset); grid.SetColumnSpan(hint, 2);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => DialogResult = DialogResult.OK);
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
-                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 4);
+                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 4 + offset);
                 Controls.Add(grid); AcceptButton = ok; CancelButton = cancel;
             }
 

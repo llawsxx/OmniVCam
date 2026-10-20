@@ -67,6 +67,7 @@ namespace OmniVCamController
             interactiveWindowVersion++;
             if (open)
             {
+                QueueInteractiveObsGroupScenes(string.Empty, CurrentInteractiveProjectGroup.ObsEnterScene);
                 RequestInteractiveGroupDefaultIfIdle();
                 return;
             }
