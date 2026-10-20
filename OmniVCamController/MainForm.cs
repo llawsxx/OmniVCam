@@ -298,8 +298,9 @@ namespace OmniVCamController
                 ScheduledItemEnabled = scheduledEnabledBox.Checked,
                 ScheduledTitle = scheduledTitleBox.Text,
                 ScheduledOptions = scheduledOptionsBox.Text,
-                ObsUrl = obsUrlBox.Text,
-                ObsPassword = obsPasswordBox.Text,
+                ObsEnabled = ObsOperationsEnabled,
+                ObsUrl = mainObsUrlBox.Text,
+                ObsPassword = mainObsPasswordBox.Text,
                 ObsScene = obsSceneBox.Text,
                 ObsShowSources = obsShowSourcesBox.Text,
                 ObsHideSources = obsHideSourcesBox.Text,
@@ -405,8 +406,9 @@ namespace OmniVCamController
             activeState.ScheduledItemEnabled = scheduledEnabledBox.Checked;
             activeState.ScheduledTitle = scheduledTitleBox.Text;
             activeState.ScheduledOptions = scheduledOptionsBox.Text;
-            activeState.ObsUrl = obsUrlBox.Text;
-            activeState.ObsPassword = obsPasswordBox.Text;
+            activeState.ObsEnabled = ObsOperationsEnabled;
+            activeState.ObsUrl = mainObsUrlBox.Text;
+            activeState.ObsPassword = mainObsPasswordBox.Text;
             activeState.ObsScene = obsSceneBox.Text;
             activeState.ObsShowSources = obsShowSourcesBox.Text;
             activeState.ObsHideSources = obsHideSourcesBox.Text;
@@ -510,8 +512,9 @@ namespace OmniVCamController
             scheduleEndPicker.Value = ClampDateTimePicker(scheduleEndPicker, state.ScheduleEnd);
             scheduledEnabledBox.Checked = state.ScheduledItemEnabled;
             SetScheduledInputFields(state.ScheduledTitle, state.ScheduledOptions);
-            obsUrlBox.Text = state.ObsUrl;
-            obsPasswordBox.Text = state.ObsPassword;
+            obsOperationsEnabledBox.Checked = state.ObsEnabled;
+            mainObsUrlBox.Text = state.ObsUrl;
+            mainObsPasswordBox.Text = state.ObsPassword;
             obsSceneBox.Text = state.ObsScene;
             obsShowSourcesBox.Text = state.ObsShowSources;
             obsHideSourcesBox.Text = state.ObsHideSources;
@@ -690,28 +693,32 @@ namespace OmniVCamController
             buttons.Controls.Add(MakeButton(T("InteractivePlayback"), (_, __) => OpenInteractiveWindow()));
             root.Controls.Add(buttons, 0, 1);
 
-            var obsDebug = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(0, 0, 0, 6) };
-            var obsDebugConnectionRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty };
-            obsDebugConnectionRow.Controls.Add(new Label { Text = T("ObsDebug"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 6, 0) });
-            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsUrl")));
-            obsDebugConnectionRow.Controls.Add(mainObsUrlBox);
-            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsPassword")));
-            obsDebugConnectionRow.Controls.Add(mainObsPasswordBox);
-            obsDebugConnectionRow.Controls.Add(MakeInlineLabel(T("ObsScene")));
-            obsDebugConnectionRow.Controls.Add(mainObsSceneBox);
-            obsDebugConnectionRow.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(true)));
-            obsDebugConnectionRow.Controls.Add(MakeButton(T("ObsTest"), async (_, __) => await TestObsAsync()));
-            var obsDebugSourceRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty, Padding = new Padding(70, 0, 0, 0) };
-            obsDebugSourceRow.Controls.Add(MakeInlineLabel(T("ObsShowSources")));
-            obsDebugSourceRow.Controls.Add(mainObsShowSourcesBox);
-            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, true)));
-            obsDebugSourceRow.Controls.Add(MakeInlineLabel(T("ObsHideSources")));
-            obsDebugSourceRow.Controls.Add(mainObsHideSourcesBox);
-            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, false)));
-            obsDebugSourceRow.Controls.Add(MakeButton(T("ObsApply"), async (_, __) => await ApplyObsDebugAsync()));
-            obsDebug.Controls.Add(obsDebugConnectionRow, 0, 0);
-            obsDebug.Controls.Add(obsDebugSourceRow, 0, 1);
-            root.Controls.Add(obsDebug, 0, 2);
+            var obsOperations = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(0, 0, 0, 6) };
+            var obsOperationsConnectionRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty };
+            obsOperationsConnectionRow.Controls.Add(new Label { Text = T("ObsOperations"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 6, 0) });
+            obsOperationsEnabledBox.Text = T("ObsEnabled");
+            obsOperationsEnabledBox.CheckedChanged += ObsOperationsEnabledChanged;
+            obsOperationsConnectionRow.Controls.Add(obsOperationsEnabledBox);
+            obsOperationsConnectionRow.Controls.Add(MakeInlineLabel(T("ObsUrl")));
+            obsOperationsConnectionRow.Controls.Add(mainObsUrlBox);
+            obsOperationsConnectionRow.Controls.Add(MakeInlineLabel(T("ObsPassword")));
+            obsOperationsConnectionRow.Controls.Add(mainObsPasswordBox);
+            obsOperationsConnectionRow.Controls.Add(MakeInlineLabel(T("ObsScene")));
+            obsOperationsConnectionRow.Controls.Add(mainObsSceneBox);
+            obsOperationsConnectionRow.Controls.Add(MakeButton(T("ObsSwitchScene"), async (_, __) => await SwitchObsSceneAsync(true)));
+            obsOperationsConnectionRow.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(true)));
+            obsOperationsConnectionRow.Controls.Add(MakeButton(T("ObsTest"), async (_, __) => await TestObsAsync()));
+            var obsOperationsSourceRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = Padding.Empty, Padding = new Padding(70, 0, 0, 0) };
+            obsOperationsSourceRow.Controls.Add(MakeInlineLabel(T("ObsShowSources")));
+            obsOperationsSourceRow.Controls.Add(mainObsShowSourcesBox);
+            obsOperationsSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, true)));
+            obsOperationsSourceRow.Controls.Add(MakeInlineLabel(T("ObsHideSources")));
+            obsOperationsSourceRow.Controls.Add(mainObsHideSourcesBox);
+            obsOperationsSourceRow.Controls.Add(MakeButton(T("ObsSelect"), async (_, __) => await SelectObsSourcesAsync(true, false)));
+            obsOperationsSourceRow.Controls.Add(MakeButton(T("ObsApply"), async (_, __) => await ApplyObsManualActionsAsync()));
+            obsOperations.Controls.Add(obsOperationsConnectionRow, 0, 0);
+            obsOperations.Controls.Add(obsOperationsSourceRow, 0, 1);
+            root.Controls.Add(obsOperations, 0, 2);
             root.Controls.Add(CreateLogAndFavoriteInputsPanel(), 0, 3);
         }
 
@@ -722,30 +729,22 @@ namespace OmniVCamController
 
         private async Task RefreshObsCatalogAsync(bool mainPanel)
         {
+            if (!ObsOperationsEnabled) return;
             ComboBox sceneBox = mainPanel ? mainObsSceneBox : obsSceneBox;
-            TextBox urlBox = mainPanel ? mainObsUrlBox : obsUrlBox;
-            TextBox passwordBox = mainPanel ? mainObsPasswordBox : obsPasswordBox;
+            TextBox urlBox = mainObsUrlBox;
+            TextBox passwordBox = mainObsPasswordBox;
             string selectedScene = sceneBox.Text.Trim();
             try
             {
                 using (var client = new ObsWebSocketClient(urlBox.Text.Trim(), passwordBox.Text))
                 {
                     await client.ConnectAsync();
+                    if (!ObsOperationsEnabled) return;
                     string currentScene = await client.GetCurrentProgramSceneAsync();
+                    if (!ObsOperationsEnabled) return;
                     List<string> scenes = await client.GetSceneListAsync();
-                    sceneBox.BeginUpdate();
-                    sceneBox.Items.Clear();
-                    sceneBox.Items.AddRange(scenes.Cast<object>().ToArray());
-                    if (!mainPanel)
-                    {
-                        string selectedEndScene = obsEndSceneBox.Text.Trim();
-                        obsEndSceneBox.BeginUpdate();
-                        obsEndSceneBox.Items.Clear();
-                        obsEndSceneBox.Items.AddRange(scenes.Cast<object>().ToArray());
-                        obsEndSceneBox.EndUpdate();
-                        if (scenes.Contains(selectedEndScene)) obsEndSceneBox.Text = selectedEndScene;
-                    }
-                    sceneBox.EndUpdate();
+                    if (!ObsOperationsEnabled) return;
+                    UpdateSharedObsSceneChoices(scenes, currentScene);
                     if (scenes.Contains(selectedScene)) sceneBox.Text = selectedScene;
                     else if (scenes.Contains(currentScene)) sceneBox.Text = currentScene;
                     else if (scenes.Count > 0) sceneBox.SelectedIndex = 0;
@@ -760,12 +759,13 @@ namespace OmniVCamController
 
         private async Task SelectObsSourcesAsync(bool mainPanel, bool showSources)
         {
+            if (!ObsOperationsEnabled) return;
             ComboBox sceneBox = mainPanel ? mainObsSceneBox : obsSceneBox;
             TextBox targetBox = mainPanel
                 ? (showSources ? mainObsShowSourcesBox : mainObsHideSourcesBox)
                 : (showSources ? obsShowSourcesBox : obsHideSourcesBox);
-            TextBox urlBox = mainPanel ? mainObsUrlBox : obsUrlBox;
-            TextBox passwordBox = mainPanel ? mainObsPasswordBox : obsPasswordBox;
+            TextBox urlBox = mainObsUrlBox;
+            TextBox passwordBox = mainObsPasswordBox;
             string sceneName = sceneBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(sceneName))
             {
@@ -774,12 +774,14 @@ namespace OmniVCamController
                 if (string.IsNullOrWhiteSpace(sceneName)) return;
             }
 
+            if (!ObsOperationsEnabled) return;
             try
             {
                 List<string> sources;
                 using (var client = new ObsWebSocketClient(urlBox.Text.Trim(), passwordBox.Text))
                 {
                     await client.ConnectAsync();
+                    if (!ObsOperationsEnabled) return;
                     sources = await client.GetSceneItemListAsync(sceneName);
                 }
                 ShowObsSourcePicker(targetBox, sceneName, sources, showSources);
@@ -792,6 +794,7 @@ namespace OmniVCamController
 
         private async Task SelectObsEndSourcesAsync(bool showSources)
         {
+            if (!ObsOperationsEnabled) return;
             string sceneName = obsEndSceneBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(sceneName))
             {
@@ -799,12 +802,14 @@ namespace OmniVCamController
                 sceneName = obsEndSceneBox.Text.Trim();
                 if (string.IsNullOrWhiteSpace(sceneName)) return;
             }
+            if (!ObsOperationsEnabled) return;
             try
             {
                 List<string> sources;
-                using (var client = new ObsWebSocketClient(obsUrlBox.Text.Trim(), obsPasswordBox.Text))
+                using (var client = new ObsWebSocketClient(mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text))
                 {
                     await client.ConnectAsync();
+                    if (!ObsOperationsEnabled) return;
                     sources = await client.GetSceneItemListAsync(sceneName);
                 }
                 ShowObsSourcePicker(showSources ? obsEndShowSourcesBox : obsEndHideSourcesBox, sceneName, sources, showSources);
@@ -851,8 +856,9 @@ namespace OmniVCamController
             }
         }
 
-        private Task ApplyObsDebugAsync()
+        private Task ApplyObsManualActionsAsync()
         {
+            if (!ObsOperationsEnabled) return Task.CompletedTask;
             var item = new ScheduledPlaylistItem
             {
                 ObsScene = mainObsSceneBox.Text.Trim(),
@@ -954,10 +960,11 @@ namespace OmniVCamController
             root.Controls.Add(header, 0, 0);
 
             var obsSettings = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 5) };
-            obsSettings.Controls.Add(MakeInlineLabel(T("ObsUrl")));
-            obsSettings.Controls.Add(obsUrlBox);
-            obsSettings.Controls.Add(MakeInlineLabel(T("ObsPassword")));
-            obsSettings.Controls.Add(obsPasswordBox);
+            obsSettings.Controls.Add(new Label { Text = T("ObsOperations"), AutoSize = true, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 5, 6, 0) });
+            obsSettings.Controls.Add(MakeInlineLabel(T("ObsScene")));
+            obsSettings.Controls.Add(playoutObsSceneBox);
+            obsSettings.Controls.Add(MakeButton(T("ObsRefresh"), async (_, __) => await RefreshObsCatalogAsync(false)));
+            obsSettings.Controls.Add(MakeButton(T("ObsSwitchScene"), async (_, __) => await SwitchObsSceneAsync(false)));
             root.Controls.Add(obsSettings, 0, 1);
 
             var split = new SplitContainer
@@ -3219,7 +3226,7 @@ namespace OmniVCamController
 
         private Task ApplyObsActionsAsync(ScheduledPlaylistItem item)
         {
-            return ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources, obsUrlBox.Text.Trim(), obsPasswordBox.Text);
+            return ApplyObsActionsAsync(item.ObsScene, item.ObsShowSources, item.ObsHideSources, mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text);
         }
 
         private Task ApplyObsActionsAsync(ScheduledPlaylistItem item, string url, string password)
@@ -3229,11 +3236,12 @@ namespace OmniVCamController
 
         private Task ApplyObsActionsAsync(string scene, string showSources, string hideSources)
         {
-            return ApplyObsActionsAsync(scene, showSources, hideSources, obsUrlBox.Text.Trim(), obsPasswordBox.Text);
+            return ApplyObsActionsAsync(scene, showSources, hideSources, mainObsUrlBox.Text.Trim(), mainObsPasswordBox.Text);
         }
 
         private async Task ApplyObsActionsAsync(string scene, string showSources, string hideSources, string url, string password)
         {
+            if (!ObsOperationsEnabled) return;
             if (string.IsNullOrWhiteSpace(url)) return;
             if (string.IsNullOrWhiteSpace(scene) && string.IsNullOrWhiteSpace(showSources) && string.IsNullOrWhiteSpace(hideSources)) return;
             try
@@ -3241,6 +3249,7 @@ namespace OmniVCamController
                 using (var client = new ObsWebSocketClient(url, password))
                 {
                     await client.ConnectAsync();
+                    if (!ObsOperationsEnabled) return;
                     if (!string.IsNullOrWhiteSpace(scene))
                     {
                         AppendLog("> OBS SetCurrentProgramScene scene=" + FormatObsLogValue(scene));
@@ -3249,6 +3258,7 @@ namespace OmniVCamController
                     }
                     foreach (string source in SplitObsSources(showSources))
                     {
+                        if (!ObsOperationsEnabled) return;
                         AppendLog("> OBS SetSceneItemEnabled scene=" + FormatObsLogValue(scene) +
                             " source=" + FormatObsLogValue(source) + " enabled=true");
                         await client.SetSceneItemEnabledAsync(scene, source, true);
@@ -3256,6 +3266,7 @@ namespace OmniVCamController
                     }
                     foreach (string source in SplitObsSources(hideSources))
                     {
+                        if (!ObsOperationsEnabled) return;
                         AppendLog("> OBS SetSceneItemEnabled scene=" + FormatObsLogValue(scene) +
                             " source=" + FormatObsLogValue(source) + " enabled=false");
                         await client.SetSceneItemEnabledAsync(scene, source, false);
@@ -3297,13 +3308,14 @@ namespace OmniVCamController
 
         private void EnqueueScheduledObsEnd(ScheduledPlaylistItem item, long frameId)
         {
+            if (!ObsOperationsEnabled) return;
             pendingScheduledObsEnds.Enqueue(new ScheduledObsAction
             {
                 Scene = item.ObsEndScene,
                 ShowSources = item.ObsEndShowSources,
                 HideSources = item.ObsEndHideSources,
-                Url = obsUrlBox.Text.Trim(),
-                Password = obsPasswordBox.Text,
+                Url = mainObsUrlBox.Text.Trim(),
+                Password = mainObsPasswordBox.Text,
                 FrameId = frameId
             });
         }
@@ -3581,6 +3593,7 @@ namespace OmniVCamController
                     new XAttribute("scheduledItemEnabled", state.ScheduledItemEnabled ? "1" : "0"),
                     new XAttribute("scheduledTitle", state.ScheduledTitle),
                     new XAttribute("scheduledOptions", state.ScheduledOptions),
+                    new XAttribute("obsEnabled", state.ObsEnabled ? "1" : "0"),
                     new XAttribute("obsUrl", state.ObsUrl),
                     new XAttribute("obsPassword", state.ObsPassword),
                     new XAttribute("obsScene", state.ObsScene),
@@ -3812,8 +3825,9 @@ namespace OmniVCamController
             scheduledEnabledBox.Checked = GetAttribute(settings, "scheduledItemEnabled", "1") == "1";
             scheduledTitleBox.Text = GetAttribute(settings, "scheduledTitle", scheduledTitleBox.Text);
             scheduledOptionsBox.Text = GetAttribute(settings, "scheduledOptions", scheduledOptionsBox.Text);
-            obsUrlBox.Text = GetAttribute(settings, "obsUrl", obsUrlBox.Text);
-            obsPasswordBox.Text = GetAttribute(settings, "obsPassword", obsPasswordBox.Text);
+            obsOperationsEnabledBox.Checked = GetAttribute(settings, "obsEnabled", "1") != "0";
+            mainObsUrlBox.Text = GetAttribute(settings, "obsUrl", mainObsUrlBox.Text);
+            mainObsPasswordBox.Text = GetAttribute(settings, "obsPassword", mainObsPasswordBox.Text);
             obsSceneBox.Text = GetAttribute(settings, "obsScene", obsSceneBox.Text);
             obsShowSourcesBox.Text = GetAttribute(settings, "obsShowSources", obsShowSourcesBox.Text);
             obsHideSourcesBox.Text = GetAttribute(settings, "obsHideSources", obsHideSourcesBox.Text);
@@ -5337,6 +5351,7 @@ namespace OmniVCamController
             public bool ScheduledItemEnabled { get; set; } = true;
             public string ScheduledTitle { get; set; } = string.Empty;
             public string ScheduledOptions { get; set; } = string.Empty;
+            public bool ObsEnabled { get; set; } = true;
             public string ObsUrl { get; set; } = "ws://127.0.0.1:4455";
             public string ObsPassword { get; set; } = string.Empty;
             public string ObsScene { get; set; } = string.Empty;

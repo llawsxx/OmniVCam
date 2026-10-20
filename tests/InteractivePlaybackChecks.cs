@@ -14,7 +14,7 @@ using System.Windows.Forms;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
-internal static class InteractivePlaybackChecks
+internal static partial class InteractivePlaybackChecks
 {
     private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
     private static Type main;
@@ -2309,6 +2309,7 @@ internal static class InteractivePlaybackChecks
             CheckBackendRestartRecovery();
             CheckProjectGroups(assembly);
             CheckPersistence();
+            CheckInteractiveObsScenes(assembly);
             Console.WriteLine("All interactive combination checks passed.");
             return 0;
         }

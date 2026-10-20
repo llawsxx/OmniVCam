@@ -80,6 +80,7 @@ namespace OmniVCamController
 
         private void ClearInteractiveRuntime(bool clearTriggerRequests = true)
         {
+            SetInteractiveObsPlayback(null);
             interactiveActive = false;
             ResetInteractivePlaybackWatchdog();
             interactiveStatusRevision++;
@@ -187,6 +188,9 @@ namespace OmniVCamController
             {
                 if (interactivePending.RequiresOutputConfirmation)
                 {
+                    // Retain the old lifecycle until the queued destination actually wins the output race.
+                    if (interactivePending.ObsPlayback != interactiveCurrent?.ObsPlayback &&
+                        !CanReplaceInteractiveObsEnd(interactiveObsCurrent, interactivePending.ObsPlayback)) SetInteractiveObsPlayback(null);
                     // Ending the source cannot identify which pending batch actually won the race.
                     interactiveStatusRevision++;
                     interactiveAwaitingPendingConfirmation = true;
@@ -196,6 +200,7 @@ namespace OmniVCamController
                 interactiveStatusRevision++;
                 ResetInteractivePlaybackWatchdog();
                 interactiveCurrent = interactivePending;
+                SetInteractiveObsPlayback(interactiveCurrent);
                 currentStatusInput = interactiveCurrent.InputSummary;
                 currentActualStatusInput = interactiveCurrent.InputSummary;
                 interactivePending = null;
@@ -211,6 +216,7 @@ namespace OmniVCamController
                 interactivePending == null && interactiveQueue.Count == 0 && !interactiveCurrent.Loop &&
                 (interactiveCurrent.GroupLoop == null || interactiveCurrent.GroupLoop.Cancelled))
             {
+                SetInteractiveObsPlayback(null);
                 AppendInteractiveLog(T("InteractiveSequenceCompleted"));
                 interactiveActive = false;
                 interactiveCurrent = null;
@@ -480,6 +486,7 @@ namespace OmniVCamController
                 return new InteractivePlaybackEntry
                 {
                     IsGroupDefault = groupLoop?.IsGroupDefault == true,
+                    ObsPlayback = groupLoop?.ObsPlayback,
                     MediaId = media.RuntimeId,
                     PlaybackUnitId = playbackUnitId,
                     PreventInterrupt = media.PreventInterrupt,
@@ -605,6 +612,8 @@ namespace OmniVCamController
                 routeView.Columns.Add(T("InteractiveCommand"), 90);
                 routeView.Columns.Add(T("InteractiveCombinationSelection"), 100);
                 routeView.Columns.Add(T("InteractiveCombinations"), 430);
+                routeView.Columns.Add(T("InteractiveObsStartSceneColumn"), 180);
+                routeView.Columns.Add(T("InteractiveObsEndSceneColumn"), 180);
                 routeView.DoubleClick += (_, __) => TriggerSelected(T("InteractiveDoubleClickedProject"));
             }
 
@@ -716,6 +725,8 @@ namespace OmniVCamController
                     row.SubItems.Add(route.Immediate ? "PLAY" : "PLAY_NEXT");
                     row.SubItems.Add(T(route.RandomOrder ? "InteractiveRandom" : "InteractiveSequential"));
                     row.SubItems.Add(sequence);
+                    row.SubItems.Add(owner.DescribeInteractiveObsScene(route, true));
+                    row.SubItems.Add(owner.DescribeInteractiveObsScene(route, false));
                     row.Tag = route;
                     routeView.Items.Add(row);
 
@@ -908,6 +919,7 @@ namespace OmniVCamController
             {
                 using (var dialog = new RouteEditDialog(owner.interactiveMedia, route))
                 {
+                    owner.ConfigureInteractiveObsEditor(dialog);
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var edited = new InteractiveRouteItem();
                     dialog.Apply(edited);
@@ -1035,8 +1047,10 @@ namespace OmniVCamController
                 new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
                 new XAttribute("selection", route.RandomOrder ? "random" : "sequential"),
                 new XAttribute("recentCount", route.RecentCombinationCount),
+                new XAttribute("obsStartScene", route.ObsStartScene), new XAttribute("obsEndScene", route.ObsEndScene),
                 new XElement("Combinations", route.Combinations.Select(combination => new XElement("Combination",
                     new XAttribute("weight", combination.Weight), new XAttribute("cooldownSeconds", combination.CooldownSeconds),
+                    new XAttribute("obsStartScene", combination.ObsStartScene), new XAttribute("obsEndScene", combination.ObsEndScene),
                     combination.MediaIds.Select(id => new XElement("MediaRef", new XAttribute("id", id)))))));
         }
 
@@ -1045,6 +1059,8 @@ namespace OmniVCamController
             var route = new InteractiveRouteItem
             {
                 Name = GetAttribute(element, "name", string.Empty),
+                ObsStartScene = GetAttribute(element, "obsStartScene", string.Empty),
+                ObsEndScene = GetAttribute(element, "obsEndScene", string.Empty),
                 Immediate = GetAttribute(element, "immediate", "0") == "1",
                 Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty),
                     GetAttribute(element, "modifiers", string.Empty)),
@@ -1058,6 +1074,8 @@ namespace OmniVCamController
             {
                 var combination = new InteractiveMediaCombination
                 {
+                    ObsStartScene = combinations == null ? string.Empty : GetAttribute(sequence, "obsStartScene", string.Empty),
+                    ObsEndScene = combinations == null ? string.Empty : GetAttribute(sequence, "obsEndScene", string.Empty),
                     Weight = GetInteractiveSelectionInt(sequence, "weight", 1, 1, MaxCombinationWeight),
                     CooldownSeconds = GetInteractiveSelectionInt(sequence, "cooldownSeconds", 0, 0, MaxCombinationCooldownSeconds)
                 };
@@ -1161,7 +1179,11 @@ namespace OmniVCamController
                 commandBox.DropDownStyle = ComboBoxStyle.DropDownList;
                 commandBox.Items.AddRange(new object[] { "PLAY_NEXT", "PLAY" });
                 commandBox.SelectedIndex = 0;
-                AddDialogRow(root, T("InteractiveTriggerMode"), commandBox, 2);
+                var commandBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+                commandBox.Width = 160;
+                commandBar.Controls.Add(commandBox);
+                commandBar.Controls.Add(MakeButton(T("InteractiveProjectObsScenes"), (_, __) => EditObsScenes(false)));
+                AddDialogRow(root, T("InteractiveTriggerMode"), commandBar, 2);
                 selectionBox.DropDownStyle = ComboBoxStyle.DropDownList;
                 selectionBox.Items.AddRange(new object[] { T("InteractiveRandom"), T("InteractiveSequential") });
                 selectionBox.SelectedIndex = 0;
@@ -1234,10 +1256,12 @@ namespace OmniVCamController
                     commandBox.SelectedItem = route.Immediate ? "PLAY" : "PLAY_NEXT";
                     selectionBox.SelectedIndex = route.RandomOrder ? 0 : 1;
                     recentCountBox.Value = route.RecentCombinationCount;
+                    routeObsStartScene = route.ObsStartScene; routeObsEndScene = route.ObsEndScene;
                     combinations.AddRange(route.Combinations.Select(combination => new InteractiveMediaCombination
                     {
                         MediaIds = combination.MediaIds.Where(id => media.Any(item => item.RuntimeId == id)).ToList(),
-                        Weight = combination.Weight, CooldownSeconds = combination.CooldownSeconds
+                        Weight = combination.Weight, CooldownSeconds = combination.CooldownSeconds,
+                        ObsStartScene = combination.ObsStartScene, ObsEndScene = combination.ObsEndScene
                     }));
                 }
                 if (combinations.Count == 0) combinations.Add(new InteractiveMediaCombination());
@@ -1325,6 +1349,7 @@ namespace OmniVCamController
             public void Apply(InteractiveRouteItem route)
             {
                 route.Name = nameBox.Text.Trim();
+                route.ObsStartScene = routeObsStartScene; route.ObsEndScene = routeObsEndScene;
                 route.Hotkey = hotkeyBox.Value == null ? null : hotkeyBox.Value.Clone();
                 route.Immediate = string.Equals(commandBox.SelectedItem as string, "PLAY", StringComparison.Ordinal);
                 route.RandomOrder = selectionBox.SelectedIndex == 0;
@@ -1428,6 +1453,8 @@ namespace OmniVCamController
             public bool Immediate { get; set; }
             public InteractiveHotkey Hotkey { get; set; }
             public bool RandomOrder { get; set; } = true;
+            public string ObsStartScene { get; set; } = string.Empty;
+            public string ObsEndScene { get; set; } = string.Empty;
             public List<InteractiveMediaCombination> Combinations { get; set; } = new List<InteractiveMediaCombination>();
             public int NextCombinationIndex { get; set; }
             public int RecentCombinationCount { get; set; }
@@ -1441,6 +1468,8 @@ namespace OmniVCamController
             public int Weight { get; set; } = 1;
             public int CooldownSeconds { get; set; }
             public long? LastSelectedTimestamp { get; set; }
+            public string ObsStartScene { get; set; } = string.Empty;
+            public string ObsEndScene { get; set; } = string.Empty;
         }
 
         private sealed class InteractiveHotkey
@@ -1462,6 +1491,7 @@ namespace OmniVCamController
 
         private sealed class InteractivePlaybackEntry
         {
+            public InteractiveObsPlayback ObsPlayback { get; set; }
             public bool IsGroupTransition { get; set; }
             public bool IsGroupDefault { get; set; }
             public Guid MediaId { get; set; }

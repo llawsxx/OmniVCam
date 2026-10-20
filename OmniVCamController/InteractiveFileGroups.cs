@@ -73,6 +73,7 @@ namespace OmniVCamController
             public int Iteration { get; set; }
             public bool Cancelled { get; set; }
             public bool IsGroupDefault { get; set; }
+            public InteractiveObsPlayback ObsPlayback { get; set; }
         }
 
         private static InteractiveMediaItem SnapshotInteractiveFileGroup(InteractiveMediaItem item)

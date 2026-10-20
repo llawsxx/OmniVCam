@@ -186,7 +186,7 @@
   <data name="ObsShowSources" xml:space="preserve"><value>Show sources</value></data>
   <data name="ObsHideSources" xml:space="preserve"><value>Hide sources</value></data>
   <data name="ObsActionFailed" xml:space="preserve"><value>OBS action failed: {0}</value></data>
-  <data name="ObsDebug" xml:space="preserve"><value>OBS debug</value></data>
+  <data name="ObsOperations" xml:space="preserve"><value>OBS operations</value></data>
   <data name="ObsTest" xml:space="preserve"><value>Test connection</value></data>
   <data name="ObsApply" xml:space="preserve"><value>Apply OBS action</value></data>
   <data name="ObsConnected" xml:space="preserve"><value>OBS connected. Current scene: {0}</value></data>
@@ -427,5 +427,44 @@
   </data>
   <data name="InteractiveGroupSwitchHint" xml:space="preserve">
     <value>The button and shortcut use the same mode. Sequential mode follows the group list and wraps around; random mode chooses another group. With only one group, switching does nothing. Transitions and interruption protection still apply. Backspace, Delete or Esc clears the shortcut.</value>
+  </data>
+  <data name="ObsSwitchScene" xml:space="preserve">
+    <value>Switch scene</value>
+  </data>
+  <data name="ObsSceneRequired" xml:space="preserve">
+    <value>Select or enter an OBS scene first.</value>
+  </data>
+  <data name="InteractiveProjectObsScenes" xml:space="preserve">
+    <value>Project OBS scenes...</value>
+  </data>
+  <data name="InteractiveCombinationObsScenes" xml:space="preserve">
+    <value>Combination OBS scenes...</value>
+  </data>
+  <data name="InteractiveObsStartScene" xml:space="preserve">
+    <value>Scene at start</value>
+  </data>
+  <data name="InteractiveObsEndScene" xml:space="preserve">
+    <value>Scene at end</value>
+  </data>
+  <data name="InteractiveProjectObsHint" xml:space="preserve">
+    <value>Uses the main window’s OBS connection and scene list. Blank inherits the current group’s scene. Start runs on confirmed playback. End runs on completion, replacement or clearing, except a direct handoff to another trigger with a start scene skips the intermediate end scene. Media and group loops share one trigger.</value>
+  </data>
+  <data name="InteractiveCombinationObsHint" xml:space="preserve">
+    <value>Uses the main window’s OBS connection and shared scene list. Start/end priority is media combination &gt; project &gt; group; blank inherits the next level. Applies once to the whole selected combination, including file groups. Queuing or prefetching does not switch scenes.</value>
+  </data>
+  <data name="ObsEnabled" xml:space="preserve">
+    <value>Enable OBS operations</value>
+  </data>
+  <data name="InteractiveObsStartSceneColumn" xml:space="preserve">
+    <value>OBS start scene</value>
+  </data>
+  <data name="InteractiveObsEndSceneColumn" xml:space="preserve">
+    <value>OBS end scene</value>
+  </data>
+  <data name="InteractiveGroupObsScenes" xml:space="preserve">
+    <value>Group OBS scenes...</value>
+  </data>
+  <data name="InteractiveGroupObsHint" xml:space="preserve">
+    <value>Uses the main window’s OBS connection and scene list. These are the default start/end scenes for interactive projects in the current group. Priority is resolved separately for each action: media combination &gt; project &gt; group. Blank means no action. Each trigger snapshots its scenes; editing settings or switching groups does not change accepted triggers.</value>
   </data>
 </root>

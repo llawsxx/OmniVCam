@@ -25,7 +25,8 @@ namespace OmniVCamController
         {
             return new InteractiveMediaCombination
             {
-                MediaIds = source.MediaIds.ToList(), Weight = source.Weight, CooldownSeconds = source.CooldownSeconds
+                MediaIds = source.MediaIds.ToList(), Weight = source.Weight, CooldownSeconds = source.CooldownSeconds,
+                ObsStartScene = source.ObsStartScene, ObsEndScene = source.ObsEndScene
             };
         }
 
@@ -70,6 +71,7 @@ namespace OmniVCamController
             else selected = playable[sequentialIndex];
             var entries = BuildInteractiveCombinationEntries(selected);
             if (entries.Count == 0) return entries;
+            AttachInteractiveObsPlayback(route, selected, entries);
             if (route.RandomOrder)
             {
                 selected.LastSelectedTimestamp = timestamp;
@@ -106,12 +108,14 @@ namespace OmniVCamController
 
             private Control BuildCombinationRandomSettings()
             {
-                var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 2 };
+                var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 3 };
                 panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 panel.Controls.Add(new Label { Text = T("InteractiveCombinationWeight"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
                 panel.Controls.Add(combinationWeightBox, 1, 0);
                 panel.Controls.Add(new Label { Text = T("InteractiveCombinationCooldown"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
                 panel.Controls.Add(combinationCooldownBox, 1, 1);
+                var obsButton = MakeButton(T("InteractiveCombinationObsScenes"), (_, __) => EditObsScenes(true));
+                panel.Controls.Add(obsButton, 0, 2); panel.SetColumnSpan(obsButton, 2);
                 combinationWeightBox.ValueChanged += (_, __) => ApplyCombinationRandomSettings();
                 combinationCooldownBox.ValueChanged += (_, __) => ApplyCombinationRandomSettings();
                 return panel;

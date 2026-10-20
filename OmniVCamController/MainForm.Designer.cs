@@ -47,8 +47,6 @@ namespace OmniVCamController
         private CheckBox scheduledEnabledBox;
         private TextBox scheduledTitleBox;
         private TextBox scheduledOptionsBox;
-        private TextBox obsUrlBox;
-        private TextBox obsPasswordBox;
         private ComboBox obsSceneBox;
         private TextBox obsShowSourcesBox;
         private TextBox obsHideSourcesBox;
@@ -115,8 +113,6 @@ namespace OmniVCamController
             scheduledEnabledBox = new CheckBox();
             scheduledTitleBox = new TextBox();
             scheduledOptionsBox = new TextBox();
-            obsUrlBox = new TextBox();
-            obsPasswordBox = new TextBox();
             obsSceneBox = new ComboBox();
             obsShowSourcesBox = new TextBox();
             obsHideSourcesBox = new TextBox();
@@ -171,10 +167,6 @@ namespace OmniVCamController
             autoDeinterlaceBox.AutoSize = true;
             autoDeinterlaceBox.Anchor = AnchorStyles.Left;
             autoDeinterlaceFilterBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            obsUrlBox.Text = "ws://127.0.0.1:4455";
-            obsUrlBox.Width = 170;
-            obsPasswordBox.UseSystemPasswordChar = true;
-            obsPasswordBox.Width = 100;
             obsSceneBox.DropDownStyle = ComboBoxStyle.DropDown;
             obsSceneBox.Width = 120;
             obsShowSourcesBox.Width = 150;

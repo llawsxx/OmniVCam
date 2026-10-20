@@ -46,6 +46,8 @@ namespace OmniVCamController
             public string Name { get; set; } = string.Empty;
             public InteractiveHotkey Hotkey { get; set; }
             public Guid DefaultMediaId { get; set; }
+            public string ObsStartScene { get; set; } = string.Empty;
+            public string ObsEndScene { get; set; } = string.Empty;
             public List<InteractiveRouteItem> Routes { get; set; } = new List<InteractiveRouteItem>();
             public override string ToString() { return Name; }
         }
@@ -265,6 +267,7 @@ namespace OmniVCamController
                 new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
                 new XElement("Groups", groups.Select(group => new XElement("Group",
                     new XAttribute("id", group.Id), new XAttribute("name", group.Name), new XAttribute("defaultMedia", group.DefaultMediaId),
+                    new XAttribute("obsStartScene", group.ObsStartScene), new XAttribute("obsEndScene", group.ObsEndScene),
                     new XAttribute("hotkey", group.Hotkey == null ? string.Empty : group.Hotkey.KeyCode.ToString()),
                     new XAttribute("modifiers", group.Hotkey == null ? string.Empty : group.Hotkey.Modifiers.ToString()),
                     new XElement("Routes", group.Routes.Select(SaveInteractiveRouteElement))))),
@@ -292,6 +295,8 @@ namespace OmniVCamController
                     var group = new InteractiveProjectGroup
                     {
                         Name = GetAttribute(node, "name", T("InteractiveDefaultGroup")),
+                        ObsStartScene = GetAttribute(node, "obsStartScene", string.Empty),
+                        ObsEndScene = GetAttribute(node, "obsEndScene", string.Empty),
                         DefaultMediaId = Guid.TryParse(GetAttribute(node, "defaultMedia", null), out defaultMediaId) ? defaultMediaId : Guid.Empty,
                         Hotkey = ParseInteractiveHotkey(GetAttribute(node, "hotkey", string.Empty), GetAttribute(node, "modifiers", string.Empty))
                     };
@@ -343,6 +348,7 @@ namespace OmniVCamController
                 bar.Controls.Add(MakeButton(T("InteractiveEditGroup"), (_, __) => EditProjectGroup(false)));
                 bar.Controls.Add(MakeButton(T("InteractiveRemoveGroup"), (_, __) => RemoveProjectGroup()));
                 bar.Controls.Add(MakeButton(T("InteractiveGroupTransitions"), (_, __) => EditGroupTransitions()));
+                bar.Controls.Add(MakeButton(T("InteractiveGroupObsScenes"), (_, __) => EditGroupObsScenes()));
                 panel.Controls.Add(bar, 0, 0);
                 projectGroupButtons.Dock = DockStyle.Fill;
                 projectGroupButtons.AutoSize = true;

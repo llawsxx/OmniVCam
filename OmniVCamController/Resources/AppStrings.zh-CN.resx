@@ -476,7 +476,7 @@
   <data name="ObsShowSources" xml:space="preserve"><value>显示源</value></data>
   <data name="ObsHideSources" xml:space="preserve"><value>隐藏源</value></data>
   <data name="ObsActionFailed" xml:space="preserve"><value>OBS 操作失败：{0}</value></data>
-  <data name="ObsDebug" xml:space="preserve"><value>OBS 调试</value></data>
+  <data name="ObsOperations" xml:space="preserve"><value>OBS 操作</value></data>
   <data name="ObsTest" xml:space="preserve"><value>测试连接</value></data>
   <data name="ObsApply" xml:space="preserve"><value>执行 OBS 操作</value></data>
   <data name="ObsConnected" xml:space="preserve"><value>OBS 已连接，当前场景：{0}</value></data>
@@ -717,5 +717,44 @@
   </data>
   <data name="InteractiveGroupSwitchHint" xml:space="preserve">
     <value>按钮和快捷键使用相同的切换方式。顺序模式按分组列表循环切换；随机模式选择当前组以外的分组。只有一个分组时不切换。沿用转场及禁止打断设置。按退格、Delete 或 Esc 清除快捷键。</value>
+  </data>
+  <data name="ObsSwitchScene" xml:space="preserve">
+    <value>切换场景</value>
+  </data>
+  <data name="ObsSceneRequired" xml:space="preserve">
+    <value>请先选择或输入 OBS 场景。</value>
+  </data>
+  <data name="InteractiveProjectObsScenes" xml:space="preserve">
+    <value>项目 OBS 场景…</value>
+  </data>
+  <data name="InteractiveCombinationObsScenes" xml:space="preserve">
+    <value>组合 OBS 场景…</value>
+  </data>
+  <data name="InteractiveObsStartScene" xml:space="preserve">
+    <value>开始时的场景</value>
+  </data>
+  <data name="InteractiveObsEndScene" xml:space="preserve">
+    <value>结束时的场景</value>
+  </data>
+  <data name="InteractiveProjectObsHint" xml:space="preserve">
+    <value>使用主界面的 OBS 连接和场景列表，留空则沿用所属分组的场景。开始播放时执行开始场景；结束、被替换或清空时执行结束场景。连续接到设有开始场景的下一项时，跳过中间结束场景，直接切到下一项。媒体或文件组合循环仍属于本次触发。</value>
+  </data>
+  <data name="InteractiveCombinationObsHint" xml:space="preserve">
+    <value>沿用主界面的 OBS 连接和场景列表。开始和结束分别按“媒体组合 &gt; 互动项目 &gt; 分组”取值，留空则沿用下一级设置。对本次选中的整个媒体组合（包括文件组合）只执行一次，排队或预读不会切换场景。</value>
+  </data>
+  <data name="ObsEnabled" xml:space="preserve">
+    <value>启用 OBS 操作</value>
+  </data>
+  <data name="InteractiveObsStartSceneColumn" xml:space="preserve">
+    <value>OBS 开始场景</value>
+  </data>
+  <data name="InteractiveObsEndSceneColumn" xml:space="preserve">
+    <value>OBS 结束场景</value>
+  </data>
+  <data name="InteractiveGroupObsScenes" xml:space="preserve">
+    <value>分组 OBS 场景…</value>
+  </data>
+  <data name="InteractiveGroupObsHint" xml:space="preserve">
+    <value>使用主界面的 OBS 连接和场景列表，为当前分组内的互动项目设置默认开始／结束场景。开始和结束分别按“媒体组合 &gt; 互动项目 &gt; 分组”取值，全部留空则不操作。每次触发使用独立快照，修改设置或切换分组不影响已接受的触发。</value>
   </data>
 </root>

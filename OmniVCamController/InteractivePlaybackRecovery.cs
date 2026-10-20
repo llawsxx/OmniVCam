@@ -132,6 +132,7 @@ namespace OmniVCamController
                 (interactiveCurrent.BackendFrameId == 0 || interactiveCurrent.BackendFrameId == inputEvent.FrameId || interactiveCurrent.Loop))
             {
                 interactiveCurrent.BackendFrameId = inputEvent.FrameId;
+                SetInteractiveObsPlayback(interactiveCurrent);
                 interactiveStatusRevision++;
                 interactiveNeedsStatusCheck = false;
                 ResetInteractivePlaybackWatchdog();
@@ -162,13 +163,14 @@ namespace OmniVCamController
                 interactiveCurrent != null && interactivePending == null && interactiveQueue.Count == 0 &&
                 (interactiveCurrent.IsGroupTransition || (!interactiveCurrent.Loop &&
                     (interactiveCurrent.GroupLoop == null || interactiveCurrent.GroupLoop.Cancelled) &&
-                    CurrentInteractiveProjectGroup.DefaultMediaId != Guid.Empty)) &&
+                    (CurrentInteractiveProjectGroup.DefaultMediaId != Guid.Empty || interactiveCurrent.ObsPlayback != null))) &&
                 InputSummariesEqual(actual, interactiveCurrent.InputSummary) && !IsObsoleteInteractiveTransitionFrame(actualFrameId) &&
                 (actualFrameId == 0 || interactiveCurrent.BackendFrameId == 0 || actualFrameId == interactiveCurrent.BackendFrameId))
             {
                 ResetInteractivePlaybackWatchdog();
                 interactiveNeedsStatusCheck = false;
                 if (actualFrameId > 0) interactiveCurrent.BackendFrameId = actualFrameId;
+                SetInteractiveObsPlayback(null);
                 QueueInteractiveGroupDefaultIfNeeded();
                 if (interactiveQueue.Count > 0) return true;
                 interactiveActive = false;
@@ -191,6 +193,7 @@ namespace OmniVCamController
                     (interactiveCurrent.Loop && !pendingMatches)))
             {
                 if (actualFrameId > 0) interactiveCurrent.BackendFrameId = actualFrameId;
+                SetInteractiveObsPlayback(interactiveCurrent);
                 interactiveNeedsStatusCheck = false;
                 ResetInteractivePlaybackWatchdog();
                 // If the next item was not opened, re-submit it once after reconnection. This replaces the backend's
@@ -309,6 +312,7 @@ namespace OmniVCamController
         {
             interactiveStatusRevision++;
             interactiveCurrent = entry;
+            SetInteractiveObsPlayback(entry);
             entry.RequiresOutputConfirmation = false;
             entry.ReplaceAfterFrameId = 0;
             interactivePending = null;

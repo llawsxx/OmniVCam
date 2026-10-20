@@ -476,7 +476,7 @@
   <data name="ObsShowSources" xml:space="preserve"><value>顯示來源</value></data>
   <data name="ObsHideSources" xml:space="preserve"><value>隱藏來源</value></data>
   <data name="ObsActionFailed" xml:space="preserve"><value>OBS 操作失敗：{0}</value></data>
-  <data name="ObsDebug" xml:space="preserve"><value>OBS 除錯</value></data>
+  <data name="ObsOperations" xml:space="preserve"><value>OBS 操作</value></data>
   <data name="ObsTest" xml:space="preserve"><value>測試連線</value></data>
   <data name="ObsApply" xml:space="preserve"><value>執行 OBS 操作</value></data>
   <data name="ObsConnected" xml:space="preserve"><value>OBS 已連線，目前場景：{0}</value></data>
@@ -717,5 +717,44 @@
   </data>
   <data name="InteractiveGroupSwitchHint" xml:space="preserve">
     <value>按鈕和快捷鍵使用相同的切換方式。順序模式依分組清單循環切換；隨機模式選擇目前組以外的分組。只有一個分組時不切換。沿用轉場及禁止中斷設定。按退格、Delete 或 Esc 清除快捷鍵。</value>
+  </data>
+  <data name="ObsSwitchScene" xml:space="preserve">
+    <value>切換場景</value>
+  </data>
+  <data name="ObsSceneRequired" xml:space="preserve">
+    <value>請先選擇或輸入 OBS 場景。</value>
+  </data>
+  <data name="InteractiveProjectObsScenes" xml:space="preserve">
+    <value>項目 OBS 場景…</value>
+  </data>
+  <data name="InteractiveCombinationObsScenes" xml:space="preserve">
+    <value>組合 OBS 場景…</value>
+  </data>
+  <data name="InteractiveObsStartScene" xml:space="preserve">
+    <value>開始時的場景</value>
+  </data>
+  <data name="InteractiveObsEndScene" xml:space="preserve">
+    <value>結束時的場景</value>
+  </data>
+  <data name="InteractiveProjectObsHint" xml:space="preserve">
+    <value>使用主視窗的 OBS 連線和場景清單，留空則沿用所屬分組的場景。開始播放時執行開始場景；結束、被替換或清空時執行結束場景。連續接到設有開始場景的下一項時，跳過中間結束場景，直接切到下一項。媒體或檔案組合循環仍屬於本次觸發。</value>
+  </data>
+  <data name="InteractiveCombinationObsHint" xml:space="preserve">
+    <value>沿用主視窗的 OBS 連線和場景清單。開始和結束分別按「媒體組合 &gt; 互動項目 &gt; 分組」取值，留空則沿用下一級設定。對本次選中的整個媒體組合（包括檔案組合）只執行一次，排隊或預讀不會切換場景。</value>
+  </data>
+  <data name="ObsEnabled" xml:space="preserve">
+    <value>啟用 OBS 操作</value>
+  </data>
+  <data name="InteractiveObsStartSceneColumn" xml:space="preserve">
+    <value>OBS 開始場景</value>
+  </data>
+  <data name="InteractiveObsEndSceneColumn" xml:space="preserve">
+    <value>OBS 結束場景</value>
+  </data>
+  <data name="InteractiveGroupObsScenes" xml:space="preserve">
+    <value>分組 OBS 場景…</value>
+  </data>
+  <data name="InteractiveGroupObsHint" xml:space="preserve">
+    <value>使用主視窗的 OBS 連線和場景清單，為目前分組內的互動項目設定預設開始／結束場景。開始和結束分別按「媒體組合 &gt; 互動項目 &gt; 分組」取值，全部留空則不操作。每次觸發使用獨立快照，修改設定或切換分組不影響已接受的觸發。</value>
   </data>
 </root>
