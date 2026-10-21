@@ -484,6 +484,7 @@ namespace OmniVCamController
 
             private void RegisterProjectGroupHotkeys()
             {
+                if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm || owner.interactiveHotkeysDisabled) return;
                 owner.EnsureInteractiveProjectGroups();
                 var switchHotkey = owner.interactiveGroupSwitchHotkey;
                 if (switchHotkey != null && switchHotkey.KeyCode != Keys.None)

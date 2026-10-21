@@ -1266,6 +1266,69 @@ internal static partial class InteractivePlaybackChecks
         Console.WriteLine("PASS: media/project display sorting preserves shortcuts, combinations, selection progress, active playback and saved XML order.");
     }
 
+    private static void CheckInteractiveHotkeyMaster(Form window, Form probe, object a, object b)
+    {
+        var toggle = (CheckBox)Field(window, "hotkeysEnabledBox");
+        IntPtr handle = probe.Handle;
+        int[] ids = { 0x7301, 0x7302, 0x7303 };
+        Keys[] keys = { Keys.F23, Keys.F21, Keys.F20 };
+        var route = ((IList)Get(a, "Routes"))[0];
+        string configuration = Save(route).ToString();
+        int selection = (int)Get(route, "NextCombinationIndex");
+        object current = Field(owner, "interactiveCurrent"), pending = Field(owner, "interactivePending");
+        object active = Field(owner, "interactiveActive"), runtime = Field(owner, "interactiveRuntimeVersion");
+        try
+        {
+            Check(toggle.Checked, "Interactive hotkeys default to enabled");
+            toggle.Checked = false;
+            Check((bool)Field(owner, "interactiveHotkeysDisabled") &&
+                ((IDictionary)Field(window, "registeredRoutes")).Count == 0 &&
+                ((IDictionary)Field(window, "registeredProjectGroups")).Count == 0 && !(bool)Field(window, "groupSwitchHotkeyRegistered"),
+                "The master switch unregisters route, group and general switching hotkeys immediately");
+            Check(Field(owner, "interactiveCurrent") == current && Field(owner, "interactivePending") == pending &&
+                Equals(Field(owner, "interactiveActive"), active) && Equals(Field(owner, "interactiveRuntimeVersion"), runtime),
+                "Disabling hotkeys preserves playback and its pending media");
+            for (int i = 0; i < keys.Length; i++)
+                Check(RegisterHotKey(handle, ids[i], 7, (uint)keys[i]), "Other applications can actually register a released shortcut: " + keys[i]);
+            foreach (int id in new[] { 0x5100, 0x6101, 0x6000 })
+                Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)id, IntPtr.Zero));
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(a, "Id")) &&
+                (int)Get(route, "NextCombinationIndex") == selection,
+                "Late disabled hotkey messages cannot trigger a project or switch groups");
+            Invoke(window, "ReloadAll");
+            Invoke(window, "RegisterProjectGroupHotkeys");
+            ((Button)((FlowLayoutPanel)Field(window, "projectGroupButtons")).Controls[1]).PerformClick();
+            Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")), "Mouse group selection still works with hotkeys disabled");
+            window.Hide(); window.Show();
+            Check(!toggle.Checked && ((IDictionary)Field(window, "registeredRoutes")).Count == 0 &&
+                ((IDictionary)Field(window, "registeredProjectGroups")).Count == 0 && !(bool)Field(window, "groupSwitchHotkeyRegistered"),
+                "Reloading, changing groups and reopening cannot re-enable a disabled master switch");
+            using (var replacement = (Form)Activator.CreateInstance(Nested("InteractivePlaybackForm"), new object[] { owner }))
+                Check(!((CheckBox)Field(replacement, "hotkeysEnabledBox")).Checked, "A recreated window retains the session-wide disabled state");
+            ((Button)((FlowLayoutPanel)Field(window, "projectGroupButtons")).Controls[0]).PerformClick();
+            toggle.Checked = true;
+            Check(((IDictionary)Field(window, "registeredRoutes")).Count == 0 &&
+                ((IDictionary)Field(window, "registeredProjectGroups")).Count == 2 && !(bool)Field(window, "groupSwitchHotkeyRegistered") &&
+                ((TextBox)Field(window, "operationBox")).Text.Contains("F23"),
+                "Occupied shortcuts fail to register and are logged while other group shortcuts can recover");
+            toggle.Checked = false;
+            foreach (int id in ids) UnregisterHotKey(handle, id);
+            toggle.Checked = true;
+            Check(((IDictionary)Field(window, "registeredRoutes")).Count == 1 &&
+                ((IDictionary)Field(window, "registeredProjectGroups")).Count == 3 && (bool)Field(window, "groupSwitchHotkeyRegistered"),
+                "Re-enabling restores all shortcut families once other applications release them");
+            for (int i = 0; i < keys.Length; i++)
+                Check(!RegisterHotKey(handle, ids[i], 7, (uint)keys[i]), "Restored shortcut is actually owned by the interactive window: " + keys[i]);
+            Check(Save(route).ToString() == configuration, "The temporary master switch preserves shortcut configuration");
+        }
+        finally
+        {
+            foreach (int id in ids) UnregisterHotKey(handle, id);
+            toggle.Checked = true;
+        }
+        Console.WriteLine("PASS: session-wide hotkey master switch releases all three shortcut families to other Windows applications, preserves playback/configuration, ignores disabled messages, survives reload/reopen, and restores available registrations.");
+    }
+
     private static void CheckInteractiveWindowHotkeys()
     {
         var routes = (IList)Field(owner, "interactiveRoutes");
@@ -1393,7 +1456,7 @@ internal static partial class InteractivePlaybackChecks
                     "InteractiveAddFileGroup", "InteractiveEditFileGroup", "InteractiveFileGroupTag", "InteractiveFileGroupPlayback", "InteractiveFileGroupNoRepeat",
                     "InteractiveFileGroupHint", "InteractiveFileGroupFiles", "InteractiveFileGroupRequired", "InteractiveFileGroupSummary",
                     "InteractiveFileGroupScope", "InteractiveFileGroupOne", "InteractiveFileGroupAll",
-                    "InteractivePreventInterrupt", "InteractiveToggleProtection", "InteractiveWaitingProtected", "InteractiveBackendDisconnected", "InteractiveVerifyingPlayback", "InteractivePlaybackVerified", "InteractivePlaybackAutoNext", "InteractivePlaybackRetry", "InteractivePlaybackNoNext" })
+                    "InteractiveHotkeysEnabled", "InteractivePreventInterrupt", "InteractiveToggleProtection", "InteractiveWaitingProtected", "InteractiveBackendDisconnected", "InteractiveVerifyingPlayback", "InteractivePlaybackVerified", "InteractivePlaybackAutoNext", "InteractivePlaybackRetry", "InteractivePlaybackNoNext" })
                 {
                     string value = resources.GetString(key, CultureInfo.CurrentUICulture);
                     Check(!string.IsNullOrWhiteSpace(value) && !value.Contains("?"), "Translated text exists: " + language + " " + key);
@@ -2161,6 +2224,7 @@ internal static partial class InteractivePlaybackChecks
                 Check(!RegisterHotKey(probeHandle, 0x7201, 7, (uint)Keys.F21), "A group switching shortcut is actually registered with Windows");
                 Check((bool)Field(window, "groupSwitchHotkeyRegistered") && !RegisterHotKey(probeHandle, 0x7202, 7, (uint)Keys.F20),
                     "The general switch shortcut is actually registered with Windows");
+                CheckInteractiveHotkeyMaster(window, probe, a, b);
                 Invoke(window, "WndProc", Message.Create(window.Handle, 0x0312, (IntPtr)0x6101, IntPtr.Zero));
                 Check(Equals(Field(owner, "activeInteractiveProjectGroupId"), Get(b, "Id")) &&
                     ((IDictionary)Field(window, "registeredRoutes"))[0x5100] == ((IList)Get(b, "Routes"))[0],

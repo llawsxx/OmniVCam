@@ -769,4 +769,7 @@
   <data name="InteractiveGroupObsExitScene" xml:space="preserve">
     <value>退出分组时的场景</value>
   </data>
+  <data name="InteractiveHotkeysEnabled" xml:space="preserve">
+    <value>启用互动快捷键</value>
+  </data>
 </root>

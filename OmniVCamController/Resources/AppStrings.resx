@@ -479,4 +479,7 @@
   <data name="InteractiveGroupObsExitScene" xml:space="preserve">
     <value>Scene on leaving group</value>
   </data>
+  <data name="InteractiveHotkeysEnabled" xml:space="preserve">
+    <value>Enable interactive hotkeys</value>
+  </data>
 </root>

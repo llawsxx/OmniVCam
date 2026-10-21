@@ -36,6 +36,7 @@ namespace OmniVCamController
         private readonly Queue<InteractiveTriggerRequest> interactiveTriggerRequests = new Queue<InteractiveTriggerRequest>();
         private InteractivePlaybackForm interactiveForm;
         private bool interactiveWindowOpen;
+        private bool interactiveHotkeysDisabled;
         private int interactiveWindowVersion;
         private Task interactiveCleanupTask;
 
@@ -554,6 +555,7 @@ namespace OmniVCamController
             private readonly TextBox queueBox = new TextBox();
             private readonly TextBox operationBox = new TextBox();
             private readonly Label connectionLabel = new Label();
+            private readonly CheckBox hotkeysEnabledBox = new CheckBox { AutoSize = true, Margin = new Padding(12, 6, 0, 0) };
             private readonly Dictionary<int, InteractiveRouteItem> registeredRoutes = new Dictionary<int, InteractiveRouteItem>();
 
             public InteractivePlaybackForm(MainForm owner)
@@ -577,13 +579,21 @@ namespace OmniVCamController
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
                 Controls.Add(root);
 
-                var header = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
+                var header = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
                 connectionLabel.AutoSize = true;
                 connectionLabel.Font = new Font(Font, FontStyle.Bold);
                 connectionLabel.Padding = new Padding(0, 6, 12, 0);
                 header.Controls.Add(connectionLabel);
                 header.Controls.Add(MakeButton(T("SaveXml"), (_, __) => owner.SaveAutoConfig()));
                 header.Controls.Add(MakeButton(T("InteractiveClearQueue"), async (_, __) => await owner.StopInteractiveAsync()));
+                hotkeysEnabledBox.Text = T("InteractiveHotkeysEnabled");
+                hotkeysEnabledBox.Checked = !owner.interactiveHotkeysDisabled;
+                hotkeysEnabledBox.CheckedChanged += (_, __) =>
+                {
+                    owner.interactiveHotkeysDisabled = !hotkeysEnabledBox.Checked;
+                    RegisterRouteHotkeys();
+                };
+                header.Controls.Add(hotkeysEnabledBox);
                 root.Controls.Add(header, 0, 0);
 
                 routeButtons.Dock = DockStyle.Fill;
@@ -957,7 +967,7 @@ namespace OmniVCamController
             private void RegisterRouteHotkeys()
             {
                 UnregisterRouteHotkeys();
-                if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm) return;
+                if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm || owner.interactiveHotkeysDisabled) return;
                 RegisterProjectGroupHotkeys();
                 int index = 0;
                 foreach (InteractiveRouteItem route in owner.interactiveRoutes)
@@ -1001,19 +1011,19 @@ namespace OmniVCamController
             protected override void WndProc(ref Message m)
             {
                 const int WM_HOTKEY = 0x0312;
-                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm &&
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && !owner.interactiveHotkeysDisabled &&
                     groupSwitchHotkeyRegistered && m.WParam.ToInt32() == GroupSwitchHotkeyId)
                 {
                     owner.SwitchNextInteractiveProjectGroup(T("InteractiveHotkeySource") + FormatHotkey(owner.interactiveGroupSwitchHotkey));
                     return;
                 }
-                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm &&
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && !owner.interactiveHotkeysDisabled &&
                     registeredProjectGroups.TryGetValue(m.WParam.ToInt32(), out InteractiveProjectGroup group))
                 {
                     owner.SwitchInteractiveProjectGroup(group, T("InteractiveHotkeySource") + FormatHotkey(group.Hotkey));
                     return;
                 }
-                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && registeredRoutes.TryGetValue(m.WParam.ToInt32(), out InteractiveRouteItem route))
+                if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && !owner.interactiveHotkeysDisabled && registeredRoutes.TryGetValue(m.WParam.ToInt32(), out InteractiveRouteItem route))
                 {
                     owner.RequestInteractiveRoute(route, T("InteractiveHotkeySource") + FormatHotkey(route.Hotkey));
                     return;
