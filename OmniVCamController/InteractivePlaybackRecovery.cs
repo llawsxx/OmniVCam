@@ -63,7 +63,7 @@ namespace OmniVCamController
                 interactiveSendingNext = null;
             }
             interactiveNextQueueTask = null;
-            if (interactiveCurrent != null) interactiveCurrent.BackendFrameId = 0;
+            if (interactiveCurrent != null) { interactiveCurrent.BackendFrameId = 0; interactiveCurrent.MinimumBackendFrameId = 0; }
             if (interactivePending != null) { interactivePending.BackendFrameId = 0; interactivePending.MinimumBackendFrameId = 0; }
             foreach (var entry in interactiveQueue) { entry.BackendFrameId = 0; entry.MinimumBackendFrameId = 0; }
             AppendInteractiveLog(T("InteractiveBackendDisconnected"));
@@ -116,7 +116,13 @@ namespace OmniVCamController
         private bool ApplyInteractiveOutputStarted(BackendInputEvent inputEvent)
         {
             if (inputEvent.FrameId <= 0 || inputEvent.FrameId <= interactiveLastEndedFrameId || IsObsoleteInteractiveTransitionFrame(inputEvent.FrameId)) return false;
-            bool pendingMatches = interactivePending != null && inputEvent.FrameId > interactivePending.MinimumBackendFrameId &&
+            // After PLAY, the first matching output confirms the current invocation. A same-file
+            // lookahead needs its own known frame ID before it can take precedence over that event.
+            bool confirmsImmediateCurrent = interactiveCurrent != null && interactiveCurrent.BackendFrameId == 0 &&
+                !interactiveCurrent.RequiresOutputConfirmation && inputEvent.FrameId > interactiveCurrent.MinimumBackendFrameId &&
+                InputSummariesEqual(inputEvent.Input, interactiveCurrent.InputSummary) &&
+                interactivePending?.BackendFrameId != inputEvent.FrameId;
+            bool pendingMatches = !confirmsImmediateCurrent && interactivePending != null && inputEvent.FrameId > interactivePending.MinimumBackendFrameId &&
                 InputSummariesEqual(inputEvent.Input, interactivePending.InputSummary) &&
                 (interactivePending.BackendFrameId == 0 || interactivePending.BackendFrameId == inputEvent.FrameId || interactivePending.Loop) &&
                 (interactiveCurrent == null || !InputSummariesEqual(inputEvent.Input, interactiveCurrent.InputSummary) ||
@@ -128,7 +134,7 @@ namespace OmniVCamController
                 ActivateVerifiedInteractiveEntry(interactivePending);
             }
             else if (!interactiveAwaitingPendingConfirmation && interactiveCurrent != null &&
-                InputSummariesEqual(inputEvent.Input, interactiveCurrent.InputSummary) &&
+                InputSummariesEqual(inputEvent.Input, interactiveCurrent.InputSummary) && inputEvent.FrameId > interactiveCurrent.MinimumBackendFrameId &&
                 (interactiveCurrent.BackendFrameId == 0 || interactiveCurrent.BackendFrameId == inputEvent.FrameId || interactiveCurrent.Loop))
             {
                 interactiveCurrent.BackendFrameId = inputEvent.FrameId;
@@ -165,6 +171,7 @@ namespace OmniVCamController
                     (interactiveCurrent.GroupLoop == null || interactiveCurrent.GroupLoop.Cancelled) &&
                     (CurrentInteractiveProjectGroup.DefaultMediaId != Guid.Empty || interactiveCurrent.ObsPlayback != null))) &&
                 InputSummariesEqual(actual, interactiveCurrent.InputSummary) && !IsObsoleteInteractiveTransitionFrame(actualFrameId) &&
+                (actualFrameId == 0 || actualFrameId > interactiveCurrent.MinimumBackendFrameId) &&
                 (actualFrameId == 0 || interactiveCurrent.BackendFrameId == 0 || actualFrameId == interactiveCurrent.BackendFrameId))
             {
                 ResetInteractivePlaybackWatchdog();
@@ -189,6 +196,7 @@ namespace OmniVCamController
                     !interactivePending.RequiresOutputConfirmation || !InputSummariesEqual(actual, interactiveCurrent?.InputSummary));
             bool wasUnverified = interactiveNeedsStatusCheck;
             if (running && !interactiveAwaitingPendingConfirmation && interactiveCurrent != null && InputSummariesEqual(actual, interactiveCurrent.InputSummary) && !IsObsoleteInteractiveTransitionFrame(actualFrameId) &&
+                (actualFrameId == 0 || actualFrameId > interactiveCurrent.MinimumBackendFrameId) &&
                 (actualFrameId == 0 || interactiveCurrent.BackendFrameId == 0 || actualFrameId == interactiveCurrent.BackendFrameId ||
                     (interactiveCurrent.Loop && !pendingMatches)))
             {
@@ -311,6 +319,7 @@ namespace OmniVCamController
         private void ActivateVerifiedInteractiveEntry(InteractivePlaybackEntry entry)
         {
             interactiveStatusRevision++;
+            CountCompletedInteractiveMiddle(entry);
             interactiveCurrent = entry;
             SetInteractiveObsPlayback(entry);
             entry.RequiresOutputConfirmation = false;

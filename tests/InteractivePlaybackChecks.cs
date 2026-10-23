@@ -1040,6 +1040,7 @@ internal static partial class InteractivePlaybackChecks
             await writer.WriteLineAsync(BackendStatus(protectedFile, "paused", protectedFile));
             Check((await CompleteSoon(reader.ReadLineAsync(), "Verified protected playback defers the trigger")).StartsWith("PLAY_NEXT A2.mp4"), "A still-playing or paused protected input correctly uses PLAY_NEXT");
             await writer.WriteLineAsync("OK next queued");
+            await WaitForPhasePendingAsync();
             Check(!dispatch.IsCompleted, "The verified protected trigger waits for actual completion");
             Invoke(owner, "ApplyInteractiveBackendStatus", "OK seconds=0 state=stopped actual_input= input=");
             SetField("interactiveMismatchSince", DateTime.UtcNow.AddSeconds(-11));
@@ -2368,6 +2369,8 @@ internal static partial class InteractivePlaybackChecks
             CheckInteractiveDisplayOrder();
             CheckInteractiveEventOrdering();
             CheckInterruptProtection();
+            CheckFileGroupPhases(assembly);
+            CheckInteractiveCombos();
             CheckActualOutputVerification();
             CheckPlaybackWatchdog();
             CheckBackendRestartRecovery();

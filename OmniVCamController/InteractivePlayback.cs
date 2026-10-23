@@ -201,6 +201,7 @@ namespace OmniVCamController
                 }
                 interactiveStatusRevision++;
                 ResetInteractivePlaybackWatchdog();
+                CountCompletedInteractiveMiddle(interactivePending);
                 interactiveCurrent = interactivePending;
                 SetInteractiveObsPlayback(interactiveCurrent);
                 currentStatusInput = interactiveCurrent.InputSummary;
@@ -230,7 +231,8 @@ namespace OmniVCamController
         {
             if (!interactiveWindowOpen || closingMainForm || route == null) return;
             ObserveBackendConnectionLoss();
-            List<InteractivePlaybackEntry> entries = BuildInteractiveEntries(route);
+            var comboRequest = BuildInteractiveComboRequest(route);
+            List<InteractivePlaybackEntry> entries = comboRequest?.Entries ?? BuildInteractiveEntries(route);
             if (entries.Count == 0)
             {
                 AppendInteractiveLog(source + " - " + T(route.RandomSelectionUnavailable ? "InteractiveCombinationUnavailable" : "InteractiveNoPlayableMedia"));
@@ -244,20 +246,18 @@ namespace OmniVCamController
             foreach (var request in waiting) interactiveTriggerRequests.Enqueue(request);
             if (!interactiveActive && interactiveTriggerRequests.Count == 0) BeginInteractiveMode();
 
-            interactiveTriggerRequests.Enqueue(new InteractiveTriggerRequest
-            {
-                RouteName = route.Name,
-                ProjectGroupVersion = interactiveProjectGroupVersion,
-                ProjectGroupId = activeInteractiveProjectGroupId,
-                Immediate = route.Immediate,
-                Source = source,
-                Entries = entries
-            });
+            var triggerRequest = comboRequest ?? new InteractiveTriggerRequest { Entries = entries };
+            triggerRequest.RouteName = route.Name;
+            triggerRequest.ProjectGroupVersion = interactiveProjectGroupVersion;
+            triggerRequest.ProjectGroupId = activeInteractiveProjectGroupId;
+            triggerRequest.Immediate = route.Immediate;
+            triggerRequest.Source = source;
+            interactiveTriggerRequests.Enqueue(triggerRequest);
             if (interactiveProtectedHandoff != null && !interactiveProtectedHandoff.Request.IsGroupTransition &&
                 interactiveProtectedHandoff.Request.Entries.All(entry => entry.IsGroupDefault))
                 CancelInteractiveProtectedHandoff();
             AppendInteractiveLog(source + " - " + route.Name + " [" +
-                (route.Immediate ? "PLAY" : "PLAY_NEXT") + "] " +
+                (comboRequest != null ? T("InteractiveCombo") : route.Immediate ? "PLAY" : "PLAY_NEXT") + "] " +
                 string.Join(" → ", entries.Select(FormatInteractiveEntry)));
             interactiveForm?.RefreshRuntime();
             if (!processingInteractiveTriggers) _ = ProcessInteractiveTriggerRequestsAsync();
@@ -320,15 +320,26 @@ namespace OmniVCamController
             int version = interactiveRuntimeVersion;
             await WaitForInteractiveNextQueueAsync();
             if (version != interactiveRuntimeVersion) return;
+            if (await TryPlayInteractiveComboAsync(request)) return;
+            if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
             if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)
             {
                 await WaitForProtectedInteractiveMediaAsync(request);
                 return;
             }
-            request.Entries[0].MinimumBackendFrameId = Math.Max(request.Entries[0].MinimumBackendFrameId,
+            await PlayInteractiveEntriesImmediatelyAsync(request.Entries);
+        }
+
+        private async Task PlayInteractiveEntriesImmediatelyAsync(List<InteractivePlaybackEntry> entries)
+        {
+            entries[0].MinimumBackendFrameId = Math.Max(entries[0].MinimumBackendFrameId,
                 Math.Max(interactiveObservedBackendFrameId,
                     Math.Max(Math.Max(interactiveCurrent?.BackendFrameId ?? 0, interactiveCurrent?.MinimumBackendFrameId ?? 0),
                         interactivePending?.BackendFrameId ?? 0)));
+            entries[0].MinimumBackendFrameId = Math.Max(entries[0].MinimumBackendFrameId, entries[0].BackendFrameId);
+            entries[0].BackendFrameId = 0;
+            entries[0].ReplaceAfterFrameId = 0;
+            entries[0].RequiresOutputConfirmation = false;
             ResetInteractivePlaybackWatchdog();
             int playVersion = ++interactiveRuntimeVersion;
             interactiveBackendEvents.Clear();
@@ -338,9 +349,9 @@ namespace OmniVCamController
             interactivePendingSource = string.Empty;
             interactiveActive = true;
             interactiveStatusRevision++;
-            interactiveCurrent = request.Entries[0];
+            interactiveCurrent = entries[0];
             interactiveStartingEntry = interactiveCurrent;
-            foreach (InteractivePlaybackEntry entry in request.Entries.Skip(1)) interactiveQueue.Enqueue(entry);
+            foreach (InteractivePlaybackEntry entry in entries.Skip(1)) interactiveQueue.Enqueue(entry);
 
             string command = BuildInteractivePlayCommand("PLAY", interactiveCurrent);
             string reply = await SendRawCommandAsync(command);
@@ -365,6 +376,8 @@ namespace OmniVCamController
             int version = interactiveRuntimeVersion;
             await WaitForInteractiveNextQueueAsync();
             if (version != interactiveRuntimeVersion) return;
+            if (await TryPlayInteractiveComboAsync(request)) return;
+            if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
             if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)
             {
                 await WaitForProtectedInteractiveMediaAsync(request);
@@ -373,8 +386,23 @@ namespace OmniVCamController
             interactiveActive = true;
 
             interactiveStatusRevision++;
+            var anyRun = interactiveCurrent?.PhaseRun;
+            bool arbitraryGroup = anyRun != null && anyRun.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.Any;
             InteractivePlaybackEntry replaced = PrepareInteractiveRouteAppend();
-            if (replaced != null)
+            if (arbitraryGroup)
+            {
+                anyRun.Ending = true;
+                var retained = interactiveQueue.Where(entry => entry.PhaseRun != anyRun).ToList();
+                interactiveQueue.Clear();
+                foreach (var entry in retained) interactiveQueue.Enqueue(entry);
+                if (interactivePending?.PhaseRun == anyRun)
+                {
+                    replaced = interactivePending;
+                    interactivePending = null;
+                    interactivePendingSource = string.Empty;
+                }
+            }
+            if (replaced != null && !arbitraryGroup)
             {
                 request.Entries[0].RequiresOutputConfirmation = true;
                 request.Entries[0].MinimumBackendFrameId = Math.Max(interactiveCurrent?.BackendFrameId ?? 0, replaced.BackendFrameId);
@@ -382,6 +410,7 @@ namespace OmniVCamController
             }
 
             foreach (InteractivePlaybackEntry entry in request.Entries) interactiveQueue.Enqueue(entry);
+            if (arbitraryGroup && replaced != null) MarkInteractivePhasedReplacement(interactiveQueue.Peek(), replaced);
             await EnsureInteractiveNextQueuedAsync();
         }
 
@@ -401,10 +430,16 @@ namespace OmniVCamController
         {
             int version = interactiveRuntimeVersion;
             if (!interactiveActive || interactiveNeedsStatusCheck || interactivePending != null) return;
+            QueueInteractivePhasedContinuation();
             QueueInteractiveGroupContinuation();
             QueueInteractiveGroupDefaultIfNeeded();
             if (interactiveQueue.Count == 0) return;
             InteractivePlaybackEntry next = interactiveQueue.Dequeue();
+            if (next.PhaseRun != null && next.Phase == InteractiveGroupPhase.End)
+            {
+                next.PhaseRun.Ending = true;
+                if (next.GroupLoop != null) next.GroupLoop.Cancelled = true;
+            }
             interactiveSendingNext = next;
             string sourceSummary = interactiveCurrent != null
                 ? interactiveCurrent.InputSummary
@@ -477,6 +512,7 @@ namespace OmniVCamController
 
         private List<InteractivePlaybackEntry> BuildInteractiveMediaEntries(InteractiveMediaItem media, InteractiveFileGroupLoop groupLoop)
         {
+            if (HasInteractiveGroupBoundaries(media)) return BuildInteractivePhasedGroupEntries(media, groupLoop);
             var paths = SelectInteractiveMediaPaths(media, random);
             if (media.IsFileGroup && media.Loop && groupLoop == null)
                 groupLoop = new InteractiveFileGroupLoop { Media = SnapshotInteractiveFileGroup(media) };
@@ -712,7 +748,8 @@ namespace OmniVCamController
                 {
                     var row = new ListViewItem(FormatInteractiveMediaTitle(media));
                     row.SubItems.Add(media.Loop ? T("InteractiveYes") : string.Empty);
-                    row.SubItems.Add(media.PreventInterrupt ? T("InteractiveYes") : string.Empty);
+                    row.SubItems.Add(HasInteractiveGroupBoundaries(media) ? T(InteractiveGroupInterruptionKey(media.FileGroupInterruptionMode)) :
+                        media.PreventInterrupt ? T("InteractiveYes") : string.Empty);
                     row.SubItems.Add(media.Options);
                     row.SubItems.Add(media.IsFileGroup ? DescribeInteractiveFileGroup(media) : media.Path);
                     row.Tag = media;
@@ -886,7 +923,17 @@ namespace OmniVCamController
                 foreach (ListViewItem row in mediaView.SelectedItems)
                 {
                     var media = row.Tag as InteractiveMediaItem;
-                    if (media != null) media.PreventInterrupt = !media.PreventInterrupt;
+                    if (media == null) continue;
+                    if (HasInteractiveGroupBoundaries(media))
+                    {
+                        using (var dialog = new FileGroupBoundaryEditDialog(media))
+                            if (dialog.ShowDialog(this) == DialogResult.OK)
+                            {
+                                dialog.Apply(media);
+                                media.Selection = new InteractiveFileGroupSelection();
+                            }
+                    }
+                    else media.PreventInterrupt = !media.PreventInterrupt;
                 }
                 RefreshMedia();
                 owner.SaveActiveConnectionState();
@@ -1054,6 +1101,7 @@ namespace OmniVCamController
         {
             return new XElement("Route", new XAttribute("name", route.Name),
                 new XAttribute("immediate", route.Immediate ? "1" : "0"),
+                new XAttribute("comboEnabled", route.ComboEnabled ? "1" : "0"),
                 new XAttribute("hotkey", route.Hotkey == null ? string.Empty : route.Hotkey.KeyCode.ToString()),
                 new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
                 new XAttribute("selection", route.RandomOrder ? "random" : "sequential"),
@@ -1073,6 +1121,7 @@ namespace OmniVCamController
                 ObsStartScene = GetAttribute(element, "obsStartScene", string.Empty),
                 ObsEndScene = GetAttribute(element, "obsEndScene", string.Empty),
                 Immediate = GetAttribute(element, "immediate", "0") == "1",
+                ComboEnabled = GetAttribute(element, "comboEnabled", "0") == "1",
                 Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty),
                     GetAttribute(element, "modifiers", string.Empty)),
                 RandomOrder = !string.Equals(GetAttribute(element, "selection", "random"), "sequential", StringComparison.OrdinalIgnoreCase),
@@ -1165,6 +1214,7 @@ namespace OmniVCamController
             private readonly ListBox combinationsBox = new ListBox { HorizontalScrollbar = true };
             private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
             private readonly ComboBox commandBox = new ComboBox();
+            private readonly CheckBox comboEnabledBox = new CheckBox { AutoSize = true };
             private readonly ComboBox selectionBox = new ComboBox();
             private readonly List<InteractiveMediaCombination> combinations = new List<InteractiveMediaCombination>();
             private bool refreshingCombinations;
@@ -1193,6 +1243,11 @@ namespace OmniVCamController
                 var commandBar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 commandBox.Width = 160;
                 commandBar.Controls.Add(commandBox);
+                comboEnabledBox.Text = T("InteractiveComboEnabled");
+                comboEnabledBox.Checked = route?.ComboEnabled == true;
+                var comboTip = new ToolTip(); comboTip.SetToolTip(comboEnabledBox, T("InteractiveComboHint"));
+                Disposed += (_, __) => comboTip.Dispose();
+                commandBar.Controls.Add(comboEnabledBox);
                 commandBar.Controls.Add(MakeButton(T("InteractiveProjectObsScenes"), (_, __) => EditObsScenes(false)));
                 AddDialogRow(root, T("InteractiveTriggerMode"), commandBar, 2);
                 selectionBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -1363,6 +1418,7 @@ namespace OmniVCamController
                 route.ObsStartScene = routeObsStartScene; route.ObsEndScene = routeObsEndScene;
                 route.Hotkey = hotkeyBox.Value == null ? null : hotkeyBox.Value.Clone();
                 route.Immediate = string.Equals(commandBox.SelectedItem as string, "PLAY", StringComparison.Ordinal);
+                route.ComboEnabled = comboEnabledBox.Checked;
                 route.RandomOrder = selectionBox.SelectedIndex == 0;
                 route.RecentCombinationCount = (int)recentCountBox.Value;
                 route.Combinations = combinations.Select(CopyInteractiveCombination).ToList();
@@ -1451,7 +1507,19 @@ namespace OmniVCamController
             public List<string> FilePaths { get; set; } = new List<string>();
             public bool FileGroupRandom { get; set; }
             public bool FileGroupPlayAll { get; set; }
+            public bool FileGroupRandomCount { get; set; }
+            public int FileGroupMinimumFiles { get; set; } = 1;
+            public int FileGroupMaximumFiles { get; set; } = 3;
+            public int FileGroupMinimumMiddleFiles { get; set; }
             public bool FileGroupNoRepeat { get; set; } = true;
+            public List<string> StartFilePaths { get; set; } = new List<string>();
+            public List<string> EndFilePaths { get; set; } = new List<string>();
+            public InteractiveFileChoiceRules FileRules { get; set; } = new InteractiveFileChoiceRules();
+            public InteractiveFileChoiceRules StartFileRules { get; set; } = new InteractiveFileChoiceRules();
+            public InteractiveFileChoiceRules EndFileRules { get; set; } = new InteractiveFileChoiceRules();
+            public bool StartFileRandom { get; set; }
+            public bool EndFileRandom { get; set; }
+            public InteractiveGroupInterruptionMode FileGroupInterruptionMode { get; set; }
             // Active loops share selection progress with new triggers until the group is edited.
             public InteractiveFileGroupSelection Selection { get; set; } = new InteractiveFileGroupSelection();
             public int NextFileIndex { get { return Selection.NextFileIndex; } set { Selection.NextFileIndex = value; } }
@@ -1460,6 +1528,8 @@ namespace OmniVCamController
 
         private sealed class InteractiveRouteItem
         {
+            public Guid RuntimeId { get; } = Guid.NewGuid();
+            public bool ComboEnabled { get; set; }
             public string Name { get; set; } = string.Empty;
             public bool Immediate { get; set; }
             public InteractiveHotkey Hotkey { get; set; }
@@ -1502,7 +1572,12 @@ namespace OmniVCamController
 
         private sealed class InteractivePlaybackEntry
         {
+            public Guid RouteId { get; set; }
+            public bool IsComboMiddle { get; set; }
             public InteractiveObsPlayback ObsPlayback { get; set; }
+            public InteractiveFileGroupRun PhaseRun { get; set; }
+            public InteractiveGroupPhase Phase { get; set; }
+            public bool PhaseMiddleCompleted { get; set; }
             public bool IsGroupTransition { get; set; }
             public bool IsGroupDefault { get; set; }
             public Guid MediaId { get; set; }
@@ -1520,10 +1595,13 @@ namespace OmniVCamController
             public InteractiveFileGroupLoop GroupLoop { get; set; }
             public int GroupIteration { get; set; }
             public bool GroupEnd { get; set; }
+            public InteractivePlaybackEntry CopyForQueue() => (InteractivePlaybackEntry)MemberwiseClone();
         }
 
         private sealed class InteractiveTriggerRequest
         {
+            public InteractiveFileGroupRun ComboRun { get; set; }
+            public InteractiveRouteItem ComboRoute { get; set; }
             public bool IsGroupTransition { get; set; }
             public Guid ProjectGroupId { get; set; }
             public int ProjectGroupVersion { get; set; }

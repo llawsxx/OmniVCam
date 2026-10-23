@@ -585,7 +585,7 @@
   <data name="InteractiveFileGroupTag" xml:space="preserve"><value>[檔案組合]</value></data>
   <data name="InteractiveFileGroupPlayback" xml:space="preserve"><value>檔案選擇方式</value></data>
   <data name="InteractiveFileGroupNoRepeat" xml:space="preserve"><value>一輪內不重複</value></data>
-  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>一個檔案：每次選取下一個或隨機檔案，可跨多次觸發一輪內不重複。全部檔案：按順序或打亂順序播放整組，每個檔案播放一次。在媒體庫外面的循環設定中開啟循環後，會循環整個檔案組合。</value></data>
+  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>一個檔案每次選一個；全部檔案播放完整清單。隨機數量每次在最少和最多之間重新抽取播放段數，可超過檔案總數。重複選取遵循順序 / 隨機、權重、最近 N 次不重複和一輪內不重複設定。有開始 / 結束檔案時，循環只重複中間。</value></data>
   <data name="InteractiveFileGroupFiles" xml:space="preserve"><value>組合內檔案</value></data>
   <data name="InteractiveFileGroupRequired" xml:space="preserve"><value>請填寫組合標題，並至少新增一個檔案。</value></data>
   <data name="InteractiveFileGroupSummary" xml:space="preserve"><value>{0} 個檔案；{1}</value></data>
@@ -771,5 +771,89 @@
   </data>
   <data name="InteractiveHotkeysEnabled" xml:space="preserve">
     <value>啟用互動快捷鍵</value>
+  </data>
+  <data name="FileGroupBoundarySettings" xml:space="preserve">
+    <value>開始 / 結束檔案</value>
+  </data>
+  <data name="FileGroupBoundaryCounts" xml:space="preserve">
+    <value>開始 / 結束檔案（{0} / {1}）</value>
+  </data>
+  <data name="FileGroupMiddleFiles" xml:space="preserve">
+    <value>中間檔案</value>
+  </data>
+  <data name="FileGroupStartFiles" xml:space="preserve">
+    <value>開始檔案（每次選一個）</value>
+  </data>
+  <data name="FileGroupEndFiles" xml:space="preserve">
+    <value>結束檔案（每次選一個）</value>
+  </data>
+  <data name="FileGroupInterruption" xml:space="preserve">
+    <value>打斷方式</value>
+  </data>
+  <data name="FileGroupInterruptDefault" xml:space="preserve">
+    <value>預設：播完目前檔案，再播結束檔案</value>
+  </data>
+  <data name="FileGroupInterruptAny" xml:space="preserve">
+    <value>允許任意打斷</value>
+  </data>
+  <data name="FileGroupInterruptMiddle" xml:space="preserve">
+    <value>中間可立即打斷，開始 / 結束不可打斷</value>
+  </data>
+  <data name="FileGroupBoundaryHint" xml:space="preserve">
+    <value>開始和結束各按規則選一個檔案，中間檔案按原有規則播放。保底數量為 0 時，預設：開始階段被打斷時播完開始，略過中間，再播結束；中間階段被打斷時播完目前檔案，再播結束。任意打斷模式直接切走，不補播結束。第三種模式可立即打斷中間並轉入結束，開始和結束仍須播完。整組不可打斷模式須播完開始、目前輪次全部中間檔案和結束。循環時只重複中間。開始或結束清單可留空；兩者都留空時使用原來的禁止打斷設定。</value>
+  </data>
+  <data name="FileGroupFileRules" xml:space="preserve">
+    <value>機率 / 最近不重複</value>
+  </data>
+  <data name="FileGroupFileWeight" xml:space="preserve">
+    <value>選取權重</value>
+  </data>
+  <data name="FileGroupProbability" xml:space="preserve">
+    <value>基礎選取機率</value>
+  </data>
+  <data name="FileGroupRecentFiles" xml:space="preserve">
+    <value>最近 N 次選取不重複（0 為關閉）</value>
+  </data>
+  <data name="FileGroupFileRulesHint" xml:space="preserve">
+    <value>隨機按相對權重選取，例如 1 和 3 對應基礎機率 25% 和 75%。先排除最近選過的檔案，再按剩餘檔案權重重新計算機率。N 最大按檔案數減一生效。開始、中間、結束分別記錄。順序模式忽略這些規則；播放全部時，權重影響隨機順序，所有中間檔案仍會播放。</value>
+  </data>
+  <data name="FileGroupFileName" xml:space="preserve">
+    <value>檔案</value>
+  </data>
+  <data name="FileGroupInterruptNone" xml:space="preserve">
+    <value>整組不可打斷：開始、中間、結束全部播完</value>
+  </data>
+  <data name="FileGroupRandomCount" xml:space="preserve">
+    <value>隨機數量的檔案</value>
+  </data>
+  <data name="FileGroupRandomCountSummary" xml:space="preserve">
+    <value>隨機 {0}～{1} 個檔案</value>
+  </data>
+  <data name="FileGroupMinimumFiles" xml:space="preserve">
+    <value>最少檔案數</value>
+  </data>
+  <data name="FileGroupMaximumFiles" xml:space="preserve">
+    <value>最多檔案數</value>
+  </data>
+  <data name="FileGroupMinimumMiddleFiles" xml:space="preserve">
+    <value>預設模式至少播完的中間檔案數</value>
+  </data>
+  <data name="FileGroupMinimumMiddleHint" xml:space="preserve">
+    <value>0 允許開始被打斷後直接轉結束；大於 0 時須播夠段數，已播完的計入；選取數量不足時會補足。可超過檔案總數，重複選取遵循原有播放規則。</value>
+  </data>
+  <data name="InteractiveCombo" xml:space="preserve">
+    <value>連擊</value>
+  </data>
+  <data name="InteractiveComboEnabled" xml:space="preserve">
+    <value>啟用連擊</value>
+  </data>
+  <data name="InteractiveComboHint" xml:space="preserve">
+    <value>僅適用於至少設定了開始檔案或結束檔案的檔案組合；兩者都未設定時，勾選後仍按一般項目觸發規則處理。正在播放開始檔案或中間檔案時，再次觸發同一項目會增加一個中間檔案，保留原定剩餘中間檔案，沿用目前組合和 OBS 場景。開始階段僅「允許任意打斷」立即切換，其餘模式等開始檔案播完；中間階段預設和整組不可打斷模式等目前檔案播完，其餘模式立即切換。結束階段或觸發其他項目仍按原有規則處理。</value>
+  </data>
+  <data name="InteractiveComboWaiting" xml:space="preserve">
+    <value>連擊，等待目前中間檔案播完：</value>
+  </data>
+  <data name="InteractiveComboPlaying" xml:space="preserve">
+    <value>連擊，立即切換中間檔案：</value>
   </data>
 </root>

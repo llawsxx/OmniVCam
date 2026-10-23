@@ -71,6 +71,11 @@ namespace OmniVCamController
             else selected = playable[sequentialIndex];
             var entries = BuildInteractiveCombinationEntries(selected);
             if (entries.Count == 0) return entries;
+            foreach (var entry in entries)
+            {
+                entry.RouteId = route.RuntimeId;
+                if (entry.PhaseRun != null) entry.PhaseRun.RouteId = route.RuntimeId;
+            }
             AttachInteractiveObsPlayback(route, selected, entries);
             if (route.RandomOrder)
             {

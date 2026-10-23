@@ -154,7 +154,7 @@ namespace OmniVCamController
         {
             var media = interactiveMedia.FirstOrDefault(item => item.RuntimeId == group.DefaultMediaId);
             if (media == null || !CanPlayInteractiveMedia(media) ||
-                (media.IsFileGroup ? media.FilePaths.Any(path => !File.Exists(path)) : !File.Exists(media.Path)))
+                (media.IsFileGroup ? EnumerateInteractiveMediaFiles(media).Any(path => !File.Exists(path)) : !File.Exists(media.Path)))
             {
                 if (reportMissing && group.DefaultMediaId != Guid.Empty)
                     AppendInteractiveLog(T("InteractiveDefaultVideoMissing") + (media?.Title ?? group.Name));
@@ -214,7 +214,7 @@ namespace OmniVCamController
             if (setting != null && setting.MediaId != Guid.Empty)
             {
                 var media = interactiveMedia.FirstOrDefault(item => item.RuntimeId == setting.MediaId);
-                if (!CanPlayInteractiveMedia(media) || (media.IsFileGroup ? media.FilePaths.Any(path => !File.Exists(path)) : !File.Exists(media.Path)))
+                if (!CanPlayInteractiveMedia(media) || (media.IsFileGroup ? EnumerateInteractiveMediaFiles(media).Any(path => !File.Exists(path)) : !File.Exists(media.Path)))
                 {
                     AppendInteractiveLog(T("InteractiveTransitionFileMissing") + (media?.Title ?? from.Name + " -> " + target.Name));
                     return;

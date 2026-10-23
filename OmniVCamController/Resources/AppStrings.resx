@@ -295,7 +295,7 @@
   <data name="InteractiveFileGroupTag" xml:space="preserve"><value>[File group]</value></data>
   <data name="InteractiveFileGroupPlayback" xml:space="preserve"><value>File selection</value></data>
   <data name="InteractiveFileGroupNoRepeat" xml:space="preserve"><value>No repeats within a round</value></data>
-  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>One file: each use selects the next or a random file; no-repeat rounds apply across triggers. All files: play the complete list in order or shuffle it, playing each file once. Set looping in the media library to repeat the entire group.</value></data>
+  <data name="InteractiveFileGroupHint" xml:space="preserve"><value>One file selects one per use; all files plays the complete list. Random count draws a new playback count between the minimum and maximum each use, which may exceed the file count. Files may be reused according to sequential/random, weight, recent-N and no-repeat-round settings. With start/end files, looping repeats only the middle.</value></data>
   <data name="InteractiveFileGroupFiles" xml:space="preserve"><value>Files in group</value></data>
   <data name="InteractiveFileGroupRequired" xml:space="preserve"><value>Enter a group title and add at least one file.</value></data>
   <data name="InteractiveFileGroupSummary" xml:space="preserve"><value>{0} files; {1}</value></data>
@@ -481,5 +481,89 @@
   </data>
   <data name="InteractiveHotkeysEnabled" xml:space="preserve">
     <value>Enable interactive hotkeys</value>
+  </data>
+  <data name="FileGroupBoundarySettings" xml:space="preserve">
+    <value>Start / end files</value>
+  </data>
+  <data name="FileGroupBoundaryCounts" xml:space="preserve">
+    <value>Start / end files ({0} / {1})</value>
+  </data>
+  <data name="FileGroupMiddleFiles" xml:space="preserve">
+    <value>Middle files</value>
+  </data>
+  <data name="FileGroupStartFiles" xml:space="preserve">
+    <value>Start files (choose one per invocation)</value>
+  </data>
+  <data name="FileGroupEndFiles" xml:space="preserve">
+    <value>End files (choose one per invocation)</value>
+  </data>
+  <data name="FileGroupInterruption" xml:space="preserve">
+    <value>Interruption policy</value>
+  </data>
+  <data name="FileGroupInterruptDefault" xml:space="preserve">
+    <value>Default: finish current file, then end file</value>
+  </data>
+  <data name="FileGroupInterruptAny" xml:space="preserve">
+    <value>Allow interruption at any time</value>
+  </data>
+  <data name="FileGroupInterruptMiddle" xml:space="preserve">
+    <value>Interrupt middle immediately; protect start / end</value>
+  </data>
+  <data name="FileGroupBoundaryHint" xml:space="preserve">
+    <value>Choose one start file and one end file independently, with the middle files between them. With the minimum set to 0, default: an interruption during the start finishes the start, skips the middle and plays the end; during the middle it finishes the current file, then plays the end. Any-time interruption skips the end. The third mode interrupts the middle directly into the end; start and end must finish. Never-interrupt mode finishes the start, all middle files in the current pass and the end. Looping repeats the middle only. Empty start / end lists omit that phase; if both are empty, the original protection setting applies.</value>
+  </data>
+  <data name="FileGroupFileRules" xml:space="preserve">
+    <value>Probability / recent exclusions</value>
+  </data>
+  <data name="FileGroupFileWeight" xml:space="preserve">
+    <value>Selection weight</value>
+  </data>
+  <data name="FileGroupProbability" xml:space="preserve">
+    <value>Base probability</value>
+  </data>
+  <data name="FileGroupRecentFiles" xml:space="preserve">
+    <value>Do not repeat within the last N selections (0 = off)</value>
+  </data>
+  <data name="FileGroupFileRulesHint" xml:space="preserve">
+    <value>Random selection uses relative weights: 1 and 3 give base probabilities of 25% and 75%. Recent files are excluded and probabilities are recalculated among eligible files. N is limited to file count minus one. Start, middle and end have separate histories. Sequential selection ignores these rules; play-all randomizes order by weight and still plays every middle file.</value>
+  </data>
+  <data name="FileGroupFileName" xml:space="preserve">
+    <value>File</value>
+  </data>
+  <data name="FileGroupInterruptNone" xml:space="preserve">
+    <value>Never interrupt: finish the entire current group</value>
+  </data>
+  <data name="FileGroupRandomCount" xml:space="preserve">
+    <value>Random number of files</value>
+  </data>
+  <data name="FileGroupRandomCountSummary" xml:space="preserve">
+    <value>Random {0}–{1} files</value>
+  </data>
+  <data name="FileGroupMinimumFiles" xml:space="preserve">
+    <value>Minimum files</value>
+  </data>
+  <data name="FileGroupMaximumFiles" xml:space="preserve">
+    <value>Maximum files</value>
+  </data>
+  <data name="FileGroupMinimumMiddleFiles" xml:space="preserve">
+    <value>Minimum completed middle files (default policy)</value>
+  </data>
+  <data name="FileGroupMinimumMiddleHint" xml:space="preserve">
+    <value>0 allows start → end on interruption. A positive value guarantees that many completed middle playback occurrences, expanding a smaller selection if necessary. It may exceed the number of files; repeated selections follow the existing playback rules.</value>
+  </data>
+  <data name="InteractiveCombo" xml:space="preserve">
+    <value>Combo</value>
+  </data>
+  <data name="InteractiveComboEnabled" xml:space="preserve">
+    <value>Enable combo hits</value>
+  </data>
+  <data name="InteractiveComboHint" xml:space="preserve">
+    <value>Applies only to file groups with at least one start or end file configured. Without either, enabling combo hits still follows normal project triggering. Retriggering this project during its start or middle adds one middle file, retaining the original remaining middles, current combination and OBS scenes. During the start, only Allow interruption at any time switches immediately; all other policies finish the start first. During a middle, Default and Never interrupt finish the current file; the other policies switch immediately. End phases and other projects follow normal triggering.</value>
+  </data>
+  <data name="InteractiveComboWaiting" xml:space="preserve">
+    <value>Combo waits for current middle: </value>
+  </data>
+  <data name="InteractiveComboPlaying" xml:space="preserve">
+    <value>Combo switches to middle: </value>
   </data>
 </root>

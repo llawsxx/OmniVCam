@@ -58,6 +58,15 @@
     <Compile Include="InteractiveProjectGroups.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="InteractiveComboPlayback.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="InteractiveFileGroupPhases.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="InteractiveFileSelectionRules.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="InteractiveFileGroups.cs">
       <SubType>Form</SubType>
     </Compile>
