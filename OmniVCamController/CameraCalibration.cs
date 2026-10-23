@@ -339,11 +339,6 @@ namespace OmniVCamController
             public Rectangle Bounds;
         }
 
-        private static Rectangle DesktopBounds()
-        {
-            return Screen.AllScreens.Select(screen => screen.Bounds).Aggregate(Rectangle.Union);
-        }
-
         internal static CalibrationQrTarget FindTarget(Bitmap bitmap, Rectangle desktop, int port, long process, CalibrationFrame expected)
         {
             var reader = new BarcodeReader { Options = new ZXing.Common.DecodingOptions
@@ -415,8 +410,7 @@ namespace OmniVCamController
         private static CalibrationMeasurement MeasureCore(int seconds, int port, long process,
             CalibrationFrame expected, long? expectedShift, CancellationToken token)
         {
-            Rectangle desktop = DesktopBounds();
-            CalibrationQrTarget target = FindDesktopTarget(desktop, port, process, expected, token);
+            CalibrationQrTarget target = FindDesktopTarget(port, process, expected, token);
             Rectangle captureBounds = target.Bounds;
             Screen screen = Screen.FromPoint(new Point(captureBounds.Left + captureBounds.Width / 2, captureBounds.Top + captureBounds.Height / 2));
             double refresh = RefreshRate(screen);
@@ -491,39 +485,98 @@ namespace OmniVCamController
                 return m;
             }
         }
-        private static CalibrationQrTarget FindDesktopTarget(Rectangle desktop, int port, long process,
+        private static CalibrationQrTarget FindDesktopTarget(int port, long process,
             CalibrationFrame expected, CancellationToken token)
         {
-            var captures = new List<CalibrationDesktopCapture>();
+            var captures = new Dictionary<string, CalibrationDesktopCapture>();
+            return SearchDisplays(Screen.AllScreens.Select(screen => screen.DeviceName).ToArray(),
+                name =>
+                {
+                    var capture = new CalibrationDesktopCapture(name);
+                    captures.Add(name, capture);
+                    return capture.Bounds;
+                },
+                (name, wait) =>
+                {
+                    var capture = captures[name];
+                    using (var frame = capture.Next(capture.Bounds, wait))
+                    {
+                        if (frame == null) return null;
+                        Bitmap image = frame.Bitmap;
+                        frame.Bitmap = null;
+                        return image;
+                    }
+                }, name => captures[name].Dispose(), port, process, expected, token, 10);
+        }
+
+        // Search each output at its own resolution. A distant or unsupported virtual
+        // display must not enlarge the image or prevent another output from being scanned.
+        private static CalibrationQrTarget SearchDisplays(string[] names, Func<string, Rectangle> open,
+            Func<string, int, Bitmap> next, Action<string> close, int port, long process,
+            CalibrationFrame expected, CancellationToken token, double seconds)
+        {
+            var opened = new List<string>();
+            var active = new Dictionary<string, Rectangle>();
+            var frames = new Dictionary<string, int>();
+            var failures = new List<string>();
+            Func<string, string> text = key => Resources.AppStrings.ResourceManager.GetString(key, CultureInfo.CurrentUICulture);
+            Action<string, Exception> failed = (name, ex) => failures.Add(string.Format(CultureInfo.CurrentCulture,
+                text("CalibrationSearchDisplayFailed"), name, ex.Message));
             try
             {
-                foreach (var screen in Screen.AllScreens) captures.Add(new CalibrationDesktopCapture(screen.DeviceName));
-                using (var image = new Bitmap(desktop.Width, desktop.Height, PixelFormat.Format32bppRgb))
-                using (var graphics = Graphics.FromImage(image))
+                foreach (string name in names)
                 {
-                    graphics.Clear(Color.Black);
-                    var timeout = Stopwatch.StartNew();
-                    while (timeout.Elapsed.TotalSeconds < 10)
+                    token.ThrowIfCancellationRequested();
+                    try
                     {
-                        bool updated = false;
-                        foreach (var capture in captures)
+                        Rectangle bounds = open(name);
+                        opened.Add(name);
+                        active.Add(name, bounds);
+                        frames.Add(name, 0);
+                    }
+                    catch (InvalidOperationException ex) { failed(name, ex); }
+                }
+                var timeout = Stopwatch.StartNew();
+                int waitIndex = 0;
+                while (active.Count > 0 && timeout.Elapsed.TotalSeconds < seconds)
+                {
+                    var displays = active.ToArray();
+                    CalibrationQrTarget best = null;
+                    for (int i = 0; i < displays.Length; i++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var display = displays[i];
+                        try
                         {
-                            token.ThrowIfCancellationRequested();
-                            using (var frame = capture.Next(capture.Bounds, 100))
+                            // One rotating output waits for an update. Idle outputs never
+                            // add serial 100ms waits to every discovery round.
+                            using (var image = next(display.Key, i == waitIndex % displays.Length ? 50 : 0))
                             {
-                                if (frame == null) continue;
-                                graphics.DrawImageUnscaled(frame.Bitmap, capture.Bounds.Left - desktop.Left, capture.Bounds.Top - desktop.Top);
-                                updated = true;
+                                if (image == null) continue;
+                                frames[display.Key]++;
+                                var target = FindTarget(image, display.Value, port, process, expected);
+                                if (target != null && (best == null ||
+                                    (long)target.Bounds.Width * target.Bounds.Height > (long)best.Bounds.Width * best.Bounds.Height)) best = target;
                             }
                         }
-                        if (!updated) continue;
-                        var target = FindTarget(image, desktop, port, process, expected);
-                        if (target != null) return target;
+                        catch (InvalidOperationException ex)
+                        {
+                            failed(display.Key, ex);
+                            active.Remove(display.Key);
+                        }
                     }
+                    token.ThrowIfCancellationRequested();
+                    if (best != null) return best;
+                    waitIndex = (waitIndex + 1) % displays.Length;
                 }
-                throw new InvalidOperationException(Resources.AppStrings.ResourceManager.GetString("CalibrationQrNotFound", CultureInfo.CurrentUICulture));
+                token.ThrowIfCancellationRequested();
+                var details = active.Select(display => string.Format(CultureInfo.CurrentCulture,
+                    text("CalibrationSearchDisplaySummary"), display.Key, display.Value.Width, display.Value.Height, frames[display.Key]))
+                    .Concat(failures).ToArray();
+                throw new InvalidOperationException(text("CalibrationQrNotFound") +
+                    (details.Length == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, details)));
             }
-            finally { foreach (var capture in captures) capture.Dispose(); }
+            finally { foreach (string name in opened) close(name); }
         }
         private static CalibrationFrame WaitForShift(CalibrationQrTarget target, long shift,
             CalibrationDesktopCapture capture, CalibrationQrDecoder decoder, CancellationToken token)

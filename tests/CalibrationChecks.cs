@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Drawing;
 using System.Globalization;
 using System.Reflection;
@@ -7,6 +9,118 @@ using ZXing;
 internal static class CalibrationChecks
 {
     private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+    private static Bitmap SearchPreview(Bitmap card, Size size, Rectangle preview)
+    {
+        var image = new Bitmap(size.Width, size.Height);
+        using (var graphics = Graphics.FromImage(image))
+        {
+            graphics.Clear(Color.DimGray);
+            graphics.DrawImage(card, preview);
+        }
+        return image;
+    }
+    private static void CheckMultiDisplaySearch(Assembly assembly)
+    {
+        var type = assembly.GetType("OmniVCamController.CalibrationCapture", true);
+        var method = type.GetMethod("SearchDisplays", BindingFlags.Static | BindingFlags.NonPublic);
+        var frameType = assembly.GetType("OmniVCamController.CalibrationFrame", true);
+        using (var card = (Bitmap)Image.FromFile("tests/out/card-1-0.bmp"))
+        using (var normal = SearchPreview(card, new Size(800, 600), new Rectangle(80, 60, 640, 480)))
+        using (var smaller = SearchPreview(card, new Size(800, 600), new Rectangle(80, 60, 320, 240)))
+        {
+            var payload = new BarcodeReader().Decode(card).Text;
+            var parsed = frameType.GetMethod("Parse").Invoke(null, new object[] { payload });
+            long process = (long)frameType.GetField("Process").GetValue(parsed);
+            Func<string[], Func<string, Rectangle>, Func<string, int, Bitmap>, Action<string>, int,
+                System.Threading.CancellationToken, double, object> search = (names, open, next, close, port, token, seconds) =>
+                    method.Invoke(null, new object[] { names, open, next, close, port, process, null, token, seconds });
+            var negative = new Rectangle(-30000, 15000, 800, 600);
+            var closed = new List<string>(); var waits = new List<KeyValuePair<string, int>>(); int validCalls = 0;
+            object found = search(new[] { "unsupported virtual", "idle virtual", "physical" }, name =>
+            {
+                if (name == "unsupported virtual") throw new InvalidOperationException("DXGI_TEST_UNSUPPORTED");
+                return name == "physical" ? negative : new Rectangle(30000, -15000, 1920, 1080);
+            }, (name, wait) =>
+            {
+                waits.Add(new KeyValuePair<string, int>(name, wait));
+                return name == "physical" && ++validCalls >= 2 ? (Bitmap)normal.Clone() : null;
+            }, closed.Add, 16999, System.Threading.CancellationToken.None, 2);
+            Rectangle crop = (Rectangle)found.GetType().GetField("Bounds").GetValue(found);
+            Check(negative.Contains(crop) && crop.Width < negative.Width, "Discovery scans each display independently and preserves negative desktop coordinates across large gaps");
+            Check(closed.Count == 2 && closed.Contains("physical") && closed.Contains("idle virtual"), "Unsupported displays do not block healthy outputs and every opened output is disposed");
+            Check(waits.Count == 4 && waits.Count(pair => pair.Value > 0) == 2 &&
+                waits.Where(pair => pair.Value > 0).Select(pair => pair.Key).Distinct().Count() == 2, "Idle outputs only wait in rotation; other outputs are polled without serial waits");
+
+            closed.Clear();
+            found = search(new[] { "small preview", "large preview" }, name =>
+                name == "small preview" ? negative : new Rectangle(8000, 0, 800, 600),
+                (name, wait) => (Bitmap)(name == "small preview" ? smaller : normal).Clone(), closed.Add, 16999,
+                System.Threading.CancellationToken.None, 2);
+            crop = (Rectangle)found.GetType().GetField("Bounds").GetValue(found);
+            Check(crop.Left >= 8000 && closed.Count == 2, "Discovery chooses the larger matching QR across multiple displays");
+
+            closed.Clear(); int failures = 0;
+            found = search(new[] { "lost display", "physical" }, name => negative, (name, wait) =>
+            {
+                if (name == "lost display") { failures++; throw new InvalidOperationException("DXGI_TEST_ACCESS_LOST"); }
+                return (Bitmap)normal.Clone();
+            }, closed.Add, 16999, System.Threading.CancellationToken.None, 2);
+            Check(found != null && failures == 1 && closed.Count == 2, "A display lost during capture does not abort other display discovery");
+
+            closed.Clear();
+            try
+            {
+                search(new[] { "physical" }, name => negative, (name, wait) => (Bitmap)normal.Clone(), closed.Add,
+                    17000, System.Threading.CancellationToken.None, .001);
+                throw new Exception("A QR from another camera must not match");
+            }
+            catch (TargetInvocationException ex)
+            {
+                Check(ex.InnerException is InvalidOperationException && ex.InnerException.Message.Contains("physical") &&
+                    !ex.InnerException.Message.Contains("DXGI_TEST"), "No-match diagnostics distinguish captured output from capture failures");
+            }
+            Check(closed.Count == 1, "A no-match timeout disposes its capture");
+
+            closed.Clear();
+            try
+            {
+                search(new[] { "idle virtual", "unsupported virtual" }, name =>
+                {
+                    if (name == "unsupported virtual") throw new InvalidOperationException("DXGI_TEST_UNSUPPORTED");
+                    return negative;
+                }, (name, wait) => null, closed.Add, 16999, System.Threading.CancellationToken.None, .001);
+                throw new Exception("No captured image must report a failure");
+            }
+            catch (TargetInvocationException ex)
+            {
+                Check(ex.InnerException.Message.Contains("idle virtual") && ex.InnerException.Message.Contains("0") &&
+                    ex.InnerException.Message.Contains("unsupported virtual") && ex.InnerException.Message.Contains("DXGI_TEST_UNSUPPORTED"),
+                    "Discovery timeout reports zero-frame outputs alongside skipped DXGI failures");
+            }
+            Check(closed.Count == 1, "Only successfully opened idle captures are disposed");
+
+            using (var stop = new System.Threading.CancellationTokenSource())
+            {
+                closed.Clear();
+                try
+                {
+                    search(new[] { "physical" }, name => negative, (name, wait) =>
+                    { stop.Cancel(); return (Bitmap)normal.Clone(); }, closed.Add, 16999, stop.Token, 2);
+                    throw new Exception("Cancellation must not return a found target");
+                }
+                catch (TargetInvocationException ex) { Check(ex.InnerException is OperationCanceledException, "Discovery respects cancellation even when a valid QR arrives"); }
+                Check(closed.Count == 1, "Cancellation disposes every opened display");
+            }
+        }
+        var resources = new System.Resources.ResourceManager("OmniVCamController.Resources.AppStrings", assembly);
+        foreach (string language in new[] { "en", "zh-CN", "zh-TW" })
+        {
+            var culture = CultureInfo.GetCultureInfo(language);
+            foreach (string key in new[] { "CalibrationSearchDisplayFailed", "CalibrationSearchDisplaySummary" })
+                Check(!string.IsNullOrWhiteSpace(resources.GetString(key, culture)), "Display diagnostics use the existing language resources");
+        }
+        Console.WriteLine("PASS: independent multi-display QR discovery, unsupported/idle/lost outputs, largest-preview selection, negative coordinates, camera identity, diagnostic details, cancellation and capture disposal.");
+    }
     private static void CheckDesktopCapture(Assembly assembly)
     {
         var type = assembly.GetType("OmniVCamController.CalibrationDesktopCapture", true);
@@ -175,6 +289,7 @@ internal static class CalibrationChecks
     private static int Run(string[] args)
     {
         var assembly = Assembly.LoadFrom(args.Length > 0 ? args[0] : "OmniVCamController/bin/Debug/OmniVCamController.exe");
+        CheckMultiDisplaySearch(assembly);
         CheckDesktopCapture(assembly);
         CheckLivePreview(assembly);
         var frameType = assembly.GetType("OmniVCamController.CalibrationFrame", true);

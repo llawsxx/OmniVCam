@@ -566,4 +566,10 @@
   <data name="InteractiveComboPlaying" xml:space="preserve">
     <value>Combo switches to middle: </value>
   </data>
+  <data name="CalibrationSearchDisplayFailed" xml:space="preserve">
+    <value>Could not capture display {0}: {1}</value>
+  </data>
+  <data name="CalibrationSearchDisplaySummary" xml:space="preserve">
+    <value>{0} ({1} × {2}): captured {3} desktop frames</value>
+  </data>
 </root>

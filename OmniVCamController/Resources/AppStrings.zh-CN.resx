@@ -856,4 +856,10 @@
   <data name="InteractiveComboPlaying" xml:space="preserve">
     <value>连击，立即切换中间文件：</value>
   </data>
+  <data name="CalibrationSearchDisplayFailed" xml:space="preserve">
+    <value>无法截取显示器 {0}：{1}</value>
+  </data>
+  <data name="CalibrationSearchDisplaySummary" xml:space="preserve">
+    <value>{0}（{1} × {2}）：获取到 {3} 帧桌面图像</value>
+  </data>
 </root>
