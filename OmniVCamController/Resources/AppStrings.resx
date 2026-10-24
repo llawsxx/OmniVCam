@@ -369,7 +369,7 @@
     <value>Cannot switch groups: transition media is unavailable or contains missing files: </value>
   </data>
   <data name="InteractiveTransitionHint" xml:space="preserve">
-    <value>Select a direction, then choose library media. Uses its one/all and selection settings and interruption protection, but ignores looping. Select no transition to switch directly.</value>
+    <value>Select a direction and library media, then choose PLAY (immediate) or PLAY_NEXT (queued). Both respect the current media's interruption protection. The transition uses its library playback scope, selection rules and interruption protection, but ignores looping and plays once. Select no transition to switch directly.</value>
   </data>
   <data name="InteractiveTransitionFrom" xml:space="preserve">
     <value>From group</value>

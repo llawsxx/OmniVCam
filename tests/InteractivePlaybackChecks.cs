@@ -1549,7 +1549,7 @@ internal static partial class InteractivePlaybackChecks
             }
             Check(command.StartsWith("PLAY_NEXT " + Get(media[2], "Path")), "The target group's actual media is sent as PLAY_NEXT during the protected transition");
             await writer.WriteLineAsync("OK target queued");
-            await CompleteSoon((Task)Field(owner, "interactiveNextQueueTask"), "The target next command is acknowledged");
+            await WaitForPhasePendingAsync();
             var target = Field(owner, "interactivePending");
             Check(!dispatch.IsCompleted && Field(owner, "interactiveCurrent") == transition && target != null,
                 "The trigger remains protected until the target actually reaches output");
@@ -2305,6 +2305,8 @@ internal static partial class InteractivePlaybackChecks
                     Field(owner, "interactiveCurrent") == null,
                     "A very short transition can finish between status polls without leaving protection stuck");
                 SetField("processingInteractiveTriggers", false);
+                CheckProjectGroupRendering();
+                CheckTransitionTriggerModes(a, b);
                 CheckProjectGroupDispatch(a, b);
                 CheckGroupDefaults(a, b);
             }

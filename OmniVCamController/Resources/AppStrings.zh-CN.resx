@@ -659,7 +659,7 @@
     <value>无法切换分组，转场媒体不可用或包含不存在的文件：</value>
   </data>
   <data name="InteractiveTransitionHint" xml:space="preserve">
-    <value>选中方向后，从媒体库选择文件或文件组合。沿用播放范围、选择方式和禁止打断设置，忽略循环，只播放一遍。选择“不使用转场”则直接切组。</value>
+    <value>选中方向后，从媒体库选择文件或文件组合，并设置 PLAY（立即切换）或 PLAY_NEXT（接续播放）。两种方式均遵守当前媒体的打断保护。转场沿用媒体库的播放范围、选择方式和禁止打断设置，忽略循环，只播放一遍。选择“不使用转场”则直接切组。</value>
   </data>
   <data name="InteractiveTransitionFrom" xml:space="preserve">
     <value>来源分组</value>

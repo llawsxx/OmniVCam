@@ -588,6 +588,8 @@ namespace OmniVCamController
             private readonly ListView mediaView = new ListView();
             private readonly ListView routeView = new ListView();
             private readonly FlowLayoutPanel routeButtons = new FlowLayoutPanel();
+            private TableLayoutPanel rootPanel;
+            private readonly Font activeGroupFont;
             private readonly TextBox queueBox = new TextBox();
             private readonly TextBox operationBox = new TextBox();
             private readonly Label connectionLabel = new Label();
@@ -597,6 +599,9 @@ namespace OmniVCamController
             public InteractivePlaybackForm(MainForm owner)
             {
                 this.owner = owner;
+                activeGroupFont = new Font(Font, FontStyle.Bold);
+                Disposed += (_, __) => activeGroupFont.Dispose();
+                EnableDoubleBuffering(this);
                 Text = T("InteractivePlayback");
                 Size = new Size(1180, 780);
                 MinimumSize = new Size(900, 620);
@@ -608,6 +613,9 @@ namespace OmniVCamController
             private void BuildUi()
             {
                 var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
+                rootPanel = root;
+                EnableDoubleBuffering(root);
+                EnableDoubleBuffering(routeButtons);
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -733,11 +741,21 @@ namespace OmniVCamController
             {
                 connectionLabel.Text = T("InteractiveConnection") +
                     (owner.activeState == null ? "-" : owner.GetConnectionTabTitle(owner.activeState));
-                RefreshProjectGroups();
                 RefreshMedia();
-                RefreshRoutes();
-                RefreshRuntime();
-                RegisterRouteHotkeys();
+                ReloadProjectGroup();
+            }
+
+            public void ReloadProjectGroup()
+            {
+                rootPanel.SuspendLayout();
+                try
+                {
+                    RefreshProjectGroups();
+                    RefreshRoutes();
+                    RefreshRuntime();
+                    RegisterRouteHotkeys();
+                }
+                finally { rootPanel.ResumeLayout(true); }
             }
 
             private void RefreshMedia()
@@ -762,29 +780,46 @@ namespace OmniVCamController
             private void RefreshRoutes()
             {
                 routeView.BeginUpdate();
-                routeView.Items.Clear();
-                foreach (Control button in routeButtons.Controls.Cast<Control>().ToList()) button.Dispose();
-                routeButtons.Controls.Clear();
-                foreach (InteractiveRouteItem route in owner.interactiveRoutes)
+                routeButtons.SuspendLayout();
+                try
                 {
-                    string sequence = owner.DescribeRoute(route);
-                    var row = new ListViewItem(route.Name);
-                    row.SubItems.Add(FormatHotkey(route.Hotkey));
-                    row.SubItems.Add(route.Immediate ? "PLAY" : "PLAY_NEXT");
-                    row.SubItems.Add(T(route.RandomOrder ? "InteractiveRandom" : "InteractiveSequential"));
-                    row.SubItems.Add(sequence);
-                    row.SubItems.Add(owner.DescribeInteractiveObsScene(route, true));
-                    row.SubItems.Add(owner.DescribeInteractiveObsScene(route, false));
-                    row.Tag = route;
-                    routeView.Items.Add(row);
+                    routeView.Items.Clear();
+                    // Keep native button handles alive across group switches. Clicks use the
+                    // current Tag so a reused button never triggers the previous group's route.
+                    while (routeButtons.Controls.Count > owner.interactiveRoutes.Count)
+                        routeButtons.Controls[routeButtons.Controls.Count - 1].Dispose();
+                    for (int index = 0; index < owner.interactiveRoutes.Count; index++)
+                    {
+                        InteractiveRouteItem route = owner.interactiveRoutes[index];
+                        var row = new ListViewItem(route.Name);
+                        row.SubItems.Add(FormatHotkey(route.Hotkey));
+                        row.SubItems.Add(route.Immediate ? "PLAY" : "PLAY_NEXT");
+                        row.SubItems.Add(T(route.RandomOrder ? "InteractiveRandom" : "InteractiveSequential"));
+                        row.SubItems.Add(owner.DescribeRoute(route));
+                        row.SubItems.Add(owner.DescribeInteractiveObsScene(route, true));
+                        row.SubItems.Add(owner.DescribeInteractiveObsScene(route, false));
+                        row.Tag = route;
+                        routeView.Items.Add(row);
 
-                    var captured = route;
-                    var button = MakeButton(route.Name + (string.IsNullOrEmpty(FormatHotkey(route.Hotkey)) ? string.Empty : "  [" + FormatHotkey(route.Hotkey) + "]"),
-                        (_, __) => owner.RequestInteractiveRoute(captured, T("InteractiveClickedProject")));
-                    button.Padding = new Padding(10, 5, 10, 5);
-                    routeButtons.Controls.Add(button);
+                        Button button;
+                        if (index < routeButtons.Controls.Count) button = (Button)routeButtons.Controls[index];
+                        else
+                        {
+                            button = MakeButton(string.Empty, (sender, _) =>
+                                owner.RequestInteractiveRoute((InteractiveRouteItem)((Button)sender).Tag, T("InteractiveClickedProject")));
+                            button.Padding = new Padding(10, 5, 10, 5);
+                            routeButtons.Controls.Add(button);
+                        }
+                        button.Tag = route;
+                        string hotkey = FormatHotkey(route.Hotkey);
+                        button.Text = route.Name + (hotkey.Length == 0 ? string.Empty : "  [" + hotkey + "]");
+                    }
                 }
-                routeView.EndUpdate();
+                finally
+                {
+                    routeButtons.ResumeLayout(true);
+                    routeView.EndUpdate();
+                }
             }
 
             public void RefreshRuntime()

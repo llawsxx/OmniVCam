@@ -59,6 +59,7 @@ namespace OmniVCamController
             public Guid FromId { get; set; }
             public Guid ToId { get; set; }
             public Guid MediaId { get; set; }
+            public bool Immediate { get; set; } = true;
         }
 
         private void EnsureInteractiveProjectGroups()
@@ -126,7 +127,8 @@ namespace OmniVCamController
                 .Select(to => new InteractiveGroupTransition
                 {
                     FromId = from.Id, ToId = to.Id,
-                    MediaId = interactiveGroupTransitions.FirstOrDefault(item => item.FromId == from.Id && item.ToId == to.Id)?.MediaId ?? Guid.Empty
+                    MediaId = interactiveGroupTransitions.FirstOrDefault(item => item.FromId == from.Id && item.ToId == to.Id)?.MediaId ?? Guid.Empty,
+                    Immediate = interactiveGroupTransitions.FirstOrDefault(item => item.FromId == from.Id && item.ToId == to.Id)?.Immediate ?? true
                 })).ToList();
         }
 
@@ -145,7 +147,7 @@ namespace OmniVCamController
             foreach (var entry in entries) entry.IsGroupTransition = true;
             return new InteractiveTriggerRequest
             {
-                RouteName = title, Source = T("InteractiveGroupSwitch"), Immediate = true,
+                RouteName = title, Source = T("InteractiveGroupSwitch"), Immediate = transition.Immediate,
                 IsGroupTransition = true, Entries = entries
             };
         }
@@ -242,7 +244,7 @@ namespace OmniVCamController
             activeInteractiveProjectGroupId = target.Id;
             interactiveRoutes = target.Routes;
             SaveActiveConnectionState();
-            interactiveForm?.ReloadAll();
+            interactiveForm?.ReloadProjectGroup();
             AppendInteractiveLog(source + " - " + string.Format(T("InteractiveGroupSwitched"), from.Name, target.Name));
             QueueInteractiveObsGroupSwitch(from, target);
             if (transition == null) return;
@@ -278,7 +280,8 @@ namespace OmniVCamController
                 new XElement("Transitions", state.InteractiveGroupTransitions.Where(item => item.MediaId != Guid.Empty &&
                     item.FromId != item.ToId && groups.Any(group => group.Id == item.FromId) && groups.Any(group => group.Id == item.ToId))
                     .Select(item => new XElement("Transition", new XAttribute("from", item.FromId),
-                        new XAttribute("to", item.ToId), new XAttribute("media", item.MediaId)))));
+                        new XAttribute("to", item.ToId), new XAttribute("media", item.MediaId),
+                        new XAttribute("immediate", item.Immediate ? "1" : "0")))));
         }
 
         private void LoadInteractiveProjectGroups(XElement element)
@@ -332,7 +335,8 @@ namespace OmniVCamController
                         !Guid.TryParse(GetAttribute(node, "from", null), out from) || !Guid.TryParse(GetAttribute(node, "to", null), out to) ||
                         from == to || !interactiveProjectGroups.Any(group => group.Id == from) || !interactiveProjectGroups.Any(group => group.Id == to) ||
                         interactiveGroupTransitions.Any(item => item.FromId == from && item.ToId == to)) continue;
-                    interactiveGroupTransitions.Add(new InteractiveGroupTransition { FromId = from, ToId = to, MediaId = mediaId });
+                    interactiveGroupTransitions.Add(new InteractiveGroupTransition { FromId = from, ToId = to, MediaId = mediaId,
+                        Immediate = GetAttribute(node, "immediate", "1") != "0" });
                 }
         }
 
@@ -356,6 +360,8 @@ namespace OmniVCamController
                 bar.Controls.Add(MakeButton(T("InteractiveGroupTransitions"), (_, __) => EditGroupTransitions()));
                 bar.Controls.Add(MakeButton(T("InteractiveGroupObsScenes"), (_, __) => EditGroupObsScenes()));
                 panel.Controls.Add(bar, 0, 0);
+                EnableDoubleBuffering(panel);
+                EnableDoubleBuffering(projectGroupButtons);
                 projectGroupButtons.Dock = DockStyle.Fill;
                 projectGroupButtons.AutoSize = true;
                 panel.Controls.Add(projectGroupButtons, 0, 1);
@@ -376,22 +382,32 @@ namespace OmniVCamController
                     T(owner.interactiveGroupSwitchRandom ? "InteractiveRandom" : "InteractiveSequential") +
                     (switchHotkey.Length > 0 ? "  [" + switchHotkey + "]" : string.Empty);
                 switchProjectGroupButton.Enabled = owner.interactiveProjectGroups.Count > 1;
-                foreach (Control button in projectGroupButtons.Controls.Cast<Control>().ToList()) button.Dispose();
-                projectGroupButtons.Controls.Clear();
-                foreach (var group in owner.interactiveProjectGroups)
+                projectGroupButtons.SuspendLayout();
+                try
                 {
-                    var captured = group;
-                    string hotkey = FormatHotkey(group.Hotkey);
-                    var button = MakeButton(group.Name + (hotkey.Length > 0 ? "  [" + hotkey + "]" : string.Empty),
-                        (_, __) => owner.SwitchInteractiveProjectGroup(captured, T("InteractiveGroupSwitch")));
-                    if (group.Id == owner.CurrentInteractiveProjectGroup.Id)
+                    while (projectGroupButtons.Controls.Count > owner.interactiveProjectGroups.Count)
+                        projectGroupButtons.Controls[projectGroupButtons.Controls.Count - 1].Dispose();
+                    for (int index = 0; index < owner.interactiveProjectGroups.Count; index++)
                     {
-                        button.BackColor = Color.LightSkyBlue;
-                        button.UseVisualStyleBackColor = false;
-                        button.Font = new Font(button.Font, FontStyle.Bold);
+                        var group = owner.interactiveProjectGroups[index];
+                        Button button;
+                        if (index < projectGroupButtons.Controls.Count) button = (Button)projectGroupButtons.Controls[index];
+                        else
+                        {
+                            button = MakeButton(string.Empty, (sender, _) =>
+                                owner.SwitchInteractiveProjectGroup((InteractiveProjectGroup)((Button)sender).Tag, T("InteractiveGroupSwitch")));
+                            projectGroupButtons.Controls.Add(button);
+                        }
+                        button.Tag = group;
+                        string hotkey = FormatHotkey(group.Hotkey);
+                        button.Text = group.Name + (hotkey.Length > 0 ? "  [" + hotkey + "]" : string.Empty);
+                        bool active = group.Id == owner.CurrentInteractiveProjectGroup.Id;
+                        button.BackColor = active ? Color.LightSkyBlue : SystemColors.Control;
+                        button.UseVisualStyleBackColor = !active;
+                        button.Font = active ? activeGroupFont : Font;
                     }
-                    projectGroupButtons.Controls.Add(button);
                 }
+                finally { projectGroupButtons.ResumeLayout(true); }
             }
 
             private void EditGroupSwitchSettings()
@@ -610,6 +626,7 @@ namespace OmniVCamController
         private sealed class GroupTransitionsDialog : Form
         {
             private readonly ListView pairs = new ListView();
+            private readonly ComboBox commandBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
             private readonly ComboBox mediaBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
             private readonly List<InteractiveMediaItem> media;
             private bool refreshingSelection;
@@ -620,16 +637,21 @@ namespace OmniVCamController
                 Text = T("InteractiveGroupTransitions"); Size = new Size(1000, 550); MinimumSize = new Size(720, 350);
                 ShowIcon = false; StartPosition = FormStartPosition.CenterParent;
                 var panel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
+                // Constrain the selector to the dialog width; an AutoSize column can
+                // otherwise grow to the hint's preferred width and hide the command box.
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 panel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 panel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 panel.Controls.Add(new Label { Text = T("InteractiveTransitionHint"), AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 0, 0, 8) }, 0, 0);
                 pairs.Dock = DockStyle.Fill; pairs.View = View.Details; pairs.FullRowSelect = true; pairs.HideSelection = false; pairs.MultiSelect = false;
-                pairs.Columns.Add(T("InteractiveTransitionFrom"), 170); pairs.Columns.Add(T("InteractiveTransitionTo"), 170); pairs.Columns.Add(T("InteractiveChooseTransition"), 570);
+                pairs.Columns.Add(T("InteractiveTransitionFrom"), 140); pairs.Columns.Add(T("InteractiveTransitionTo"), 140);
+                pairs.Columns.Add(T("InteractiveChooseTransition"), 450); pairs.Columns.Add(T("InteractiveTriggerMode"), 110);
                 foreach (var transition in transitions)
                 {
                     var row = new ListViewItem(groups.First(group => group.Id == transition.FromId).Name);
                     row.SubItems.Add(groups.First(group => group.Id == transition.ToId).Name);
-                    row.SubItems.Add(MediaTitle(transition.MediaId)); row.Tag = transition; pairs.Items.Add(row);
+                    row.SubItems.Add(MediaTitle(transition.MediaId)); row.SubItems.Add(transition.Immediate ? "PLAY" : "PLAY_NEXT");
+                    row.Tag = transition; pairs.Items.Add(row);
                 }
                 mediaBox.Items.Add(T("InteractiveNoTransitionMedia"));
                 foreach (var item in library) mediaBox.Items.Add(new MediaChoice(item));
@@ -638,13 +660,25 @@ namespace OmniVCamController
                 {
                     if (!refreshingSelection) SetMedia((mediaBox.SelectedItem as MediaChoice)?.Item.RuntimeId ?? Guid.Empty);
                 };
+                commandBox.Items.AddRange(new object[] { "PLAY", "PLAY_NEXT" });
+                commandBox.SelectedIndex = 0; commandBox.Enabled = false;
+                commandBox.SelectedIndexChanged += (_, __) =>
+                {
+                    if (refreshingSelection || pairs.SelectedItems.Count != 1) return;
+                    var row = pairs.SelectedItems[0];
+                    ((InteractiveGroupTransition)row.Tag).Immediate = commandBox.SelectedIndex == 0;
+                    row.SubItems[3].Text = commandBox.SelectedItem as string;
+                };
                 pairs.SelectedIndexChanged += (_, __) => RefreshSelection();
                 pairs.DoubleClick += (_, __) => { if (mediaBox.Enabled) { mediaBox.Focus(); mediaBox.DroppedDown = true; } };
                 panel.Controls.Add(pairs, 0, 1);
-                var selector = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+                var selector = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4 };
                 selector.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                selector.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); selector.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
                 selector.Controls.Add(new Label { Text = T("InteractiveChooseTransition"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
-                selector.Controls.Add(mediaBox, 1, 0); panel.Controls.Add(selector, 0, 2);
+                selector.Controls.Add(mediaBox, 1, 0);
+                selector.Controls.Add(new Label { Text = T("InteractiveTriggerMode"), AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(8, 0, 0, 0) }, 2, 0);
+                selector.Controls.Add(commandBox, 3, 0); panel.Controls.Add(selector, 0, 2);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 buttons.Controls.Add(MakeButton(T("InteractiveClearTransition"), (_, __) => { SetMedia(Guid.Empty); RefreshSelection(); }));
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => DialogResult = DialogResult.OK);
@@ -663,7 +697,10 @@ namespace OmniVCamController
                 try
                 {
                     mediaBox.Enabled = pairs.SelectedItems.Count == 1;
-                    Guid id = mediaBox.Enabled ? ((InteractiveGroupTransition)pairs.SelectedItems[0].Tag).MediaId : Guid.Empty;
+                    var transition = mediaBox.Enabled ? (InteractiveGroupTransition)pairs.SelectedItems[0].Tag : null;
+                    Guid id = transition?.MediaId ?? Guid.Empty;
+                    commandBox.Enabled = transition != null && id != Guid.Empty;
+                    commandBox.SelectedIndex = transition?.Immediate != false ? 0 : 1;
                     mediaBox.SelectedIndex = 0;
                     for (int index = 1; index < mediaBox.Items.Count; index++)
                         if (((MediaChoice)mediaBox.Items[index]).Item.RuntimeId == id) mediaBox.SelectedIndex = index;
@@ -674,6 +711,7 @@ namespace OmniVCamController
             {
                 if (pairs.SelectedItems.Count != 1) return;
                 var row = pairs.SelectedItems[0]; ((InteractiveGroupTransition)row.Tag).MediaId = id; row.SubItems[2].Text = MediaTitle(id);
+                commandBox.Enabled = id != Guid.Empty;
             }
         }
     }
