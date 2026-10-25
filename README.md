@@ -221,6 +221,8 @@ PLAY D.mp4<TAB>loop=1
 
 `<TAB>` above represents the literal tab separator between the input and its options.
 
+**Add group** / **Edit current group** provides **Enable audio/video overlap** and **Overlap duration (seconds)**, saved per connection/group, enabled at 0.1 seconds by default. The project editor also provides **Project overlap** and **Combination overlap** buttons. Each override can inherit, enable with its own duration, or explicitly disable overlap. Priority matches OBS scene settings: project media combination > interactive project > interactive group. Legacy projects/combinations inherit. Group defaults and incoming transitions use the group setting; all effective settings override library `overlap` options, with disabled overlap sending `overlap=0`. Accepted playback, deferred middles/outros and subsequent group-loop passes retain their original settings snapshots. Copying projects or duplicating combinations preserves independent overlap settings.
+
 ## Favorite Inputs
 
 Favorite inputs are shown in the right half of the main window.
@@ -401,6 +403,10 @@ Example screenshot:
 
 ![FFmpeg lists capture-card formats](assets/images/ffmpeg列出采集卡格式.png)
 
+Local files support audio/video overlap through the `PLAY` / `PLAY_NEXT` input option `overlap=0.1` (seconds; default 0.1, range 0–5, `overlap=0` disables it). `PLAY_NEXT` crossfades the old tail into the new head; `PLAY` immediately takes the old side from actual output, never from a prefetched standby. Video blending follows output-clock ticks; audio is mixed per sample after output rate/layout/format conversion. Source frame rates and audio sample rates may differ while output timestamps remain continuous. Internal `loop=1` restarts retain their existing behavior.
+
+Local files with overlap enabled bypass the `queue_left` / `queue_center` / `queue_right` refill/drop watermarks so tail content is preserved. Queue capacity/backpressure still applies; retained tails use separate bounded caches. Disabled overlap and live inputs retain the original queue parameters. Insufficient old tails shorten the overlap; sub-frame tails, very short targets and cache limits fall back to an ordinary handoff. Failed natural opens restore the old tail. Pause freezes fade progress; stop, seek and lookahead replacement clear the relevant caches.
+
 ## Test Cards
 
 `<TESTCARD>` shows a square and moving circles. It is useful for checking dropped frames and motion continuity.
@@ -506,3 +512,5 @@ Dependency conventions:
 - `ffmpeg_deps/include` and `ffmpeg_deps/lib`: FFmpeg development files when building the native DLL.
 
 A release package must include the virtual camera DLL, required FFmpeg runtime DLLs, `config.ini`, and `OmniVCamController.exe`.
+
+Run `tests/run-playback-boundary-checks.ps1` for native queue/pixel/audio boundaries, then `python tests/overlap_media_checks.py` for real-file/TCP tests across frame/sample rates, immediate/natural switches, superseded lookahead and failure recovery (requires the FFmpeg CLI). `python tests/overlap_audio_checks.py` records complete stereo PCM and checks for waveform discontinuities across 480/1024-sample blocks, 0.1/0.25/1.5-second overlaps, different source sample rates and PLAY/PLAY_NEXT boundaries. `tests/short_media_checks.py` explicitly uses `overlap=0` as the original short-file picture-output baseline.

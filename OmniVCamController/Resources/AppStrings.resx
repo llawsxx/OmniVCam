@@ -572,4 +572,34 @@
   <data name="CalibrationSearchDisplaySummary" xml:space="preserve">
     <value>{0} ({1} × {2}): captured {3} desktop frames</value>
   </data>
+  <data name="InteractiveGroupOverlapEnabled" xml:space="preserve">
+    <value>Enable audio/video overlap</value>
+  </data>
+  <data name="InteractiveGroupOverlapSeconds" xml:space="preserve">
+    <value>Overlap duration (seconds)</value>
+  </data>
+  <data name="InteractiveGroupOverlapHint" xml:space="preserve">
+    <value>Default for this group’s projects, default media and incoming transitions. Project and combination overrides take priority. Defaults to 0.1 seconds; 0 disables overlap. Accepted playback retains its original settings.</value>
+  </data>
+  <data name="InteractiveProjectOverlapSettings" xml:space="preserve">
+    <value>Project overlap</value>
+  </data>
+  <data name="InteractiveCombinationOverlapSettings" xml:space="preserve">
+    <value>Combination overlap</value>
+  </data>
+  <data name="InteractiveOverlapMode" xml:space="preserve">
+    <value>Overlap mode</value>
+  </data>
+  <data name="InteractiveOverlapInherit" xml:space="preserve">
+    <value>Inherit parent setting</value>
+  </data>
+  <data name="InteractiveOverlapOn" xml:space="preserve">
+    <value>Enable with own duration</value>
+  </data>
+  <data name="InteractiveOverlapOff" xml:space="preserve">
+    <value>Disable overlap</value>
+  </data>
+  <data name="InteractiveOverlapHierarchyHint" xml:space="preserve">
+    <value>Priority: project media combination &gt; interactive project &gt; interactive group. Inherit uses the parent setting; disable explicitly overrides it. Duration is in seconds (0–5); 0 disables overlap. Accepted playback retains its settings snapshot.</value>
+  </data>
 </root>

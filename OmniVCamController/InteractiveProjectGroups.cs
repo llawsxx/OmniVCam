@@ -46,6 +46,8 @@ namespace OmniVCamController
             public string Name { get; set; } = string.Empty;
             public InteractiveHotkey Hotkey { get; set; }
             public Guid DefaultMediaId { get; set; }
+            public bool OverlapEnabled { get; set; } = true;
+            public decimal OverlapSeconds { get; set; } = 0.1m;
             public string ObsStartScene { get; set; } = string.Empty;
             public string ObsEndScene { get; set; } = string.Empty;
             public string ObsEnterScene { get; set; } = string.Empty;
@@ -145,6 +147,7 @@ namespace OmniVCamController
             var entries = BuildInteractiveMediaEntries(snapshot, null);
             // The library interruption policy applies to the whole selected transition sequence.
             foreach (var entry in entries) entry.IsGroupTransition = true;
+            ApplyInteractiveGroupOverlap(entries, to);
             return new InteractiveTriggerRequest
             {
                 RouteName = title, Source = T("InteractiveGroupSwitch"), Immediate = transition.Immediate,
@@ -173,7 +176,43 @@ namespace OmniVCamController
                 entry.IsGroupDefault = true;
                 if (entry.GroupLoop != null) entry.GroupLoop.IsGroupDefault = true;
             }
+            ApplyInteractiveGroupOverlap(entries, group);
             return entries;
+        }
+
+        private static string InteractiveOverlapOptions(string options, decimal seconds)
+        {
+            var values = (options ?? string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim()).Where(value => value.Length > 0 &&
+                    !value.Split('=')[0].Equals("overlap", StringComparison.OrdinalIgnoreCase)).ToList();
+            values.Add("overlap=" + seconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+            return string.Join(",", values);
+        }
+
+        private static void ApplyInteractiveGroupOverlap(IEnumerable<InteractivePlaybackEntry> entries, InteractiveProjectGroup group)
+        {
+            ApplyInteractiveOverlapSeconds(entries, group.OverlapEnabled ? group.OverlapSeconds : 0m);
+        }
+
+        private static void ApplyInteractiveOverlapSeconds(IEnumerable<InteractivePlaybackEntry> entries, decimal seconds)
+        {
+            foreach (var entry in entries)
+            {
+                entry.Options = InteractiveOverlapOptions(entry.Options, seconds);
+                entry.InputSummary = BuildInputSummary(entry.Path, entry.Options);
+                // Continuations and combo hits are created later from these private snapshots.
+                if (entry.GroupLoop != null) entry.GroupLoop.Media.Options = InteractiveOverlapOptions(entry.GroupLoop.Media.Options, seconds);
+                if (entry.PhaseRun != null)
+                {
+                    entry.PhaseRun.Media.Options = InteractiveOverlapOptions(entry.PhaseRun.Media.Options, seconds);
+                    var outro = entry.PhaseRun.Outro;
+                    if (outro != null)
+                    {
+                        outro.Options = InteractiveOverlapOptions(outro.Options, seconds);
+                        outro.InputSummary = BuildInputSummary(outro.Path, outro.Options);
+                    }
+                }
+            }
         }
 
         private void QueueInteractiveGroupDefaultIfNeeded()
@@ -272,6 +311,7 @@ namespace OmniVCamController
                 new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
                 new XElement("Groups", groups.Select(group => new XElement("Group",
                     new XAttribute("id", group.Id), new XAttribute("name", group.Name), new XAttribute("defaultMedia", group.DefaultMediaId),
+                    new XAttribute("overlapEnabled", group.OverlapEnabled), new XAttribute("overlapSeconds", group.OverlapSeconds),
                     new XAttribute("obsStartScene", group.ObsStartScene), new XAttribute("obsEndScene", group.ObsEndScene),
                     new XAttribute("obsEnterScene", group.ObsEnterScene), new XAttribute("obsExitScene", group.ObsExitScene),
                     new XAttribute("hotkey", group.Hotkey == null ? string.Empty : group.Hotkey.KeyCode.ToString()),
@@ -282,6 +322,13 @@ namespace OmniVCamController
                     .Select(item => new XElement("Transition", new XAttribute("from", item.FromId),
                         new XAttribute("to", item.ToId), new XAttribute("media", item.MediaId),
                         new XAttribute("immediate", item.Immediate ? "1" : "0")))));
+        }
+
+        private static decimal ReadInteractiveOverlapSeconds(XElement node)
+        {
+            decimal seconds;
+            return decimal.TryParse(GetAttribute(node, "overlapSeconds", "0.1"), System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out seconds) && seconds >= 0 && seconds <= 5 ? seconds : 0.1m;
         }
 
         private void LoadInteractiveProjectGroups(XElement element)
@@ -302,6 +349,8 @@ namespace OmniVCamController
                     var group = new InteractiveProjectGroup
                     {
                         Name = GetAttribute(node, "name", T("InteractiveDefaultGroup")),
+                        OverlapEnabled = !GetAttribute(node, "overlapEnabled", "true").Equals("false", StringComparison.OrdinalIgnoreCase),
+                        OverlapSeconds = ReadInteractiveOverlapSeconds(node),
                         ObsStartScene = GetAttribute(node, "obsStartScene", string.Empty),
                         ObsEndScene = GetAttribute(node, "obsEndScene", string.Empty),
                         ObsEnterScene = GetAttribute(node, "obsEnterScene", string.Empty),
@@ -440,11 +489,13 @@ namespace OmniVCamController
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (create)
                     {
-                        var group = new InteractiveProjectGroup { Name = name, Hotkey = dialog.Hotkey, DefaultMediaId = dialog.DefaultMediaId };
+                        var group = new InteractiveProjectGroup { Name = name, Hotkey = dialog.Hotkey, DefaultMediaId = dialog.DefaultMediaId,
+                            OverlapEnabled = dialog.OverlapEnabled, OverlapSeconds = dialog.OverlapSeconds };
                         if (dialog.CopyProjects) group.Routes.AddRange(current.Routes.Select(CopyInteractiveProject));
                         owner.interactiveProjectGroups.Add(group);
                     }
-                    else { current.Name = name; current.Hotkey = dialog.Hotkey; current.DefaultMediaId = dialog.DefaultMediaId; }
+                    else { current.Name = name; current.Hotkey = dialog.Hotkey; current.DefaultMediaId = dialog.DefaultMediaId;
+                        current.OverlapEnabled = dialog.OverlapEnabled; current.OverlapSeconds = dialog.OverlapSeconds; }
                 }
                 ReloadAll();
                 owner.SaveActiveConnectionState();
@@ -542,14 +593,18 @@ namespace OmniVCamController
             private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
             private readonly ComboBox defaultMediaBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
             private readonly CheckBox copyBox = new CheckBox { AutoSize = true };
+            private readonly CheckBox overlapBox = new CheckBox { AutoSize = true };
+            private readonly NumericUpDown overlapSecondsBox = new NumericUpDown { DecimalPlaces = 3, Minimum = 0, Maximum = 5, Increment = 0.01m, Width = 110 };
             public string GroupName => nameBox.Text.Trim();
             public InteractiveHotkey Hotkey => hotkeyBox.Value?.Clone();
             public bool CopyProjects => copyBox.Checked;
+            public bool OverlapEnabled => overlapBox.Checked;
+            public decimal OverlapSeconds => overlapSecondsBox.Value;
             public Guid DefaultMediaId => (defaultMediaBox.SelectedItem as MediaChoice)?.Item.RuntimeId ?? Guid.Empty;
             public ProjectGroupEditDialog(List<InteractiveMediaItem> media, InteractiveProjectGroup group)
             {
                 Text = T(group == null ? "InteractiveAddGroup" : "InteractiveEditGroup");
-                ShowIcon = false; StartPosition = FormStartPosition.CenterParent; Size = new Size(760, 300); MinimumSize = Size;
+                ShowIcon = false; StartPosition = FormStartPosition.CenterParent; Size = new Size(760, 390); MinimumSize = Size;
                 var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(10), AutoSize = true };
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 AddDialogRow(grid, T("InteractiveGroupName"), nameBox, 0);
@@ -565,12 +620,20 @@ namespace OmniVCamController
                 AddDialogRow(grid, T("InteractiveGroupDefaultVideo"), defaultMediaBox, 2);
                 var hint = new Label { Text = T("InteractiveGroupDefaultHint"), AutoSize = true, Dock = DockStyle.Fill };
                 grid.Controls.Add(hint, 1, 3);
+                overlapBox.Text = T("InteractiveGroupOverlapEnabled"); overlapBox.Checked = group?.OverlapEnabled ?? true;
+                overlapSecondsBox.Value = group?.OverlapSeconds ?? 0.1m;
+                overlapSecondsBox.Enabled = overlapBox.Checked;
+                overlapBox.CheckedChanged += (_, __) => overlapSecondsBox.Enabled = overlapBox.Checked;
+                grid.Controls.Add(overlapBox, 1, 4);
+                AddDialogRow(grid, T("InteractiveGroupOverlapSeconds"), overlapSecondsBox, 5);
+                var overlapHint = new Label { Text = T("InteractiveGroupOverlapHint"), AutoSize = true, Dock = DockStyle.Fill };
+                grid.Controls.Add(overlapHint, 1, 6);
                 copyBox.Text = T("InteractiveCopyCurrentGroup"); copyBox.Visible = group == null;
-                grid.Controls.Add(copyBox, 1, 4);
+                grid.Controls.Add(copyBox, 1, 7);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => { if (GroupName.Length > 0) DialogResult = DialogResult.OK; });
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
-                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 5);
+                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 8);
                 Controls.Add(grid); AcceptButton = ok; CancelButton = cancel;
             }
         }

@@ -2306,6 +2306,7 @@ internal static partial class InteractivePlaybackChecks
                     "A very short transition can finish between status polls without leaving protection stuck");
                 SetField("processingInteractiveTriggers", false);
                 CheckProjectGroupRendering();
+                CheckInteractiveGroupOverlap(a, b);
                 CheckTransitionTriggerModes(a, b);
                 CheckProjectGroupDispatch(a, b);
                 CheckGroupDefaults(a, b);

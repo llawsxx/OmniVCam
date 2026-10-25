@@ -40,6 +40,7 @@
     <ClInclude Include="OmniVideoPin.h" />
     <ClInclude Include="ParseConfig.h" />
     <ClInclude Include="RenderVideo.h" />
+    <ClInclude Include="PlaybackOverlap.h" />
     <ClInclude Include="TestCard.h" />
     <ClInclude Include="third_party\qrcodegen\qrcodegen.h" />
     <ClInclude Include="Threads.h" />

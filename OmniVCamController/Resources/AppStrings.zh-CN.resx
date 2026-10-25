@@ -862,4 +862,34 @@
   <data name="CalibrationSearchDisplaySummary" xml:space="preserve">
     <value>{0}（{1} × {2}）：获取到 {3} 帧桌面图像</value>
   </data>
+  <data name="InteractiveGroupOverlapEnabled" xml:space="preserve">
+    <value>启用音视频叠加</value>
+  </data>
+  <data name="InteractiveGroupOverlapSeconds" xml:space="preserve">
+    <value>叠加时长（秒）</value>
+  </data>
+  <data name="InteractiveGroupOverlapHint" xml:space="preserve">
+    <value>本组互动项目、默认媒体和进入本组转场的叠加默认值。互动项目及其媒体组合的独立设置优先。默认 0.1 秒，0 表示关闭；已触发的播放保留触发时的设置。</value>
+  </data>
+  <data name="InteractiveProjectOverlapSettings" xml:space="preserve">
+    <value>项目叠加设置</value>
+  </data>
+  <data name="InteractiveCombinationOverlapSettings" xml:space="preserve">
+    <value>组合叠加设置</value>
+  </data>
+  <data name="InteractiveOverlapMode" xml:space="preserve">
+    <value>叠加模式</value>
+  </data>
+  <data name="InteractiveOverlapInherit" xml:space="preserve">
+    <value>继承上一级设置</value>
+  </data>
+  <data name="InteractiveOverlapOn" xml:space="preserve">
+    <value>启用并设置时长</value>
+  </data>
+  <data name="InteractiveOverlapOff" xml:space="preserve">
+    <value>关闭叠加</value>
+  </data>
+  <data name="InteractiveOverlapHierarchyHint" xml:space="preserve">
+    <value>优先级：互动项目内的媒体组合 &gt; 互动项目 &gt; 互动分组。继承时使用上一级设置，关闭时强制禁用叠加。时长单位为秒（0～5），0 表示关闭。已触发的播放保留触发时的设置。</value>
+  </data>
 </root>

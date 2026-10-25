@@ -118,6 +118,8 @@ typedef struct source_options {
 	int audio_buffer_size;
 } source_options;
 
+struct playback_overlap_state;
+
 typedef struct inout_context {
 	char* input_name;
 	source_options dshow_options;
@@ -232,6 +234,9 @@ typedef struct inout_context {
 	int64_t output_discard_through_frame_id;
 	int64_t output_audio_boundary_frame_id;
 	int64_t av_max_offset_time;
+	struct playback_overlap_state* overlap;
+	int64_t resampled_audio_next_pts;
+    int64_t resampled_audio_start_pts, resampled_audio_samples;
 	AVAudioFifo* output_audio_fifo;//用output audio的来初始化
 	HANDLE output_thread;
 	int output_exit;//强制退出标志

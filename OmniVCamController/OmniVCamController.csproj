@@ -48,6 +48,9 @@
     <Compile Include="InteractiveCombinationSelection.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="InteractiveOverlapSettings.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="InteractiveObsScenes.cs">
       <SubType>Form</SubType>
     </Compile>

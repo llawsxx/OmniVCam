@@ -1142,9 +1142,11 @@ namespace OmniVCamController
                 new XAttribute("selection", route.RandomOrder ? "random" : "sequential"),
                 new XAttribute("recentCount", route.RecentCombinationCount),
                 new XAttribute("obsStartScene", route.ObsStartScene), new XAttribute("obsEndScene", route.ObsEndScene),
+                new XAttribute("overlapEnabled", InteractiveOverlapOverrideText(route.OverlapEnabled)), new XAttribute("overlapSeconds", route.OverlapSeconds),
                 new XElement("Combinations", route.Combinations.Select(combination => new XElement("Combination",
                     new XAttribute("weight", combination.Weight), new XAttribute("cooldownSeconds", combination.CooldownSeconds),
                     new XAttribute("obsStartScene", combination.ObsStartScene), new XAttribute("obsEndScene", combination.ObsEndScene),
+                    new XAttribute("overlapEnabled", InteractiveOverlapOverrideText(combination.OverlapEnabled)), new XAttribute("overlapSeconds", combination.OverlapSeconds),
                     combination.MediaIds.Select(id => new XElement("MediaRef", new XAttribute("id", id)))))));
         }
 
@@ -1155,6 +1157,7 @@ namespace OmniVCamController
                 Name = GetAttribute(element, "name", string.Empty),
                 ObsStartScene = GetAttribute(element, "obsStartScene", string.Empty),
                 ObsEndScene = GetAttribute(element, "obsEndScene", string.Empty),
+                OverlapEnabled = ReadInteractiveOverlapOverride(element), OverlapSeconds = ReadInteractiveOverlapSeconds(element),
                 Immediate = GetAttribute(element, "immediate", "0") == "1",
                 ComboEnabled = GetAttribute(element, "comboEnabled", "0") == "1",
                 Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty),
@@ -1171,6 +1174,8 @@ namespace OmniVCamController
                 {
                     ObsStartScene = combinations == null ? string.Empty : GetAttribute(sequence, "obsStartScene", string.Empty),
                     ObsEndScene = combinations == null ? string.Empty : GetAttribute(sequence, "obsEndScene", string.Empty),
+                    OverlapEnabled = combinations == null ? null : ReadInteractiveOverlapOverride(sequence),
+                    OverlapSeconds = combinations == null ? 0.1m : ReadInteractiveOverlapSeconds(sequence),
                     Weight = GetInteractiveSelectionInt(sequence, "weight", 1, 1, MaxCombinationWeight),
                     CooldownSeconds = GetInteractiveSelectionInt(sequence, "cooldownSeconds", 0, 0, MaxCombinationCooldownSeconds)
                 };
@@ -1284,6 +1289,7 @@ namespace OmniVCamController
                 Disposed += (_, __) => comboTip.Dispose();
                 commandBar.Controls.Add(comboEnabledBox);
                 commandBar.Controls.Add(MakeButton(T("InteractiveProjectObsScenes"), (_, __) => EditObsScenes(false)));
+                commandBar.Controls.Add(MakeButton(T("InteractiveProjectOverlapSettings"), (_, __) => EditOverlapSettings(false)));
                 AddDialogRow(root, T("InteractiveTriggerMode"), commandBar, 2);
                 selectionBox.DropDownStyle = ComboBoxStyle.DropDownList;
                 selectionBox.Items.AddRange(new object[] { T("InteractiveRandom"), T("InteractiveSequential") });
@@ -1358,11 +1364,13 @@ namespace OmniVCamController
                     selectionBox.SelectedIndex = route.RandomOrder ? 0 : 1;
                     recentCountBox.Value = route.RecentCombinationCount;
                     routeObsStartScene = route.ObsStartScene; routeObsEndScene = route.ObsEndScene;
+                    routeOverlapEnabled = route.OverlapEnabled; routeOverlapSeconds = route.OverlapSeconds;
                     combinations.AddRange(route.Combinations.Select(combination => new InteractiveMediaCombination
                     {
                         MediaIds = combination.MediaIds.Where(id => media.Any(item => item.RuntimeId == id)).ToList(),
                         Weight = combination.Weight, CooldownSeconds = combination.CooldownSeconds,
-                        ObsStartScene = combination.ObsStartScene, ObsEndScene = combination.ObsEndScene
+                        ObsStartScene = combination.ObsStartScene, ObsEndScene = combination.ObsEndScene,
+                        OverlapEnabled = combination.OverlapEnabled, OverlapSeconds = combination.OverlapSeconds
                     }));
                 }
                 if (combinations.Count == 0) combinations.Add(new InteractiveMediaCombination());
@@ -1451,6 +1459,7 @@ namespace OmniVCamController
             {
                 route.Name = nameBox.Text.Trim();
                 route.ObsStartScene = routeObsStartScene; route.ObsEndScene = routeObsEndScene;
+                route.OverlapEnabled = routeOverlapEnabled; route.OverlapSeconds = routeOverlapSeconds;
                 route.Hotkey = hotkeyBox.Value == null ? null : hotkeyBox.Value.Clone();
                 route.Immediate = string.Equals(commandBox.SelectedItem as string, "PLAY", StringComparison.Ordinal);
                 route.ComboEnabled = comboEnabledBox.Checked;
@@ -1569,6 +1578,8 @@ namespace OmniVCamController
             public bool Immediate { get; set; }
             public InteractiveHotkey Hotkey { get; set; }
             public bool RandomOrder { get; set; } = true;
+            public bool? OverlapEnabled { get; set; }
+            public decimal OverlapSeconds { get; set; } = 0.1m;
             public string ObsStartScene { get; set; } = string.Empty;
             public string ObsEndScene { get; set; } = string.Empty;
             public List<InteractiveMediaCombination> Combinations { get; set; } = new List<InteractiveMediaCombination>();
@@ -1584,6 +1595,8 @@ namespace OmniVCamController
             public int Weight { get; set; } = 1;
             public int CooldownSeconds { get; set; }
             public long? LastSelectedTimestamp { get; set; }
+            public bool? OverlapEnabled { get; set; }
+            public decimal OverlapSeconds { get; set; } = 0.1m;
             public string ObsStartScene { get; set; } = string.Empty;
             public string ObsEndScene { get; set; } = string.Empty;
         }

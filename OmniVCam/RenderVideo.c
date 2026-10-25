@@ -5,6 +5,7 @@
 #include <WinSock2.h>
 #include <Objbase.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <libavutil/sha.h>
 #include "RenderVideo.h"
 #include "ParseConfig.h"
@@ -598,12 +599,15 @@ static int discard_replaced_output(inout_context* ctx, AVFrame* video, AVFrame* 
 
 /* Set the cancellation range before stopping producers, so output cannot advance
  * into a superseded input while stop_read joins its decoding threads. */
+static void playback_overlap_replace(inout_context* ctx, int64_t anchor);
+
 static int replace_prefetched_input(inout_context* ctx, int64_t after_frame_id)
 {
     int replace;
     EnterCriticalSection(&ctx->input_change_mutex);
     replace = after_frame_id > 0 && ctx->input_frame_id > after_frame_id;
     if (replace) {
+        playback_overlap_replace(ctx, after_frame_id);
         ctx->output_discard_after_frame_id = after_frame_id;
         ctx->output_discard_through_frame_id = ctx->input_frame_id;
         for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++)
@@ -665,6 +669,7 @@ end:
 
 typedef struct frame_queue_drain_state {
 	int max_count;
+    int left_count, center_count, right_count;
 } frame_queue_drain_state;
 
 static void frame_queue_begin_natural_drain(frame_queue* q, int reserve_count, frame_queue_drain_state* state)
@@ -672,6 +677,7 @@ static void frame_queue_begin_natural_drain(frame_queue* q, int reserve_count, f
 	if (!q || !state) return;
 	EnterCriticalSection(&q->mutex);
 	state->max_count = q->max_count;
+    state->left_count = q->left_count; state->center_count = q->center_count; state->right_count = q->right_count;
 	/* Buffer enough old-input tail to hide the variable time spent opening the next input. */
 	q->max_count = FFMAX(q->max_count, clamp_frame_queue_max_count(reserve_count));
 	LeaveCriticalSection(&q->mutex);
@@ -683,9 +689,13 @@ static void frame_queue_end_natural_drain(frame_queue* q, const frame_queue_drai
 	if (!q || !state) return;
 	EnterCriticalSection(&q->mutex);
 	q->max_count = state->max_count;
+    q->left_count = state->left_count; q->center_count = state->center_count; q->right_count = state->right_count;
+    q->reached_center = q->center_count != -1 && q->count >= q->center_count;
 	LeaveCriticalSection(&q->mutex);
 	WakeAllConditionVariable(&q->cond);
 }
+
+#include "PlaybackOverlap.h"
 
 void codec_context_init(codec_context* ctx)
 {
@@ -901,6 +911,7 @@ inout_context* inout_context_alloc(
 	ctx->output_scale_mode = OUTPUT_SCALE_MODE_LETTERBOX;
 	ctx->output_display_aspect = (AVRational) { 0, 0 };
 	ctx->output_fps = video_out_fps;
+	ctx->resampled_audio_next_pts = AV_NOPTS_VALUE;
 	ctx->output_time_per_video_frame = av_rescale_q_rnd(1, (AVRational) { video_out_fps.den, video_out_fps.num }, UNIVERSAL_TB, AV_ROUND_UP);
 	ctx->output_video_interval_ns = use_fixed_frame_interval ? util_mul_div64(1000000000ULL, video_out_fps.den, video_out_fps.num) : 0;
 	ctx->output_adjust_start_time_if_delay_count_over = output_ajust_start_if_delay_over < 0 ? 0 : output_ajust_start_if_delay_over;
@@ -998,6 +1009,8 @@ void inout_context_free(inout_context** ctx)
 	av_channel_layout_uninit(&(*ctx)->last_audio_layout);
 	av_channel_layout_uninit(&(*ctx)->last_filtered_audio_layout);
 	av_audio_fifo_free((*ctx)->output_audio_fifo);
+	playback_overlap_clear(*ctx);
+	av_freep(&(*ctx)->overlap);
 	av_free(*ctx);
 	*ctx = NULL;
 }
@@ -1068,6 +1081,7 @@ void inout_context_reset_input(inout_context* ctx, int preserve_output)
 	}
 
 	EnterCriticalSection(&ctx->input_change_mutex);
+	if (!preserve_output) playback_overlap_clear(ctx);
 	for (int i = 0; i < ARRAY_ELEMS(ctx->frame_queues); i++) {
 		if (!preserve_output) {
 			frame_queue_clean(ctx->frame_queues[i]);
@@ -1098,6 +1112,7 @@ void inout_context_reset_input(inout_context* ctx, int preserve_output)
 
 	sws_free_context(&ctx->sws_ctx);
 	swr_free(&ctx->swr_ctx);
+	ctx->resampled_audio_next_pts = AV_NOPTS_VALUE;
 
 	av_buffer_unref(&ctx->hw_device_ctx);
 	avsubtitle_free(&ctx->sub);
@@ -2338,6 +2353,20 @@ int fill_output_audio(inout_context* ctx, AVFrame* frame)
 	}
 	av_frame_copy_props(f, frame);
 	f->sample_rate = ctx->output_audio_sample_rate;
+	if (f->nb_samples <= 0) goto end;
+    if (f->pts != AV_NOPTS_VALUE) {
+        if (ctx->swr_ctx && ctx->resampled_audio_next_pts != AV_NOPTS_VALUE &&
+            llabs(f->pts - ctx->resampled_audio_next_pts) <= ctx->output_time_per_audio_frame)
+            f->pts = ctx->resampled_audio_next_pts;
+        else {
+            ctx->resampled_audio_start_pts = f->pts;
+            ctx->resampled_audio_samples = 0;
+        }
+        ctx->resampled_audio_samples += f->nb_samples;
+        /* Round once from total output samples, never once per packet. */
+        ctx->resampled_audio_next_pts = ctx->resampled_audio_start_pts + playback_audio_time(ctx, ctx->resampled_audio_samples);
+    }
+    else ctx->resampled_audio_next_pts = AV_NOPTS_VALUE;
 	diagnostics_record_audio_logic(ctx->swr_ctx ? "swr_convert" : "copy", frame, f);
 	diagnostics_record_audio_frame(2, f);
 
@@ -2661,6 +2690,28 @@ end:
 	return 0;
 }
 
+static void flush_output_audio_resampler(inout_context* ctx)
+{
+    if (!ctx->swr_ctx || ctx->force_exit) return;
+    while (1) {
+        int samples = swr_get_out_samples(ctx->swr_ctx, 0);
+        if (samples <= 0) break;
+        AVFrame* frame = playback_audio_slice(ctx, NULL, 0, samples);
+        if (!frame) break;
+        int count = swr_convert(ctx->swr_ctx, frame->extended_data, samples, NULL, 0);
+        if (count <= 0) { av_frame_free(&frame); break; }
+        frame->nb_samples = count; frame->pts = ctx->resampled_audio_next_pts;
+        if (frame->pts != AV_NOPTS_VALUE) {
+            ctx->resampled_audio_samples += count;
+            ctx->resampled_audio_next_pts = ctx->resampled_audio_start_pts + playback_audio_time(ctx, ctx->resampled_audio_samples);
+        }
+        int result = frame_enqueue(ctx->frame_queues[1], frame, ctx->timeout, ctx->input_frame_id,
+            ctx->input_media_mask, ctx->input_start_time, &ctx->force_exit);
+        av_frame_free(&frame);
+        if (result < 0) break;
+    }
+}
+
 DWORD WINAPI decode_audio_thread(LPVOID p) {
 	inout_context* ctx = (inout_context*)p;
 
@@ -2737,6 +2788,7 @@ DWORD WINAPI decode_audio_thread(LPVOID p) {
 	}
 
 end:
+	if (ctx->eof && !ctx->force_exit) flush_output_audio_resampler(ctx);
 	av_frame_free(&filtered_frame);
 	av_frame_free(&frame);
 	av_frame_free(&decoded);
@@ -2937,6 +2989,9 @@ void stop_read(inout_context* ctx, int force)
 void reset_after_seek(inout_context* ctx)
 {
 	if (!ctx) return;
+	EnterCriticalSection(&ctx->input_change_mutex);
+	playback_overlap_clear(ctx);
+	LeaveCriticalSection(&ctx->input_change_mutex);
 	ctx->force_exit = 0;
 	ctx->eof = 0;
 	for (int i = 0; i < ARRAY_ELEMS(ctx->decoders); i++) {
@@ -3278,11 +3333,15 @@ void compute_audio_pts_time_three(inout_context* ctx) {
 
 int output_audio(inout_context* ctx,AVFrame *frame)
 {
+	AVFrame* original = frame;
+	frame = playback_overlap_audio(ctx, original);
 	frame->pts = ctx->output_audio_pts_time;
 	if (ctx->audio_callback) {
 		ctx->audio_callback(ctx->callback_private, frame);
 	}
 	//printf("output audio: %lld", ctx->output_audio_pts_time);
+	if (frame != original) av_frame_free(&frame);
+	playback_overlap_finish(ctx);
 	ctx->output_sample_count += ctx->output_audio_nb_samples;
 	compute_audio_pts_time_three(ctx);
 	return 0;
@@ -3290,6 +3349,8 @@ int output_audio(inout_context* ctx,AVFrame *frame)
 
 int output_video(inout_context* ctx, AVFrame* frame)
 {
+	AVFrame* original = frame;
+	frame = playback_overlap_video(ctx, original);
 	frame->pts = ctx->output_video_pts_time;
 	frame->pict_type = AV_PICTURE_TYPE_NONE;
 	if (ctx->video_callback) {
@@ -3300,6 +3361,8 @@ int output_video(inout_context* ctx, AVFrame* frame)
 		ctx->output_video_avg_block_time = ctx->output_video_avg_block_time * 0.99 + ctx->output_video_last_block_time * 0.01;
 	}
 	//printf("output video: %lld", ctx->output_video_pts_time);
+	if (frame != original) av_frame_free(&frame);
+	playback_overlap_finish(ctx);
 	ctx->output_frame_count += 1;
 	ctx->output_video_pts_time = av_rescale_q(ctx->output_frame_count,
 		(AVRational) { ctx->output_fps.den, ctx->output_fps.num }, UNIVERSAL_TB);
@@ -3350,8 +3413,9 @@ static int reset_output_at_input_boundary(inout_context* ctx, int64_t frame_id, 
 		ctx->output_last_audio_nb_samples = 0;
 		av_audio_fifo_reset(ctx->output_audio_fifo);
 	}
+	int deferred_end = playback_overlap_boundary(ctx, frame_id, ended_frame_id);
 	if (ctx->input_started_callback) ctx->input_started_callback(ctx->input_started_private, frame_id);
-	if (ended_frame_id > 0 && !(media_mask & INPUT_MEDIA_LOOP_RESTART) && ctx->input_ended_callback) {
+	if (!deferred_end && ended_frame_id > 0 && !(media_mask & INPUT_MEDIA_LOOP_RESTART) && ctx->input_ended_callback) {
 		ctx->input_ended_callback(ctx->input_ended_private, ended_frame_id);
 	}
 	return 1;
@@ -3549,6 +3613,12 @@ HRESULT WINAPI output_thread(LPVOID p)
 					ret = -1;
 					goto unlock_end;
 				}
+                AVFrame* bridge = playback_overlap_audio_gap(ctx, final_audio_frame);
+                if (bridge) {
+                    av_frame_unref(final_audio_frame);
+                    av_frame_move_ref(final_audio_frame, bridge);
+                    av_frame_free(&bridge);
+                }
 			}
 			output_audio(ctx, final_audio_frame);
 			av_frame_unref(final_audio_frame);
@@ -4448,6 +4518,9 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
                 option = end + 1;
             }
         }
+        if (cmd->text && playback_overlap_seconds(cmd->text) < 0) {
+            av_freep(&cmd->text); strcpy_s(reply, reply_size, "ERR overlap must be between 0 and 5 seconds\n"); return;
+        }
         cmd->type = TCP_CONTROL_PLAY_NEXT;
         return;
     }
@@ -4457,6 +4530,9 @@ static void tcp_control_parse_line(tcp_control_server* server, char* line, tcp_c
 			strcpy_s(reply, reply_size, "ERR PLAY requires an input\n");
 			return;
 		}
+		if (playback_overlap_seconds(arg) < 0) {
+            strcpy_s(reply, reply_size, "ERR overlap must be between 0 and 5 seconds\n"); return;
+        }
 		cmd->type = TCP_CONTROL_PLAY;
 		cmd->text = av_strdup(arg);
 		return;
@@ -4922,6 +4998,7 @@ DWORD main_thread(LPVOID p) {
 			int should_open = 0;
 			int preserve_output = 0;
 			int opening_next = 0;
+            playback_overlap* prepared_overlap = NULL;
 			char* play_filename = NULL;
 			AVDictionary* play_dict = NULL;
 			AVDictionary* temp_dict = NULL;
@@ -5035,7 +5112,14 @@ DWORD main_thread(LPVOID p) {
 
 			if (opening_next) {
 				stop_read(ctx, 0);
+                EnterCriticalSection(&ctx->input_change_mutex);
+                prepared_overlap = playback_overlap_prepare(ctx, play_filename, 0, 0);
+                if (!prepared_overlap) LeaveCriticalSection(&ctx->input_change_mutex);
 				inout_context_reset_input(ctx, 1);
+                if (prepared_overlap) {
+                    ctx->overlap->opening = prepared_overlap;
+                    LeaveCriticalSection(&ctx->input_change_mutex);
+                }
 				av_freep(&current_input);
 				current_input = av_strdup(play_filename);
 				if (next_queue_expanded) {
@@ -5044,7 +5128,6 @@ DWORD main_thread(LPVOID p) {
 					next_queue_expanded = 0;
 				}
 				EnterCriticalSection(&control_server.mutex);
-				ctx->output_paused = 0;
 				strcpy_s(control_server.status_state, sizeof(control_server.status_state), "opening");
 				tcp_control_sha256(current_input, control_server.status_input);
 				LeaveCriticalSection(&control_server.mutex);
@@ -5067,9 +5150,18 @@ DWORD main_thread(LPVOID p) {
 						frame_queue_end_natural_drain(ctx->frame_queues[i], &next_queue_states[i]);
 					next_queue_expanded = 0;
 				}
+                if (next_input && playback_overlap_seconds(next_input) > 0 && playback_overlap_local_file(ctx->input_name))
+                    for (int i = 0; i < 2; i++) frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
                 if (next_input && command.number > 0 && replace_prefetched_input(ctx, command.number)) {
                     stop_read(ctx, 1);
+                    EnterCriticalSection(&ctx->input_change_mutex);
+                    prepared_overlap = playback_overlap_prepare(ctx, next_input, 0, command.number);
+                    if (!prepared_overlap) LeaveCriticalSection(&ctx->input_change_mutex);
                     inout_context_reset_input(ctx, 1);
+                    if (prepared_overlap) {
+                        ctx->overlap->opening = prepared_overlap;
+                        LeaveCriticalSection(&ctx->input_change_mutex);
+                    }
                     play_filename = next_input;
                     next_input = NULL;
                     av_freep(&current_input);
@@ -5268,6 +5360,7 @@ DWORD main_thread(LPVOID p) {
 			}
 
 			if (should_open && play_filename) {
+                double overlap_seconds = playback_overlap_seconds(play_filename);
 				char* tab_pos = strchr(play_filename, '\t');
 				if (tab_pos) {
 					*tab_pos = '\0';
@@ -5276,7 +5369,17 @@ DWORD main_thread(LPVOID p) {
 
 				if (!preserve_output) {
 					stop_read(ctx, 1);
+                    EnterCriticalSection(&ctx->input_change_mutex);
+                    if (command.type == TCP_CONTROL_PLAY) {
+                        /* Parsing split the tab above; use the original complete command. */
+                        prepared_overlap = playback_overlap_prepare(ctx, command.text, 1, 0);
+                    }
+                    if (!prepared_overlap) LeaveCriticalSection(&ctx->input_change_mutex);
 					inout_context_reset_input(ctx, 0);
+                    if (prepared_overlap) {
+                        ctx->overlap->opening = prepared_overlap;
+                        LeaveCriticalSection(&ctx->input_change_mutex);
+                    }
 				}
 				diagnostics_reset();
 
@@ -5293,6 +5396,7 @@ DWORD main_thread(LPVOID p) {
 					queue_right = av_dict_pop_value(&temp_dict, "queue_right");
 					queue_center = av_dict_pop_value(&temp_dict, "queue_center");
 					loop = av_dict_pop_value(&temp_dict, "loop");
+                    av_free(av_dict_pop_value(&temp_dict, "overlap"));
 					vcodec_str = av_dict_pop_value(&temp_dict, "vcodec");
 					acodec_str = av_dict_pop_value(&temp_dict, "acodec");
 					scodec_str = av_dict_pop_value(&temp_dict, "scodec");
@@ -5309,6 +5413,12 @@ DWORD main_thread(LPVOID p) {
 				if (queue_left) queue_left_int = atoi(queue_left);
 				if (queue_right) queue_right_int = atoi(queue_right);
 				if (queue_center) queue_center_int = atoi(queue_center);
+                if (overlap_seconds > 0 && playback_overlap_local_file(play_filename)) {
+                    /* File transitions need every tail sample. Keep queue capacity/backpressure,
+                     * bypass the optional live-source drop/refill watermarks for this input. */
+                    queue_left_int = queue_center_int = queue_right_int = -1;
+                    for (int i = 0; i < 2; i++) frame_queue_set(ctx->frame_queues[i], -1, -1, -1);
+                }
 				ctx->loop_enabled = loop && atoi(loop) != 0;
 				InterlockedExchange(&ctx->loop_restart_requested, 0);
 				InterlockedExchange(&g_input_loop_cancel_requested, 0);
@@ -5333,9 +5443,10 @@ DWORD main_thread(LPVOID p) {
 							av_log(NULL, AV_LOG_INFO, "[%s] seek: %I64d\n", play_filename, seek_time_int64);
 						}
 					}
+                    playback_overlap_commit(ctx, prepared_overlap); prepared_overlap = NULL;
 					start_read(ctx);
 					EnterCriticalSection(&control_server.mutex);
-					ctx->output_paused = 0;
+					if (!preserve_output) ctx->output_paused = 0;
 					strcpy_s(control_server.status_state, sizeof(control_server.status_state), "playing");
 					tcp_control_sha256(input_summary, control_server.status_input);
 					control_server.status_input_frame_id = ctx->input_frame_id;
@@ -5358,6 +5469,13 @@ DWORD main_thread(LPVOID p) {
 				}
 			}
 
+            if (prepared_overlap) {
+                EnterCriticalSection(&ctx->input_change_mutex);
+                if (ctx->overlap && ctx->overlap->opening == prepared_overlap) ctx->overlap->opening = NULL;
+                if (!prepared_overlap->immediate) playback_overlap_restore(ctx, prepared_overlap);
+                playback_overlap_free(prepared_overlap);
+                LeaveCriticalSection(&ctx->input_change_mutex);
+            }
 			av_dict_free(&play_dict);
 			av_dict_free(&temp_dict);
 			if (format) av_free(format);

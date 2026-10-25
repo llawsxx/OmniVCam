@@ -33,6 +33,9 @@
     <ClInclude Include="ParseConfig.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="PlaybackOverlap.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="RenderVideo.h">
       <Filter>头文件</Filter>
     </ClInclude>

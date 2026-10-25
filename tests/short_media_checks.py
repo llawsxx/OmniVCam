@@ -74,10 +74,11 @@ def run_case(kind, fps, repeat, loop=False, buffer=30):
         counts = [1] * 15 if repeat else [1, 2, 3] * 5
         files = [OUT / f'{kind}-{fps}-{count}.{extension}' for count in counts]
         files.append(OUT / f'{kind}-{fps}-{fps}.{extension}')
-        hashes = [hashlib.sha256((str(path) + ('\tloop=1' if loop and item < len(counts) else '')).encode()).hexdigest() for item, path in enumerate(files)]
-        command('PLAY ' + str(files[0]) + ('\tloop=1' if loop else ''))
+        inputs = [str(path) + '\toverlap=0' + (',loop=1' if loop and item < len(counts) else '') for item, path in enumerate(files)]
+        hashes = [hashlib.sha256(text.encode()).hexdigest() for text in inputs]
+        command('PLAY ' + inputs[0])
         if not loop:
-            command('PLAY_NEXT ' + str(files[1]))
+            command('PLAY_NEXT ' + inputs[1])
         index = 0
         starts, eof_ids, ended_ids = [], [], []
         submitted = {0: time.monotonic(), 1: time.monotonic()}
@@ -102,9 +103,9 @@ def run_case(kind, fps, repeat, loop=False, buffer=30):
                 assert not starts or frame_id > starts[-1][1], (name, 'Repeated or out-of-order batch', line)
                 starts.append((timestamp, frame_id))
                 if loop and index == len(counts) - 1:
-                    command('PLAY_NEXT ' + str(files[-1]) + f'\tafter_frame_id={frame_id}')
+                    command('PLAY_NEXT ' + str(files[-1]) + f'\tafter_frame_id={frame_id},overlap=0')
                 elif not loop and index > 0 and index + 1 < len(files):
-                    submitted[index + 1], _ = command('PLAY_NEXT ' + str(files[index + 1]))
+                    submitted[index + 1], _ = command('PLAY_NEXT ' + inputs[index + 1])
                 index += 1
         assert index == len(files), (name, 'Missing actual-start events', index, all_events)
         _, status = command('STATUS')

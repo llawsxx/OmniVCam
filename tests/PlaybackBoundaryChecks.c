@@ -5,6 +5,7 @@ static struct inout_context* short_context;
 #define OMNIVCAM_TEST_CONTEXT_CREATED(ctx) (short_context = (ctx))
 #include "../OmniVCam/RenderVideo.c"
 #include <stdlib.h>
+#include <share.h>
 
 static void check(int condition, const char* message)
 {
@@ -99,6 +100,21 @@ static void check_live_output_boundary(void)
 
 /* Standalone integration backend: real files, main_thread, TCP, decoder and paced output. */
 static FILE* short_trace;
+static FILE* overlap_audio_trace;
+static FILE* overlap_pcm_trace;
+static void overlap_audio_callback(void* priv, AVFrame* frame)
+{
+    if (overlap_audio_trace && frame->data[0]) {
+        int16_t* data = (int16_t*)frame->data[0];
+        fprintf(overlap_audio_trace, "%I64d,%d,%d,%I64d,%I64d\n", av_gettime_relative(), data[0], data[(frame->nb_samples - 1) * frame->ch_layout.nb_channels],
+            short_context->output_boundary_frame_id, frame->pts);
+        fflush(overlap_audio_trace);
+        if (overlap_pcm_trace) {
+            fwrite(data, sizeof(*data), frame->nb_samples * frame->ch_layout.nb_channels, overlap_pcm_trace);
+            fflush(overlap_pcm_trace);
+        }
+    }
+}
 static void short_video_callback(void* priv, AVFrame* frame)
 {
     if (short_trace && frame->data[0]) {
@@ -223,13 +239,22 @@ static int run_short_mode(int argc, char** argv)
     options.video_out_fps = (AVRational){atoi(argv[3]), 1};
     options.audio_out_sample_rate = 48000;
     options.audio_out_format = AV_SAMPLE_FMT_S16;
-    options.audio_out_channels = 1;
-    options.audio_out_nb_samples = 480;
+    options.audio_out_channels = getenv("OMNIVCAM_TEST_AUDIO_CHANNELS") ? atoi(getenv("OMNIVCAM_TEST_AUDIO_CHANNELS")) : 1;
+    options.audio_out_nb_samples = getenv("OMNIVCAM_TEST_AUDIO_SAMPLES") ? atoi(getenv("OMNIVCAM_TEST_AUDIO_SAMPLES")) : 480;
     options.video_callback = short_video_callback;
+    if (getenv("OMNIVCAM_TRACE_AUDIO")) {
+        char audio_path[2048]; sprintf_s(audio_path, sizeof(audio_path), "%s.audio.csv", argv[5]);
+        check((overlap_audio_trace = _fsopen(audio_path, "wb", _SH_DENYNO)) != NULL, "Open audio output trace");
+        if (getenv("OMNIVCAM_TRACE_PCM")) {
+            sprintf_s(audio_path, sizeof(audio_path), "%s.s16le", argv[5]);
+            check((overlap_pcm_trace = _fsopen(audio_path, "wb", _SH_DENYNO)) != NULL, "Open complete PCM output trace");
+        }
+        options.audio_callback = overlap_audio_callback;
+    }
     options.tcp_port = atoi(argv[2]);
     options.config_path = "OMNIVCAM_SHORT_TEST_CONFIG";
     check(_putenv_s(options.config_path, argv[4]) == 0, "Isolated test configuration");
-    check(fopen_s(&short_trace, argv[5], "wb") == 0, "Open actual video output trace");
+    check((short_trace = _fsopen(argv[5], "wb", _SH_DENYNO)) != NULL, "Open actual video output trace");
     avdevice_register_all();
     HANDLE thread;
     check(open_thread(&thread, main_thread, &options) >= 0, "Start actual playback backend");
@@ -239,12 +264,18 @@ static int run_short_mode(int argc, char** argv)
     check(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0, "Integration backend stops cleanly");
     CloseHandle(thread);
     fclose(short_trace);
+    if (overlap_audio_trace) fclose(overlap_audio_trace);
+    if (overlap_pcm_trace) fclose(overlap_pcm_trace);
     return 0;
 }
+
+
+#include "PlaybackOverlapChecks.h"
 
 int main(int argc, char** argv)
 {
     if (argc > 1) return run_short_mode(argc, argv);
+    check_playback_overlap();
     inout_context* ctx = av_mallocz(sizeof(*ctx));
     AVFrame* video = av_frame_alloc();
     AVFrame* audio = av_frame_alloc();

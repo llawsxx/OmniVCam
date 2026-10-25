@@ -862,4 +862,34 @@
   <data name="CalibrationSearchDisplaySummary" xml:space="preserve">
     <value>{0}（{1} × {2}）：取得 {3} 幀桌面影像</value>
   </data>
+  <data name="InteractiveGroupOverlapEnabled" xml:space="preserve">
+    <value>啟用音視訊疊加</value>
+  </data>
+  <data name="InteractiveGroupOverlapSeconds" xml:space="preserve">
+    <value>疊加時長（秒）</value>
+  </data>
+  <data name="InteractiveGroupOverlapHint" xml:space="preserve">
+    <value>本組互動專案、預設媒體及進入本組轉場的疊加預設值。互動專案及其媒體組合的獨立設定優先。預設 0.1 秒，0 表示關閉；已觸發的播放保留觸發時的設定。</value>
+  </data>
+  <data name="InteractiveProjectOverlapSettings" xml:space="preserve">
+    <value>專案疊加設定</value>
+  </data>
+  <data name="InteractiveCombinationOverlapSettings" xml:space="preserve">
+    <value>組合疊加設定</value>
+  </data>
+  <data name="InteractiveOverlapMode" xml:space="preserve">
+    <value>疊加模式</value>
+  </data>
+  <data name="InteractiveOverlapInherit" xml:space="preserve">
+    <value>繼承上一層設定</value>
+  </data>
+  <data name="InteractiveOverlapOn" xml:space="preserve">
+    <value>啟用並設定時長</value>
+  </data>
+  <data name="InteractiveOverlapOff" xml:space="preserve">
+    <value>關閉疊加</value>
+  </data>
+  <data name="InteractiveOverlapHierarchyHint" xml:space="preserve">
+    <value>優先順序：互動專案內的媒體組合 &gt; 互動專案 &gt; 互動分組。繼承時使用上一層設定，關閉時強制停用疊加。時長單位為秒（0～5），0 表示關閉。已觸發的播放保留觸發時的設定。</value>
+  </data>
 </root>
