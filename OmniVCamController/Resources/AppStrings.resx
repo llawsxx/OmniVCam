@@ -603,12 +603,12 @@
     <value>Priority: project media combination &gt; interactive project &gt; interactive group. Inherit uses the parent setting; disable explicitly overrides it. Duration is in seconds (0–5); 0 disables overlap. Accepted playback retains its settings snapshot.</value>
   </data>
   <data name="InteractiveIgnoreRetriggerWhilePlaying" xml:space="preserve">
-    <value>Ignore repeat triggers while playing</value>
+    <value>Ignore repeat triggers</value>
   </data>
   <data name="InteractiveIgnoreRetriggerHint" xml:space="preserve">
-    <value>While this project is playing, ignore repeat triggers, including combo hits, without interrupting or queuing another invocation. Triggers while the project is only waiting in the queue and triggers for other projects are unaffected.</value>
+    <value>While this project is playing, queued or awaiting confirmation, ignore repeat triggers, including combo hits, without interrupting or queuing another invocation. Triggers for other projects are unaffected.</value>
   </data>
   <data name="InteractiveRepeatedTriggerIgnored" xml:space="preserve">
-    <value>Repeat trigger ignored: project is already playing</value>
+    <value>Repeat trigger ignored: project is already playing or queued</value>
   </data>
 </root>

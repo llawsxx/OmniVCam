@@ -1,6 +1,10 @@
 ﻿using System;
 using System.Collections;
 using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading.Tasks;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
@@ -62,7 +66,51 @@ internal static partial class InteractivePlaybackChecks
             QueueState(ComboBatch(other)[1], batch[1]);
             Invoke(owner, "RequestInteractiveRoute", route, "Only queued");
             Invoke(owner, "RequestInteractiveRoute", route, "Only queued again");
-            Check(WaitingTriggerCount() == 2, "A project waiting in the queue can still be triggered repeatedly");
+            Check(WaitingTriggerCount() == 0, "A project already prefetched by the backend rejects repeated triggers");
+            var otherEntry = ComboBatch(other)[1];
+            foreach (bool immediate in new[] { false, true })
+            {
+                Set(route, "Immediate", immediate);
+                QueueState(otherEntry, null, batch[0]);
+                int selection = (int)Get(route, "NextCombinationIndex");
+                Invoke(owner, "RequestInteractiveRoute", route, "Playback queue repeat");
+                Check(WaitingTriggerCount() == 0 && QueuedEntries().Single() == batch[0] &&
+                    (int)Get(route, "NextCombinationIndex") == selection, "PLAY and PLAY_NEXT repeats preserve queued media and selection progress");
+                QueueState(otherEntry, null);
+                Invoke(owner, "RequestInteractiveRoute", route, "First queued request");
+                Check(WaitingTriggerCount() == 1, "A new project is accepted once");
+                selection = (int)Get(route, "NextCombinationIndex");
+                Invoke(owner, "RequestInteractiveRoute", route, "Repeated queued request");
+                Check(WaitingTriggerCount() == 1 && (int)Get(route, "NextCombinationIndex") == selection,
+                    "Trigger requests reject duplicates before media selection");
+                Invoke(Field(owner, "interactiveTriggerRequests"), "Clear");
+            }
+            foreach (string field in new[] { "interactiveStartingEntry", "interactiveSendingNext" })
+            {
+                QueueState(otherEntry, null); SetField(field, batch[0]);
+                Invoke(owner, "RequestInteractiveRoute", route, "Awaiting command confirmation");
+                Check(WaitingTriggerCount() == 0, "A project awaiting a command acknowledgement also rejects duplicates");
+                SetField(field, null);
+            }
+            var inFlight = New("InteractiveTriggerRequest"); ((IList)Get(inFlight, "Entries")).Add(batch[0]);
+            SetField("interactiveProcessingTrigger", inFlight);
+            Invoke(owner, "RequestInteractiveRoute", route, "Dequeued request repeat");
+            Check(WaitingTriggerCount() == 0, "Dequeuing a request during STATUS verification does not leave a duplicate-trigger gap");
+            SetField("interactiveProcessingTrigger", null);
+            var handoff = New("InteractiveProtectedHandoff");
+            handoff.GetType().GetField("Request").SetValue(handoff, inFlight); SetField("interactiveProtectedHandoff", handoff);
+            Invoke(owner, "RequestInteractiveRoute", route, "Protected handoff repeat");
+            Check(WaitingTriggerCount() == 0, "A request waiting for protected media cannot be queued twice");
+            Invoke(owner, "CancelInteractiveProtectedHandoff");
+            Set(inFlight, "ProjectGroupId", Guid.NewGuid());
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Enqueue", inFlight);
+            Invoke(owner, "RequestInteractiveRoute", route, "Ignore stale group request");
+            Check(WaitingTriggerCount() == 2, "An obsolete group request does not prevent a fresh invocation");
+            Invoke(Field(owner, "interactiveTriggerRequests"), "Clear");
+            QueueState(otherEntry, null, batch[0]); Set(route, "IgnoreRetriggerWhilePlaying", false);
+            Invoke(owner, "RequestInteractiveRoute", route, "Queue repeats enabled");
+            Invoke(owner, "RequestInteractiveRoute", route, "Queue repeats enabled again");
+            Check(WaitingTriggerCount() == 2, "Disabling the option preserves repeated queued invocations");
             Invoke(Field(owner, "interactiveTriggerRequests"), "Clear");
 
             QueueState(batch[1], null); Set(route, "IgnoreRetriggerWhilePlaying", false);
@@ -123,6 +171,63 @@ internal static partial class InteractivePlaybackChecks
             SetField("interactiveWindowOpen", oldWindow); SetField("processingInteractiveTriggers", oldProcessing);
             Thread.CurrentThread.CurrentUICulture = culture;
         }
-        Console.WriteLine("PASS: repeat-trigger suppression across commands, phases, looping, combo precedence, project identity, queue preservation, opt-out, save/copy/legacy configuration and translated editors.");
+        CheckQueuedRepeatDuringStatus();
+        Console.WriteLine("PASS: repeat-trigger suppression across playback, request/media queues, prefetched and in-flight commands, protected handoffs, real delayed STATUS, cancellation, phases, looping, combo precedence, identity, opt-out, persistence and translated editors.");
     }
+    private static async Task CheckQueuedRepeatDuringStatusAsync(TcpListener listener, int port)
+    {
+        Action<string, int> ignore = (text, generation) => { };
+        var client = Activator.CreateInstance(Nested("TcpCommandClient"), new object[] { ignore, ignore, (Action)(() => { }) });
+        object oldWindow = Field(owner, "interactiveWindowOpen"), oldProcessing = Field(owner, "processingInteractiveTriggers");
+        TcpClient peer = null; var group = PhasedGroup(); media.Add(group);
+        SetField("commandClient", client); SetField("observedBackendConnectionLoss", 0);
+        try
+        {
+            var accept = listener.AcceptTcpClientAsync(); var connecting = ClientSend(client, port, "STATUS");
+            peer = await CompleteSoon(accept, "Duplicate-trigger fixture connects");
+            var reader = new StreamReader(peer.GetStream()); var writer = new StreamWriter(peer.GetStream()) { AutoFlush = true };
+            Check(await CompleteSoon(reader.ReadLineAsync(), "Initial duplicate-trigger STATUS") == "STATUS", "Duplicate-trigger regression uses a real TCP connection");
+            await writer.WriteLineAsync("OK initial"); await CompleteSoon(connecting, "Establish duplicate-trigger connection");
+            var route = ComboRoute(group); var other = ComboRoute(group);
+            Set(route, "IgnoreRetriggerWhilePlaying", true);
+            var current = ComboBatch(other)[1]; QueueState(current, null); SetField("interactiveActive", true);
+            SetField("interactiveWindowOpen", true); SetField("processingInteractiveTriggers", true);
+            Invoke(owner, "RequestInteractiveRoute", route, "Initial queued project");
+            SetField("processingInteractiveTriggers", false);
+            var processing = (Task)Invoke(owner, "ProcessInteractiveTriggerRequestsAsync");
+            Check(await CompleteSoon(reader.ReadLineAsync(), "Delayed duplicate-trigger STATUS") == "STATUS", "Processing dequeues the request before awaiting STATUS");
+            Check(WaitingTriggerCount() == 0 && Field(owner, "interactiveProcessingTrigger") != null, "The in-flight invocation is retained during STATUS verification");
+            int selection = (int)Get(route, "NextCombinationIndex");
+            Invoke(owner, "RequestInteractiveRoute", route, "Duplicate during STATUS");
+            Check(WaitingTriggerCount() == 0 && (int)Get(route, "NextCombinationIndex") == selection,
+                "A repeat during a real delayed STATUS response never enters the queue or consumes selection");
+            SetField("interactiveWindowOpen", false); Invoke(owner, "ClearInteractiveRuntime", true);
+            await writer.WriteLineAsync(BackendStatus(current, "playing", current));
+            await CompleteSoon(processing, "Cancelled in-flight invocation finishes");
+            Check(Field(owner, "interactiveProcessingTrigger") == null && WaitingTriggerCount() == 0,
+                "Cancellation and late STATUS replies release duplicate-trigger reservations");
+        }
+        finally
+        {
+            Invoke(owner, "ClearInteractiveRuntime", true); media.Remove(group);
+            if (peer != null) peer.Close(); ((IDisposable)client).Dispose();
+            SetField("commandClient", null); SetField("observedBackendConnectionLoss", 0);
+            SetField("interactiveWindowOpen", oldWindow); SetField("processingInteractiveTriggers", oldProcessing);
+        }
+    }
+
+    private static void CheckQueuedRepeatDuringStatus()
+    {
+        var context = SynchronizationContext.Current;
+        var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using (var host = new TextBox { Text = "127.0.0.1" })
+        using (var portBox = new NumericUpDown { Maximum = 65535, Value = port })
+        {
+            SetField("hostBox", host); SetField("portBox", portBox); SynchronizationContext.SetSynchronizationContext(null);
+            try { CheckQueuedRepeatDuringStatusAsync(listener, port).GetAwaiter().GetResult(); }
+            finally { listener.Stop(); SetField("hostBox", null); SetField("portBox", null); SynchronizationContext.SetSynchronizationContext(context); }
+        }
+    }
+
 }

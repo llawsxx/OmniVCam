@@ -33,6 +33,7 @@ namespace OmniVCamController
         private InteractivePlaybackEntry interactiveStartingEntry;
         private InteractivePlaybackEntry interactiveSendingNext;
         private bool processingInteractiveTriggers;
+        private InteractiveTriggerRequest interactiveProcessingTrigger;
         private readonly Queue<InteractiveTriggerRequest> interactiveTriggerRequests = new Queue<InteractiveTriggerRequest>();
         private InteractivePlaybackForm interactiveForm;
         private bool interactiveWindowOpen;
@@ -89,6 +90,7 @@ namespace OmniVCamController
             interactiveNeedsStatusCheck = false;
             interactiveStartingEntry = null;
             interactiveSendingNext = null;
+            interactiveProcessingTrigger = null;
             CancelInteractiveProtectedHandoff();
             interactiveRuntimeVersion++;
             interactiveBackendEvents.Clear();
@@ -227,12 +229,35 @@ namespace OmniVCamController
             }
         }
 
+        private static bool IsInteractiveProjectEntry(InteractivePlaybackEntry entry, Guid routeId)
+        {
+            return entry != null && entry.RouteId == routeId && !entry.IsGroupDefault && !entry.IsGroupTransition;
+        }
+
+        private bool IsInteractiveProjectRequest(InteractiveTriggerRequest request, Guid routeId)
+        {
+            return request != null && !request.IsGroupTransition && !IsStaleInteractiveGroupRequest(request) &&
+                request.Entries.Any(entry => IsInteractiveProjectEntry(entry, routeId));
+        }
+
+        private bool HasInteractiveProjectInvocation(InteractiveRouteItem route)
+        {
+            Guid id = route.RuntimeId;
+            return interactiveActive && IsInteractiveProjectEntry(interactiveCurrent, id) ||
+                IsInteractiveProjectEntry(interactivePending, id) ||
+                IsInteractiveProjectEntry(interactiveStartingEntry, id) ||
+                IsInteractiveProjectEntry(interactiveSendingNext, id) ||
+                interactiveQueue.Any(entry => IsInteractiveProjectEntry(entry, id)) ||
+                interactiveTriggerRequests.Any(request => IsInteractiveProjectRequest(request, id)) ||
+                IsInteractiveProjectRequest(interactiveProcessingTrigger, id) ||
+                IsInteractiveProjectRequest(interactiveProtectedHandoff?.Request, id);
+        }
+
         private void RequestInteractiveRoute(InteractiveRouteItem route, string source)
         {
             if (!interactiveWindowOpen || closingMainForm || route == null) return;
             ObserveBackendConnectionLoss();
-            if (route.IgnoreRetriggerWhilePlaying && interactiveActive && interactiveCurrent != null &&
-                interactiveCurrent.RouteId == route.RuntimeId && !interactiveCurrent.IsGroupDefault && !interactiveCurrent.IsGroupTransition)
+            if (route.IgnoreRetriggerWhilePlaying && HasInteractiveProjectInvocation(route))
             {
                 AppendInteractiveLog(source + " - " + route.Name + ": " + T("InteractiveRepeatedTriggerIgnored"));
                 return;
@@ -294,21 +319,29 @@ namespace OmniVCamController
                     interactiveTriggerRequests.Count > 0)
                 {
                     InteractiveTriggerRequest request = interactiveTriggerRequests.Dequeue();
-                    if (IsStaleInteractiveGroupRequest(request)) continue;
-                    int version = interactiveRuntimeVersion;
-                    bool verified = await VerifyInteractivePlaybackAsync();
-                    if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion) return;
-                    if (IsStaleInteractiveGroupRequest(request)) continue;
-                    if (!verified)
+                    interactiveProcessingTrigger = request;
+                    try
                     {
-                        if (version == interactiveRuntimeVersion || interactiveNeedsStatusCheck) PrependInteractiveTrigger(request);
-                        break;
+                        if (IsStaleInteractiveGroupRequest(request)) continue;
+                        int version = interactiveRuntimeVersion;
+                        bool verified = await VerifyInteractivePlaybackAsync();
+                        if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion) return;
+                        if (IsStaleInteractiveGroupRequest(request)) continue;
+                        if (!verified)
+                        {
+                            if (version == interactiveRuntimeVersion || interactiveNeedsStatusCheck) PrependInteractiveTrigger(request);
+                            break;
+                        }
+                        if (request.Immediate)
+                            await StartInteractiveImmediatelyAsync(request);
+                        else
+                            await AppendInteractiveRouteAsync(request);
+                        interactiveForm?.RefreshRuntime();
                     }
-                    if (request.Immediate)
-                        await StartInteractiveImmediatelyAsync(request);
-                    else
-                        await AppendInteractiveRouteAsync(request);
-                    interactiveForm?.RefreshRuntime();
+                    finally
+                    {
+                        if (interactiveProcessingTrigger == request) interactiveProcessingTrigger = null;
+                    }
                 }
             }
             finally

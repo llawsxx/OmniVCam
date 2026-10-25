@@ -893,12 +893,12 @@
     <value>優先順序：互動專案內的媒體組合 &gt; 互動專案 &gt; 互動分組。繼承時使用上一層設定，關閉時強制停用疊加。時長單位為秒（0～5），0 表示關閉。已觸發的播放保留觸發時的設定。</value>
   </data>
   <data name="InteractiveIgnoreRetriggerWhilePlaying" xml:space="preserve">
-    <value>執行中忽略重複觸發</value>
+    <value>忽略重複觸發</value>
   </data>
   <data name="InteractiveIgnoreRetriggerHint" xml:space="preserve">
-    <value>此項目正在播放時，忽略再次觸發（包括連擊），不中斷目前播放，也不加入佇列。僅在佇列中等待時仍可再次觸發；其他項目不受影響。</value>
+    <value>此項目正在播放、排隊或等待確認時，忽略再次觸發（包括連擊），不中斷目前播放，也不重複加入佇列。其他項目不受影響。</value>
   </data>
   <data name="InteractiveRepeatedTriggerIgnored" xml:space="preserve">
-    <value>已忽略重複觸發：項目正在執行</value>
+    <value>已忽略重複觸發：項目正在執行或已在佇列中</value>
   </data>
 </root>
