@@ -231,6 +231,12 @@ namespace OmniVCamController
         {
             if (!interactiveWindowOpen || closingMainForm || route == null) return;
             ObserveBackendConnectionLoss();
+            if (route.IgnoreRetriggerWhilePlaying && interactiveActive && interactiveCurrent != null &&
+                interactiveCurrent.RouteId == route.RuntimeId && !interactiveCurrent.IsGroupDefault && !interactiveCurrent.IsGroupTransition)
+            {
+                AppendInteractiveLog(source + " - " + route.Name + ": " + T("InteractiveRepeatedTriggerIgnored"));
+                return;
+            }
             var comboRequest = BuildInteractiveComboRequest(route);
             List<InteractivePlaybackEntry> entries = comboRequest?.Entries ?? BuildInteractiveEntries(route);
             if (entries.Count == 0)
@@ -1137,6 +1143,7 @@ namespace OmniVCamController
             return new XElement("Route", new XAttribute("name", route.Name),
                 new XAttribute("immediate", route.Immediate ? "1" : "0"),
                 new XAttribute("comboEnabled", route.ComboEnabled ? "1" : "0"),
+                new XAttribute("ignoreRetriggerWhilePlaying", route.IgnoreRetriggerWhilePlaying ? "1" : "0"),
                 new XAttribute("hotkey", route.Hotkey == null ? string.Empty : route.Hotkey.KeyCode.ToString()),
                 new XAttribute("modifiers", route.Hotkey == null ? string.Empty : route.Hotkey.Modifiers.ToString()),
                 new XAttribute("selection", route.RandomOrder ? "random" : "sequential"),
@@ -1160,6 +1167,7 @@ namespace OmniVCamController
                 OverlapEnabled = ReadInteractiveOverlapOverride(element), OverlapSeconds = ReadInteractiveOverlapSeconds(element),
                 Immediate = GetAttribute(element, "immediate", "0") == "1",
                 ComboEnabled = GetAttribute(element, "comboEnabled", "0") == "1",
+                IgnoreRetriggerWhilePlaying = GetAttribute(element, "ignoreRetriggerWhilePlaying", "0") == "1",
                 Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty),
                     GetAttribute(element, "modifiers", string.Empty)),
                 RandomOrder = !string.Equals(GetAttribute(element, "selection", "random"), "sequential", StringComparison.OrdinalIgnoreCase),
@@ -1255,6 +1263,7 @@ namespace OmniVCamController
             private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
             private readonly ComboBox commandBox = new ComboBox();
             private readonly CheckBox comboEnabledBox = new CheckBox { AutoSize = true };
+            private readonly CheckBox ignoreRetriggerBox = new CheckBox { AutoSize = true };
             private readonly ComboBox selectionBox = new ComboBox();
             private readonly List<InteractiveMediaCombination> combinations = new List<InteractiveMediaCombination>();
             private bool refreshingCombinations;
@@ -1288,6 +1297,10 @@ namespace OmniVCamController
                 var comboTip = new ToolTip(); comboTip.SetToolTip(comboEnabledBox, T("InteractiveComboHint"));
                 Disposed += (_, __) => comboTip.Dispose();
                 commandBar.Controls.Add(comboEnabledBox);
+                ignoreRetriggerBox.Text = T("InteractiveIgnoreRetriggerWhilePlaying");
+                ignoreRetriggerBox.Checked = route?.IgnoreRetriggerWhilePlaying == true;
+                comboTip.SetToolTip(ignoreRetriggerBox, T("InteractiveIgnoreRetriggerHint"));
+                commandBar.Controls.Add(ignoreRetriggerBox);
                 commandBar.Controls.Add(MakeButton(T("InteractiveProjectObsScenes"), (_, __) => EditObsScenes(false)));
                 commandBar.Controls.Add(MakeButton(T("InteractiveProjectOverlapSettings"), (_, __) => EditOverlapSettings(false)));
                 AddDialogRow(root, T("InteractiveTriggerMode"), commandBar, 2);
@@ -1463,6 +1476,7 @@ namespace OmniVCamController
                 route.Hotkey = hotkeyBox.Value == null ? null : hotkeyBox.Value.Clone();
                 route.Immediate = string.Equals(commandBox.SelectedItem as string, "PLAY", StringComparison.Ordinal);
                 route.ComboEnabled = comboEnabledBox.Checked;
+                route.IgnoreRetriggerWhilePlaying = ignoreRetriggerBox.Checked;
                 route.RandomOrder = selectionBox.SelectedIndex == 0;
                 route.RecentCombinationCount = (int)recentCountBox.Value;
                 route.Combinations = combinations.Select(CopyInteractiveCombination).ToList();
@@ -1574,6 +1588,7 @@ namespace OmniVCamController
         {
             public Guid RuntimeId { get; } = Guid.NewGuid();
             public bool ComboEnabled { get; set; }
+            public bool IgnoreRetriggerWhilePlaying { get; set; }
             public string Name { get; set; } = string.Empty;
             public bool Immediate { get; set; }
             public InteractiveHotkey Hotkey { get; set; }

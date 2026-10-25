@@ -892,4 +892,13 @@
   <data name="InteractiveOverlapHierarchyHint" xml:space="preserve">
     <value>优先级：互动项目内的媒体组合 &gt; 互动项目 &gt; 互动分组。继承时使用上一级设置，关闭时强制禁用叠加。时长单位为秒（0～5），0 表示关闭。已触发的播放保留触发时的设置。</value>
   </data>
+  <data name="InteractiveIgnoreRetriggerWhilePlaying" xml:space="preserve">
+    <value>执行中忽略重复触发</value>
+  </data>
+  <data name="InteractiveIgnoreRetriggerHint" xml:space="preserve">
+    <value>此项目正在播放时，忽略再次触发（包括连击），不打断当前播放，也不加入队列。仅在队列中等待时仍可再次触发；其他项目不受影响。</value>
+  </data>
+  <data name="InteractiveRepeatedTriggerIgnored" xml:space="preserve">
+    <value>已忽略重复触发：项目正在执行</value>
+  </data>
 </root>

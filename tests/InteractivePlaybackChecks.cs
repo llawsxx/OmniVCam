@@ -2373,6 +2373,7 @@ internal static partial class InteractivePlaybackChecks
             CheckInteractiveEventOrdering();
             CheckInterruptProtection();
             CheckFileGroupPhases(assembly);
+            CheckInteractiveIgnoreRetriggers();
             CheckInteractiveCombos();
             CheckActualOutputVerification();
             CheckPlaybackWatchdog();
