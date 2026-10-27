@@ -27,6 +27,7 @@ namespace OmniVCamController
         private long interactiveObservedBackendFrameId;
         private InteractiveProtectedHandoff interactiveProtectedHandoff;
         private int interactiveRuntimeVersion;
+        private int interactiveTriggerCancellationVersion;
         private int interactiveStatusRevision;
         private int observedBackendConnectionLoss;
         private bool interactiveNeedsStatusCheck;
@@ -90,7 +91,6 @@ namespace OmniVCamController
             interactiveNeedsStatusCheck = false;
             interactiveStartingEntry = null;
             interactiveSendingNext = null;
-            interactiveProcessingTrigger = null;
             CancelInteractiveProtectedHandoff();
             interactiveRuntimeVersion++;
             interactiveBackendEvents.Clear();
@@ -101,7 +101,12 @@ namespace OmniVCamController
             interactivePendingSource = string.Empty;
             interactiveQueue.Clear();
             interactiveNextQueueTask = null;
-            if (clearTriggerRequests) interactiveTriggerRequests.Clear();
+            if (clearTriggerRequests)
+            {
+                interactiveTriggerCancellationVersion++;
+                interactiveProcessingTrigger = null;
+                interactiveTriggerRequests.Clear();
+            }
             interactiveForm?.RefreshRuntime();
         }
 
@@ -311,25 +316,26 @@ namespace OmniVCamController
         {
             if (processingInteractiveTriggers || !interactiveWindowOpen || closingMainForm) return;
             int windowVersion = interactiveWindowVersion;
+            int cancellationVersion = interactiveTriggerCancellationVersion;
             processingInteractiveTriggers = true;
             try
             {
                 if (interactiveCleanupTask != null) await interactiveCleanupTask;
                 while (interactiveWindowOpen && !closingMainForm && windowVersion == interactiveWindowVersion &&
-                    interactiveTriggerRequests.Count > 0)
+                    cancellationVersion == interactiveTriggerCancellationVersion && interactiveTriggerRequests.Count > 0)
                 {
                     InteractiveTriggerRequest request = interactiveTriggerRequests.Dequeue();
                     interactiveProcessingTrigger = request;
                     try
                     {
                         if (IsStaleInteractiveGroupRequest(request)) continue;
-                        int version = interactiveRuntimeVersion;
                         bool verified = await VerifyInteractivePlaybackAsync();
-                        if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion) return;
+                        if (!interactiveWindowOpen || closingMainForm || windowVersion != interactiveWindowVersion ||
+                            cancellationVersion != interactiveTriggerCancellationVersion) return;
                         if (IsStaleInteractiveGroupRequest(request)) continue;
                         if (!verified)
                         {
-                            if (version == interactiveRuntimeVersion || interactiveNeedsStatusCheck) PrependInteractiveTrigger(request);
+                            RetainInteractiveTriggerAfterRuntimeChange(request, cancellationVersion);
                             break;
                         }
                         if (request.Immediate)
@@ -347,9 +353,10 @@ namespace OmniVCamController
             finally
             {
                 processingInteractiveTriggers = false;
-                // A reopened window may have queued a new request while this
-                // session was still waiting for a reply or protected playback.
-                if (interactiveWindowOpen && !closingMainForm && windowVersion != interactiveWindowVersion &&
+                // A reopened window or a new trigger after an explicit stop may
+                // be waiting for this older dispatch to release the processor.
+                if (interactiveWindowOpen && !closingMainForm &&
+                    (windowVersion != interactiveWindowVersion || cancellationVersion != interactiveTriggerCancellationVersion) &&
                     interactiveTriggerRequests.Count > 0) _ = ProcessInteractiveTriggerRequestsAsync();
             }
         }
@@ -357,8 +364,13 @@ namespace OmniVCamController
         private async Task StartInteractiveImmediatelyAsync(InteractiveTriggerRequest request)
         {
             int version = interactiveRuntimeVersion;
+            int cancellationVersion = interactiveTriggerCancellationVersion;
             await WaitForInteractiveNextQueueAsync();
-            if (version != interactiveRuntimeVersion) return;
+            if (version != interactiveRuntimeVersion)
+            {
+                RetainInteractiveTriggerAfterRuntimeChange(request, cancellationVersion);
+                return;
+            }
             if (await TryPlayInteractiveComboAsync(request)) return;
             if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
             if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)
@@ -413,8 +425,13 @@ namespace OmniVCamController
         private async Task AppendInteractiveRouteAsync(InteractiveTriggerRequest request)
         {
             int version = interactiveRuntimeVersion;
+            int cancellationVersion = interactiveTriggerCancellationVersion;
             await WaitForInteractiveNextQueueAsync();
-            if (version != interactiveRuntimeVersion) return;
+            if (version != interactiveRuntimeVersion)
+            {
+                RetainInteractiveTriggerAfterRuntimeChange(request, cancellationVersion);
+                return;
+            }
             if (await TryPlayInteractiveComboAsync(request)) return;
             if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
             if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)

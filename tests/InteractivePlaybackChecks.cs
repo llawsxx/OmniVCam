@@ -2378,6 +2378,7 @@ internal static partial class InteractivePlaybackChecks
             CheckActualOutputVerification();
             CheckPlaybackWatchdog();
             CheckBackendRestartRecovery();
+            CheckInteractiveTriggerDelivery();
             CheckProjectGroups(assembly);
             CheckPersistence();
             CheckInteractiveObsScenes(assembly);

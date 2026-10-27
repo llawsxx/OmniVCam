@@ -86,6 +86,15 @@ namespace OmniVCamController
             foreach (var item in retained) interactiveTriggerRequests.Enqueue(item);
         }
 
+        private void RetainInteractiveTriggerAfterRuntimeChange(InteractiveTriggerRequest request, int cancellationVersion)
+        {
+            // Playback recovery invalidates old callbacks, but an unsent user request
+            // remains valid until an explicit stop, window close or group switch.
+            if (cancellationVersion == interactiveTriggerCancellationVersion && interactiveWindowOpen && !closingMainForm &&
+                !IsStaleInteractiveGroupRequest(request) && !interactiveTriggerRequests.Contains(request))
+                PrependInteractiveTrigger(request);
+        }
+
         private async Task<bool> VerifyInteractivePlaybackAsync()
         {
             if (interactiveCurrent == null && !interactiveNeedsStatusCheck) return true;
