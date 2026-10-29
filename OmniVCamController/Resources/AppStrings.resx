@@ -648,12 +648,48 @@
     <value>Add default playback</value>
   </data>
   <data name="InteractiveDefaultListHint" xml:space="preserve">
-    <value>Each group can contain several defaults from the media library, including file groups. The highlighted item is used after interactive playback. Click a default button to select it, or use sequential/random switching. During an interactive project, selection takes effect only after the project ends; interactive loops continue. During default playback, the outgoing default controls interruption.</value>
+    <value>Each group can contain several defaults from the media library, including file groups. The highlighted item is selected; projects return to the configured return target, or keep the selection when no fixed target is set. Click a default button to select it, or use sequential/random switching. During an interactive project, selection takes effect only after the project ends; interactive loops continue. During default playback, the outgoing default controls interruption.</value>
   </data>
   <data name="InteractiveDefaultItemHint" xml:space="preserve">
     <value>With middle looping enabled, the start plays once and the middles repeat until interrupted; disabling it repeats the complete start → middle → end sequence. Single files always loop. The selected interruption policy overrides the library policy only when switching to another default, including groups without start/end files. Interactive projects and group changes use the library policy. Default mode retains the minimum-middle count.</value>
   </data>
   <data name="InteractiveDefaultSwitchInterruption" xml:space="preserve">
     <value>Interruption when switching defaults</value>
+  </data>
+  <data name="InteractiveDefaultReturnAfterProject" xml:space="preserve">
+    <value>After an interactive project, return to</value>
+  </data>
+  <data name="InteractiveDefaultReturnKeepSelection" xml:space="preserve">
+    <value>Keep the selected default</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchEnabled" xml:space="preserve">
+    <value>Automatically switch to the next default</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchTime" xml:space="preserve">
+    <value>Automatic switch time</value>
+  </data>
+  <data name="InteractiveDefaultMinimumSeconds" xml:space="preserve">
+    <value>Minimum seconds</value>
+  </data>
+  <data name="InteractiveDefaultMaximumSeconds" xml:space="preserve">
+    <value>Maximum seconds</value>
+  </data>
+  <data name="InteractiveDefaultSeconds" xml:space="preserve">
+    <value>{0} seconds</value>
+  </data>
+  <data name="InteractiveDefaultSecondsRange" xml:space="preserve">
+    <value>{0}–{1} seconds</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchSource" xml:space="preserve">
+    <value>Automatic default switch</value>
+  </data>
+  <data name="InteractiveDefaultCountdown" xml:space="preserve">
+    <value>{0} remaining</value>
+  </data>
+  <data name="InteractiveDefaultWaitingSwitch" xml:space="preserve">
+    <value>Waiting to switch</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchHint" xml:space="preserve">
+    <value>Equal limits use a fixed duration; otherwise a new whole-second duration is drawn on each entry. Count only actual default playback, pause while paused or unverified, and restart after an interactive project. At the deadline use sequential/random default switching and the outgoing default's interruption policy; protected playback may delay the switch. The default button shows the countdown.</value>
   </data>
 </root>

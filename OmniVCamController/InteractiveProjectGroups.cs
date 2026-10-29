@@ -47,6 +47,7 @@ namespace OmniVCamController
             public InteractiveHotkey Hotkey { get; set; }
             public List<InteractiveDefaultPlaybackItem> DefaultPlaybacks { get; set; } = new List<InteractiveDefaultPlaybackItem>();
             public Guid ActiveDefaultPlaybackId { get; set; }
+            public Guid ReturnDefaultPlaybackId { get; set; }
             public bool DefaultSwitchRandom { get; set; }
             public InteractiveHotkey DefaultSwitchHotkey { get; set; }
             public Guid DefaultMediaId
@@ -54,7 +55,7 @@ namespace OmniVCamController
                 get { return SelectedInteractiveDefault(this)?.MediaId ?? Guid.Empty; }
                 set
                 {
-                    DefaultPlaybacks.Clear(); ActiveDefaultPlaybackId = Guid.Empty;
+                    DefaultPlaybacks.Clear(); ActiveDefaultPlaybackId = Guid.Empty; ReturnDefaultPlaybackId = Guid.Empty;
                     if (value == Guid.Empty) return;
                     var item = new InteractiveDefaultPlaybackItem { MediaId = value };
                     DefaultPlaybacks.Add(item); ActiveDefaultPlaybackId = item.Id;
@@ -263,6 +264,7 @@ namespace OmniVCamController
             if (!interactiveWindowOpen || closingMainForm || interactivePending != null || interactiveQueue.Count > 0 ||
                 interactiveTriggerRequests.Count > 0 || interactiveCurrent == null || interactiveCurrent.Loop ||
                 (interactiveCurrent.GroupLoop != null && !interactiveCurrent.GroupLoop.Cancelled)) return;
+            SelectInteractiveDefaultReturnTarget();
             foreach (var entry in BuildInteractiveGroupDefault(CurrentInteractiveProjectGroup)) interactiveQueue.Enqueue(entry);
         }
 
@@ -522,6 +524,7 @@ namespace OmniVCamController
             private void EditProjectGroup(bool create)
             {
                 var current = owner.CurrentInteractiveProjectGroup;
+                Guid previousDefault = SelectedInteractiveDefault(current)?.Id ?? Guid.Empty;
                 using (var dialog = new ProjectGroupEditDialog(owner.interactiveMedia, create ? null : current))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -548,7 +551,7 @@ namespace OmniVCamController
                 }
                 ReloadAll();
                 owner.SaveActiveConnectionState();
-                owner.RequestInteractiveGroupDefaultIfIdle();
+                owner.RefreshInteractiveDefaultAfterSettings(previousDefault);
             }
 
             private void RemoveProjectGroup()

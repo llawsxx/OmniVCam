@@ -53,13 +53,32 @@ namespace OmniVCamController
                             defaultPlaybackButtons.Controls.Add(button);
                         }
                         button.Tag = item;
-                        button.Text = owner.InteractiveDefaultName(item) + (item.Hotkey == null ? string.Empty : "  [" + FormatHotkey(item.Hotkey) + "]");
+                        button.Text = DefaultPlaybackButtonText(item);
                         bool active = selected?.Id == item.Id;
                         button.BackColor = active ? Color.LightSkyBlue : SystemColors.Control;
                         button.UseVisualStyleBackColor = !active; button.Font = active ? activeGroupFont : Font;
                     }
                 }
                 finally { defaultPlaybackButtons.ResumeLayout(true); }
+            }
+
+            private string DefaultPlaybackButtonText(InteractiveDefaultPlaybackItem item)
+            {
+                string countdown = owner.InteractiveDefaultCountdown(item);
+                return owner.InteractiveDefaultName(item) + (item.Hotkey == null ? string.Empty : "  [" + FormatHotkey(item.Hotkey) + "]") +
+                    (countdown.Length == 0 ? string.Empty : "  · " + countdown);
+            }
+
+            public void RefreshDefaultPlaybackCountdown()
+            {
+                if (IsDisposed) return;
+                foreach (Button button in defaultPlaybackButtons.Controls)
+                {
+                    var item = button.Tag as InteractiveDefaultPlaybackItem;
+                    if (item == null) continue;
+                    string text = DefaultPlaybackButtonText(item);
+                    if (button.Text != text) button.Text = text;
+                }
             }
 
             private void EditDefaultPlaybacks()
@@ -74,10 +93,7 @@ namespace OmniVCamController
                     CopyInteractiveDefaults(edited, group);
                 }
                 RefreshDefaultPlaybackButtons(); RegisterRouteHotkeys(); owner.SaveActiveConnectionState();
-                var target = SelectedInteractiveDefault(group);
-                if (target != null && target.Id != before)
-                    owner.SwitchInteractiveDefault(target, T("InteractiveDefaultSwitch"));
-                else owner.RequestInteractiveGroupDefaultIfIdle();
+                owner.RefreshInteractiveDefaultAfterSettings(before);
             }
 
             private void RegisterDefaultPlaybackHotkeys()
@@ -130,6 +146,7 @@ namespace OmniVCamController
             private readonly List<InteractiveMediaItem> media;
             private readonly InteractiveProjectGroup settings = new InteractiveProjectGroup();
             private readonly ListView itemsView = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false };
+            private readonly ComboBox returnDefaultBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 340, DropDownWidth = 500 };
             private readonly ComboBox modeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
             private readonly HotkeyTextBox switchHotkeyBox = new HotkeyTextBox { Width = 180 };
             public void Apply(InteractiveProjectGroup group)
@@ -142,10 +159,10 @@ namespace OmniVCamController
             {
                 this.media = media; CopyInteractiveDefaults(group, settings);
                 Text = T("InteractiveDefaultSettings"); ShowIcon = false; StartPosition = FormStartPosition.CenterParent;
-                Size = new Size(940, 580); MinimumSize = new Size(800, 520);
-                var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 1, RowCount = 5 };
+                Size = new Size(1000, 650); MinimumSize = new Size(800, 600);
+                var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 1, RowCount = 6 };
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-                for (int i = 0; i < 3; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                for (int i = 0; i < 4; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 bar.Controls.Add(MakeButton(T("InteractiveDefaultAdd"), (_, __) => EditItem(true)));
                 bar.Controls.Add(MakeButton(T("InteractiveEdit"), (_, __) => EditItem(false)));
@@ -159,6 +176,7 @@ namespace OmniVCamController
                 itemsView.Columns.Add(T("InteractiveName"), 150); itemsView.Columns.Add(T("InteractiveMedia"), 180);
                 itemsView.Columns.Add(T("InteractiveHotkey"), 120); itemsView.Columns.Add(T("InteractiveDefaultLoopMiddle"), 165);
                 itemsView.Columns.Add(T("InteractiveDefaultSwitchInterruption"), 230);
+                itemsView.Columns.Add(T("InteractiveDefaultAutoSwitchTime"), 160);
                 itemsView.DoubleClick += (_, __) => EditItem(false); root.Controls.Add(itemsView, 0, 1);
                 var switching = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
                 switching.Controls.Add(new Label { Text = T("InteractiveDefaultSwitchMode"), AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
@@ -166,12 +184,18 @@ namespace OmniVCamController
                 modeBox.SelectedIndex = settings.DefaultSwitchRandom ? 1 : 0; switching.Controls.Add(modeBox);
                 switching.Controls.Add(new Label { Text = T("InteractiveHotkey"), AutoSize = true, Padding = new Padding(8, 6, 0, 0) });
                 switchHotkeyBox.Value = settings.DefaultSwitchHotkey?.Clone(); switching.Controls.Add(switchHotkeyBox); root.Controls.Add(switching, 0, 2);
+                var returning = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+                returning.Controls.Add(new Label { Text = T("InteractiveDefaultReturnAfterProject"), AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+                returning.Controls.Add(returnDefaultBox);
+                returnDefaultBox.SelectedIndexChanged += (_, __) => settings.ReturnDefaultPlaybackId =
+                    (returnDefaultBox.SelectedItem as DefaultPlaybackChoice)?.Item.Id ?? Guid.Empty;
+                root.Controls.Add(returning, 0, 3);
                 var hint = new Label { Text = T("InteractiveDefaultListHint"), AutoSize = true, Dock = DockStyle.Fill, MaximumSize = new Size(900, 0), Padding = new Padding(0, 8, 0, 8) };
-                root.Controls.Add(hint, 0, 3);
+                root.Controls.Add(hint, 0, 4);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => DialogResult = DialogResult.OK);
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
-                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); root.Controls.Add(buttons, 0, 4);
+                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); root.Controls.Add(buttons, 0, 5);
                 Controls.Add(root); AcceptButton = ok; CancelButton = cancel; RefreshItems(null);
             }
 
@@ -187,9 +211,30 @@ namespace OmniVCamController
                     row.SubItems.Add(library?.Title ?? T("InteractiveNoDefaultMedia")); row.SubItems.Add(FormatHotkey(item.Hotkey));
                     row.SubItems.Add(item.LoopMiddleFiles ? T("InteractiveDefaultEnabled") : T("InteractiveDefaultDisabled"));
                     row.SubItems.Add(T(item.InterruptionMode.HasValue ? InteractiveGroupInterruptionKey(item.InterruptionMode.Value) : "InteractiveDefaultInheritInterruption"));
+                    row.SubItems.Add(item.AutoSwitchEnabled ? item.AutoSwitchMinimumSeconds == item.AutoSwitchMaximumSeconds ?
+                        string.Format(T("InteractiveDefaultSeconds"), item.AutoSwitchMinimumSeconds) :
+                        string.Format(T("InteractiveDefaultSecondsRange"), item.AutoSwitchMinimumSeconds, item.AutoSwitchMaximumSeconds) : T("InteractiveDefaultDisabled"));
                     itemsView.Items.Add(row); if (selected == item) row.Selected = true;
                 }
                 itemsView.EndUpdate();
+                Guid returnId = settings.ReturnDefaultPlaybackId;
+                returnDefaultBox.BeginUpdate(); returnDefaultBox.Items.Clear();
+                returnDefaultBox.Items.Add(T("InteractiveDefaultReturnKeepSelection"));
+                foreach (var item in settings.DefaultPlaybacks)
+                {
+                    var library = media.FirstOrDefault(entry => entry.RuntimeId == item.MediaId);
+                    returnDefaultBox.Items.Add(new DefaultPlaybackChoice(item, string.IsNullOrWhiteSpace(item.Name) ? library?.Title ?? T("InteractiveNoDefaultMedia") : item.Name));
+                }
+                int returnIndex = settings.DefaultPlaybacks.FindIndex(item => item.Id == returnId);
+                returnDefaultBox.SelectedIndex = returnIndex + 1;
+                returnDefaultBox.EndUpdate();
+            }
+            private sealed class DefaultPlaybackChoice
+            {
+                public readonly InteractiveDefaultPlaybackItem Item;
+                private readonly string text;
+                public DefaultPlaybackChoice(InteractiveDefaultPlaybackItem item, string text) { Item = item; this.text = text; }
+                public override string ToString() => text;
             }
             private void EditItem(bool create)
             {
@@ -223,20 +268,26 @@ namespace OmniVCamController
             private readonly ComboBox mediaBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
             private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
             private readonly CheckBox loopMiddleBox = new CheckBox { AutoSize = true };
+            private readonly CheckBox autoSwitchBox = new CheckBox { AutoSize = true };
+            private readonly NumericUpDown minimumSecondsBox = new NumericUpDown { Minimum = 1, Maximum = MaximumInteractiveDefaultSeconds, Width = 100 };
+            private readonly NumericUpDown maximumSecondsBox = new NumericUpDown { Minimum = 1, Maximum = MaximumInteractiveDefaultSeconds, Width = 100 };
             private readonly ComboBox interruptionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
             public void Apply(InteractiveDefaultPlaybackItem item)
             {
                 item.Name = nameBox.Text.Trim(); item.MediaId = ((MediaChoice)mediaBox.SelectedItem).Item.RuntimeId;
                 item.Hotkey = hotkeyBox.Value?.Clone(); item.LoopMiddleFiles = loopMiddleBox.Checked;
+                item.AutoSwitchEnabled = autoSwitchBox.Checked;
+                item.AutoSwitchMinimumSeconds = (int)minimumSecondsBox.Value;
+                item.AutoSwitchMaximumSeconds = (int)maximumSecondsBox.Value;
                 item.InterruptionMode = interruptionBox.SelectedIndex == 0 ? (InteractiveGroupInterruptionMode?)null : (InteractiveGroupInterruptionMode)(interruptionBox.SelectedIndex - 1);
             }
             public DefaultPlaybackEditDialog(List<InteractiveMediaItem> media, InteractiveDefaultPlaybackItem item)
             {
                 Text = T("InteractiveDefaultEdit"); ShowIcon = false; StartPosition = FormStartPosition.CenterParent;
-                Size = new Size(800, 440); MinimumSize = new Size(720, 420);
-                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 7 };
+                Size = new Size(860, 600); MinimumSize = new Size(780, 560);
+                var grid = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 9 };
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                for (int i = 0; i < 5; i++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                for (int i = 0; i < 7; i++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 nameBox.Text = item.Name; hotkeyBox.Value = item.Hotkey?.Clone();
                 foreach (var library in media) mediaBox.Items.Add(new MediaChoice(library));
@@ -252,12 +303,25 @@ namespace OmniVCamController
                 AddDialogRow(grid, T("InteractiveName"), nameBox, 0); AddDialogRow(grid, T("InteractiveMedia"), mediaBox, 1);
                 AddDialogRow(grid, T("InteractiveHotkey"), hotkeyBox, 2); grid.Controls.Add(loopMiddleBox, 1, 3);
                 AddDialogRow(grid, T("InteractiveDefaultSwitchInterruption"), interruptionBox, 4);
-                var hint = new Label { Text = T("InteractiveDefaultItemHint"), AutoSize = true, Dock = DockStyle.Fill, MaximumSize = new Size(730, 0), Padding = new Padding(0, 8, 0, 0) };
-                grid.Controls.Add(hint, 0, 5); grid.SetColumnSpan(hint, 2);
+                autoSwitchBox.Text = T("InteractiveDefaultAutoSwitchEnabled"); autoSwitchBox.Checked = item.AutoSwitchEnabled;
+                grid.Controls.Add(autoSwitchBox, 1, 5);
+                minimumSecondsBox.Value = Math.Max(1, Math.Min(MaximumInteractiveDefaultSeconds, item.AutoSwitchMinimumSeconds));
+                maximumSecondsBox.Value = Math.Max(minimumSecondsBox.Value, Math.Min(MaximumInteractiveDefaultSeconds, item.AutoSwitchMaximumSeconds));
+                var duration = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+                duration.Controls.Add(new Label { Text = T("InteractiveDefaultMinimumSeconds"), AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
+                duration.Controls.Add(minimumSecondsBox);
+                duration.Controls.Add(new Label { Text = T("InteractiveDefaultMaximumSeconds"), AutoSize = true, Padding = new Padding(6, 6, 0, 0) });
+                duration.Controls.Add(maximumSecondsBox); grid.Controls.Add(duration, 1, 6);
+                minimumSecondsBox.ValueChanged += (_, __) => { if (maximumSecondsBox.Value < minimumSecondsBox.Value) maximumSecondsBox.Value = minimumSecondsBox.Value; };
+                maximumSecondsBox.ValueChanged += (_, __) => { if (minimumSecondsBox.Value > maximumSecondsBox.Value) minimumSecondsBox.Value = maximumSecondsBox.Value; };
+                autoSwitchBox.CheckedChanged += (_, __) => duration.Enabled = autoSwitchBox.Checked;
+                duration.Enabled = autoSwitchBox.Checked;
+                var hint = new Label { Text = T("InteractiveDefaultItemHint") + Environment.NewLine + T("InteractiveDefaultAutoSwitchHint"), AutoSize = true, Dock = DockStyle.Fill, MaximumSize = new Size(730, 0), Padding = new Padding(0, 8, 0, 0) };
+                grid.Controls.Add(hint, 0, 7); grid.SetColumnSpan(hint, 2);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
                 var ok = MakeButton(T("InteractiveOk"), (_, __) => { if (mediaBox.SelectedItem is MediaChoice) DialogResult = DialogResult.OK; });
                 var cancel = MakeButton(T("Cancel"), (_, __) => DialogResult = DialogResult.Cancel);
-                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 6);
+                buttons.Controls.Add(ok); buttons.Controls.Add(cancel); grid.Controls.Add(buttons, 1, 8);
                 Controls.Add(grid); AcceptButton = ok; CancelButton = cancel;
             }
         }

@@ -58,6 +58,7 @@
       <DependentUpon>MainForm.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="InteractiveDefaultAutoSwitch.cs" />
     <Compile Include="InteractiveDefaultPlaybacks.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -25,6 +25,7 @@ namespace OmniVCamController
         private bool MarkInteractivePlaybackMismatch()
         {
             if (!interactiveActive) return false;
+            interactiveDefaultClockRunning = false;
             if (interactiveMismatchSince == DateTime.MinValue) interactiveMismatchSince = DateTime.UtcNow;
             interactiveNeedsStatusCheck = true;
             interactiveForm?.RefreshRuntime();
@@ -116,7 +117,12 @@ namespace OmniVCamController
                 if (queueNext) await RecoverInteractivePlaybackAsync();
                 return false;
             }
-            if (queueNext && interactiveActive && !interactiveNeedsStatusCheck) await EnsureInteractiveNextQueuedAsync();
+            if (queueNext && interactiveActive && !interactiveNeedsStatusCheck)
+            {
+                await EnsureInteractiveNextQueuedAsync();
+                AdvanceInteractiveDefaultAutoSwitch(System.Diagnostics.Stopwatch.GetTimestamp(),
+                    string.Equals(ParseStatusString(reply, "state="), "playing", StringComparison.OrdinalIgnoreCase));
+            }
             if (!interactiveNeedsStatusCheck && interactiveTriggerRequests.Count > 0 && !processingInteractiveTriggers)
                 _ = ProcessInteractiveTriggerRequestsAsync();
             return true;
@@ -147,6 +153,7 @@ namespace OmniVCamController
                 (interactiveCurrent.BackendFrameId == 0 || interactiveCurrent.BackendFrameId == inputEvent.FrameId || interactiveCurrent.Loop))
             {
                 interactiveCurrent.BackendFrameId = inputEvent.FrameId;
+                ObserveInteractiveDefaultOutput(interactiveCurrent, System.Diagnostics.Stopwatch.GetTimestamp());
                 SetInteractiveObsPlayback(interactiveCurrent);
                 interactiveStatusRevision++;
                 interactiveNeedsStatusCheck = false;
@@ -210,6 +217,7 @@ namespace OmniVCamController
                     (interactiveCurrent.Loop && !pendingMatches)))
             {
                 if (actualFrameId > 0) interactiveCurrent.BackendFrameId = actualFrameId;
+                ObserveInteractiveDefaultOutput(interactiveCurrent, System.Diagnostics.Stopwatch.GetTimestamp());
                 SetInteractiveObsPlayback(interactiveCurrent);
                 interactiveNeedsStatusCheck = false;
                 ResetInteractivePlaybackWatchdog();
@@ -330,6 +338,7 @@ namespace OmniVCamController
             interactiveStatusRevision++;
             CountCompletedInteractiveMiddle(entry);
             interactiveCurrent = entry;
+            ObserveInteractiveDefaultOutput(entry, System.Diagnostics.Stopwatch.GetTimestamp());
             SetInteractiveObsPlayback(entry);
             entry.RequiresOutputConfirmation = false;
             entry.ReplaceAfterFrameId = 0;

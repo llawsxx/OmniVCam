@@ -118,6 +118,7 @@ internal static partial class InteractivePlaybackChecks
             Check(((IList)Get(legacy, "DefaultPlaybacks")).Count == 1 && (bool)Get(((IList)Get(legacy, "DefaultPlaybacks"))[0], "LoopMiddleFiles"), "Legacy single defaults migrate to one looping item");
             CheckDefaultPlaybackEditors(assembly, group, source, target);
             CheckDefaultPlaybackDispatch(group, source, target, third);
+            CheckDefaultAutoSwitchModel(assembly, group, source, target);
             CheckDefaultPlaybackTcp(group, source, target, library, plain, single);
             CheckDefaultPlaybackHotkeys(group, source, target);
         }
@@ -358,6 +359,7 @@ internal static partial class InteractivePlaybackChecks
             Invoke(owner, "QueueInteractiveGroupDefaultIfNeeded");
             Check(Get(QueuedEntries()[0], "Phase").ToString() == "Start" && Equals(Get(QueuedEntries()[0], "DefaultPlaybackId"), Get(source, "Id")), "A finite default pass naturally returns to its start after the outro");
             Set(source, "LoopMiddleFiles", true);
+            await CheckDefaultAutoSwitchTcpAsync(reader, writer, group, source, target, library);
         }
         finally
         {

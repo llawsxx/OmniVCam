@@ -16,6 +16,9 @@ namespace OmniVCamController
             public Guid MediaId { get; set; }
             public InteractiveHotkey Hotkey { get; set; }
             public bool LoopMiddleFiles { get; set; } = true;
+            public bool AutoSwitchEnabled { get; set; }
+            public int AutoSwitchMinimumSeconds { get; set; } = 300;
+            public int AutoSwitchMaximumSeconds { get; set; } = 600;
             public InteractiveGroupInterruptionMode? InterruptionMode { get; set; }
         }
 
@@ -34,13 +37,16 @@ namespace OmniVCamController
         private static InteractiveDefaultPlaybackItem CopyInteractiveDefault(InteractiveDefaultPlaybackItem item)
         {
             return new InteractiveDefaultPlaybackItem { Id = item.Id, Name = item.Name, MediaId = item.MediaId,
-                Hotkey = item.Hotkey?.Clone(), LoopMiddleFiles = item.LoopMiddleFiles, InterruptionMode = item.InterruptionMode };
+                Hotkey = item.Hotkey?.Clone(), LoopMiddleFiles = item.LoopMiddleFiles, InterruptionMode = item.InterruptionMode,
+                AutoSwitchEnabled = item.AutoSwitchEnabled, AutoSwitchMinimumSeconds = item.AutoSwitchMinimumSeconds,
+                AutoSwitchMaximumSeconds = item.AutoSwitchMaximumSeconds };
         }
 
         private static void CopyInteractiveDefaults(InteractiveProjectGroup source, InteractiveProjectGroup target)
         {
             target.DefaultPlaybacks = source.DefaultPlaybacks.Select(CopyInteractiveDefault).ToList();
             target.ActiveDefaultPlaybackId = SelectedInteractiveDefault(source)?.Id ?? Guid.Empty;
+            target.ReturnDefaultPlaybackId = source.DefaultPlaybacks.Any(item => item.Id == source.ReturnDefaultPlaybackId) ? source.ReturnDefaultPlaybackId : Guid.Empty;
             target.DefaultSwitchRandom = source.DefaultSwitchRandom;
             target.DefaultSwitchHotkey = source.DefaultSwitchHotkey?.Clone();
         }
@@ -49,11 +55,14 @@ namespace OmniVCamController
         {
             return new XElement("DefaultPlaybacks", new XAttribute("active", SelectedInteractiveDefault(group)?.Id ?? Guid.Empty),
                 new XAttribute("random", group.DefaultSwitchRandom),
+                new XAttribute("returnAfterProject", group.ReturnDefaultPlaybackId),
                 new XAttribute("hotkey", group.DefaultSwitchHotkey?.KeyCode.ToString() ?? string.Empty),
                 new XAttribute("modifiers", group.DefaultSwitchHotkey?.Modifiers.ToString() ?? string.Empty),
                 group.DefaultPlaybacks.Select(item => new XElement("Default",
                     new XAttribute("id", item.Id), new XAttribute("name", item.Name), new XAttribute("media", item.MediaId),
                     new XAttribute("loopMiddle", item.LoopMiddleFiles),
+                    new XAttribute("autoSwitch", item.AutoSwitchEnabled),
+                    new XAttribute("minimumSeconds", item.AutoSwitchMinimumSeconds), new XAttribute("maximumSeconds", item.AutoSwitchMaximumSeconds),
                     new XAttribute("interruption", item.InterruptionMode?.ToString() ?? "inherit"),
                     new XAttribute("hotkey", item.Hotkey?.KeyCode.ToString() ?? string.Empty),
                     new XAttribute("modifiers", item.Hotkey?.Modifiers.ToString() ?? string.Empty))));
@@ -64,8 +73,9 @@ namespace OmniVCamController
             var settings = node.Element("DefaultPlaybacks");
             if (settings == null) return; // The legacy defaultMedia attribute was loaded as one default item.
             group.DefaultPlaybacks.Clear();
-            Guid active;
+            Guid active, returnId;
             group.ActiveDefaultPlaybackId = Guid.TryParse(GetAttribute(settings, "active", null), out active) ? active : Guid.Empty;
+            group.ReturnDefaultPlaybackId = Guid.TryParse(GetAttribute(settings, "returnAfterProject", null), out returnId) ? returnId : Guid.Empty;
             group.DefaultSwitchRandom = GetAttribute(settings, "random", "false").Equals("true", StringComparison.OrdinalIgnoreCase);
             group.DefaultSwitchHotkey = ParseInteractiveHotkey(GetAttribute(settings, "hotkey", string.Empty), GetAttribute(settings, "modifiers", string.Empty));
             foreach (var element in settings.Elements("Default"))
@@ -74,14 +84,19 @@ namespace OmniVCamController
                 if (!Guid.TryParse(GetAttribute(element, "media", null), out media) || media == Guid.Empty) continue;
                 var item = new InteractiveDefaultPlaybackItem { MediaId = media,
                     Name = GetAttribute(element, "name", string.Empty),
+                    AutoSwitchEnabled = GetAttribute(element, "autoSwitch", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+                    AutoSwitchMinimumSeconds = ReadInteractiveDefaultSeconds(element, "minimumSeconds", 300),
+                    AutoSwitchMaximumSeconds = ReadInteractiveDefaultSeconds(element, "maximumSeconds", 600),
                     LoopMiddleFiles = !GetAttribute(element, "loopMiddle", "true").Equals("false", StringComparison.OrdinalIgnoreCase),
                     Hotkey = ParseInteractiveHotkey(GetAttribute(element, "hotkey", string.Empty), GetAttribute(element, "modifiers", string.Empty)) };
                 if (Guid.TryParse(GetAttribute(element, "id", null), out id) && id != Guid.Empty && !group.DefaultPlaybacks.Any(entry => entry.Id == id)) item.Id = id;
                 InteractiveGroupInterruptionMode mode;
                 if (Enum.TryParse(GetAttribute(element, "interruption", "inherit"), out mode) && Enum.IsDefined(typeof(InteractiveGroupInterruptionMode), mode)) item.InterruptionMode = mode;
+                item.AutoSwitchMaximumSeconds = Math.Max(item.AutoSwitchMinimumSeconds, item.AutoSwitchMaximumSeconds);
                 group.DefaultPlaybacks.Add(item);
             }
             group.ActiveDefaultPlaybackId = SelectedInteractiveDefault(group)?.Id ?? Guid.Empty;
+            if (!group.DefaultPlaybacks.Any(item => item.Id == group.ReturnDefaultPlaybackId)) group.ReturnDefaultPlaybackId = Guid.Empty;
         }
 
         private InteractiveDefaultPlaybackItem SelectNextInteractiveDefault()
@@ -137,6 +152,15 @@ namespace OmniVCamController
             interactiveForm?.RefreshDefaultPlaybackButtons();
             interactiveForm?.RefreshRuntime();
             if (!defer && !processingInteractiveTriggers) _ = ProcessInteractiveTriggerRequestsAsync();
+        }
+
+        private void RefreshInteractiveDefaultAfterSettings(Guid previousDefaultId)
+        {
+            SelectInteractiveDefaultReturnTarget();
+            var target = SelectedInteractiveDefault(CurrentInteractiveProjectGroup);
+            if (target != null && (target.Id != previousDefaultId || interactiveCurrent != null && !interactiveCurrent.IsGroupDefault))
+                SwitchInteractiveDefault(target, T("InteractiveDefaultSwitch"));
+            else RequestInteractiveGroupDefaultIfIdle();
         }
 
         private bool DeferInteractiveDefaultSwitch(InteractiveTriggerRequest request)

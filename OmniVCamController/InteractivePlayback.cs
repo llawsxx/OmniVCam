@@ -84,6 +84,7 @@ namespace OmniVCamController
 
         private void ClearInteractiveRuntime(bool clearTriggerRequests = true)
         {
+            ResetInteractiveDefaultAutoSwitch();
             SetInteractiveObsPlayback(null);
             interactiveActive = false;
             ResetInteractivePlaybackWatchdog();
@@ -210,6 +211,7 @@ namespace OmniVCamController
                 ResetInteractivePlaybackWatchdog();
                 CountCompletedInteractiveMiddle(interactivePending);
                 interactiveCurrent = interactivePending;
+                ObserveInteractiveDefaultOutput(interactiveCurrent, System.Diagnostics.Stopwatch.GetTimestamp());
                 SetInteractiveObsPlayback(interactiveCurrent);
                 currentStatusInput = interactiveCurrent.InputSummary;
                 currentActualStatusInput = interactiveCurrent.InputSummary;
@@ -1047,6 +1049,7 @@ namespace OmniVCamController
                 {
                     group.DefaultPlaybacks.RemoveAll(item => ids.Contains(item.MediaId));
                     group.ActiveDefaultPlaybackId = SelectedInteractiveDefault(group)?.Id ?? Guid.Empty;
+                    if (!group.DefaultPlaybacks.Any(item => item.Id == group.ReturnDefaultPlaybackId)) group.ReturnDefaultPlaybackId = Guid.Empty;
                 }
                 owner.interactiveGroupTransitions.RemoveAll(item => ids.Contains(item.MediaId));
                 foreach (InteractiveRouteItem route in owner.AllInteractiveProjectRoutes())

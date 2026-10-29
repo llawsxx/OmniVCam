@@ -938,12 +938,48 @@
     <value>添加默认播放</value>
   </data>
   <data name="InteractiveDefaultListHint" xml:space="preserve">
-    <value>每组可添加多个媒体库项目作为默认播放，支持文件组合。高亮项用于互动结束后的默认播放；可点击项目按钮选择，也可顺序或随机切换。互动项目播放期间只更新结束后的默认项，互动项目的循环也会继续；正在播放默认项时，按当前默认项的独立打断模式切换。</value>
+    <value>每组可添加多个媒体库项目作为默认播放，支持文件组合。高亮项表示当前选择；互动结束后优先返回指定项，未指定则保持当前选择；可点击项目按钮选择，也可顺序或随机切换。互动项目播放期间只更新结束后的默认项，互动项目的循环也会继续；正在播放默认项时，按当前默认项的独立打断模式切换。</value>
   </data>
   <data name="InteractiveDefaultItemHint" xml:space="preserve">
     <value>开启中间循环时，开始文件只播一次，中间文件持续循环，切走时按规则播放结束文件；关闭后循环完整的“开始→中间→结束”。单文件始终循环。独立打断模式仅在切换默认播放时覆盖媒体库设置，没有开始、结束文件的组合也支持；触发互动项目或切换分组时仍使用媒体库的打断设置。默认模式仍遵守最少中间文件数量。</value>
   </data>
   <data name="InteractiveDefaultSwitchInterruption" xml:space="preserve">
     <value>切换默认播放时的打断模式</value>
+  </data>
+  <data name="InteractiveDefaultReturnAfterProject" xml:space="preserve">
+    <value>互动项目结束后返回</value>
+  </data>
+  <data name="InteractiveDefaultReturnKeepSelection" xml:space="preserve">
+    <value>保持当前选择的默认项</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchEnabled" xml:space="preserve">
+    <value>自动切换到下一个默认播放</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchTime" xml:space="preserve">
+    <value>自动切换时间</value>
+  </data>
+  <data name="InteractiveDefaultMinimumSeconds" xml:space="preserve">
+    <value>最短秒数</value>
+  </data>
+  <data name="InteractiveDefaultMaximumSeconds" xml:space="preserve">
+    <value>最长秒数</value>
+  </data>
+  <data name="InteractiveDefaultSeconds" xml:space="preserve">
+    <value>{0} 秒</value>
+  </data>
+  <data name="InteractiveDefaultSecondsRange" xml:space="preserve">
+    <value>{0}–{1} 秒</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchSource" xml:space="preserve">
+    <value>默认播放自动切换</value>
+  </data>
+  <data name="InteractiveDefaultCountdown" xml:space="preserve">
+    <value>剩余 {0}</value>
+  </data>
+  <data name="InteractiveDefaultWaitingSwitch" xml:space="preserve">
+    <value>等待切换</value>
+  </data>
+  <data name="InteractiveDefaultAutoSwitchHint" xml:space="preserve">
+    <value>最短与最长相同为固定时长，否则每次开始播放时随机抽取范围内的秒数。只计算默认项实际播放的时间，暂停或状态未确认时暂停计时，互动后返回重新计时。到时按顺序／随机规则切换，并沿用当前默认项的独立打断模式，可能需要等待受保护文件播完。默认项按钮显示倒计时。</value>
   </data>
 </root>
