@@ -78,6 +78,7 @@ namespace OmniVCamController
             public int Iteration { get; set; }
             public bool Cancelled { get; set; }
             public bool IsGroupDefault { get; set; }
+            public Guid DefaultPlaybackId { get; set; }
             public InteractiveObsPlayback ObsPlayback { get; set; }
             public InteractiveFileGroupRun PhaseRun { get; set; }
         }
@@ -88,7 +89,8 @@ namespace OmniVCamController
             {
                 RuntimeId = item.RuntimeId, Title = item.Title, Options = item.Options, Loop = item.Loop,
                 PreventInterrupt = item.PreventInterrupt,
-                IsFileGroup = true, FilePaths = item.FilePaths.ToList(), FileGroupRandom = item.FileGroupRandom,
+                IsFileGroup = true, ForcePhasedPlayback = item.ForcePhasedPlayback,
+                DefaultSwitchInterruptionMode = item.DefaultSwitchInterruptionMode, FilePaths = item.FilePaths.ToList(), FileGroupRandom = item.FileGroupRandom,
                 FileGroupPlayAll = item.FileGroupPlayAll, FileGroupNoRepeat = item.FileGroupNoRepeat,
                 FileGroupRandomCount = item.FileGroupRandomCount, FileGroupMinimumFiles = item.FileGroupMinimumFiles,
                 FileGroupMaximumFiles = item.FileGroupMaximumFiles, FileGroupMinimumMiddleFiles = item.FileGroupMinimumMiddleFiles,

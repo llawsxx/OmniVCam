@@ -611,4 +611,49 @@
   <data name="InteractiveRepeatedTriggerIgnored" xml:space="preserve">
     <value>Repeat trigger ignored: project is already playing or queued</value>
   </data>
+  <data name="InteractiveDefaultPlaybacks" xml:space="preserve">
+    <value>Default playback</value>
+  </data>
+  <data name="InteractiveDefaultSettings" xml:space="preserve">
+    <value>Default playback settings…</value>
+  </data>
+  <data name="InteractiveDefaultSwitch" xml:space="preserve">
+    <value>Switch default</value>
+  </data>
+  <data name="InteractiveDefaultSwitched" xml:space="preserve">
+    <value>Default playback switched to: {0}</value>
+  </data>
+  <data name="InteractiveDefaultSelect" xml:space="preserve">
+    <value>Set as default</value>
+  </data>
+  <data name="InteractiveDefaultSwitchMode" xml:space="preserve">
+    <value>Switch order</value>
+  </data>
+  <data name="InteractiveDefaultLoopMiddle" xml:space="preserve">
+    <value>Loop middle files continuously</value>
+  </data>
+  <data name="InteractiveDefaultInheritInterruption" xml:space="preserve">
+    <value>Use library interruption policy</value>
+  </data>
+  <data name="InteractiveDefaultEnabled" xml:space="preserve">
+    <value>Enabled</value>
+  </data>
+  <data name="InteractiveDefaultDisabled" xml:space="preserve">
+    <value>Disabled</value>
+  </data>
+  <data name="InteractiveDefaultEdit" xml:space="preserve">
+    <value>Edit default playback</value>
+  </data>
+  <data name="InteractiveDefaultAdd" xml:space="preserve">
+    <value>Add default playback</value>
+  </data>
+  <data name="InteractiveDefaultListHint" xml:space="preserve">
+    <value>Each group can contain several defaults from the media library, including file groups. The highlighted item is used after interactive playback. Click a default button to select it, or use sequential/random switching. During an interactive project, selection takes effect only after the project ends; interactive loops continue. During default playback, the outgoing default controls interruption.</value>
+  </data>
+  <data name="InteractiveDefaultItemHint" xml:space="preserve">
+    <value>With middle looping enabled, the start plays once and the middles repeat until interrupted; disabling it repeats the complete start → middle → end sequence. Single files always loop. The selected interruption policy overrides the library policy only when switching to another default, including groups without start/end files. Interactive projects and group changes use the library policy. Default mode retains the minimum-middle count.</value>
+  </data>
+  <data name="InteractiveDefaultSwitchInterruption" xml:space="preserve">
+    <value>Interruption when switching defaults</value>
+  </data>
 </root>

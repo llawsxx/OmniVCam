@@ -901,4 +901,49 @@
   <data name="InteractiveRepeatedTriggerIgnored" xml:space="preserve">
     <value>已忽略重複觸發：項目正在執行或已在佇列中</value>
   </data>
+  <data name="InteractiveDefaultPlaybacks" xml:space="preserve">
+    <value>預設播放</value>
+  </data>
+  <data name="InteractiveDefaultSettings" xml:space="preserve">
+    <value>預設播放設定…</value>
+  </data>
+  <data name="InteractiveDefaultSwitch" xml:space="preserve">
+    <value>切換預設播放</value>
+  </data>
+  <data name="InteractiveDefaultSwitched" xml:space="preserve">
+    <value>預設播放已切換為：{0}</value>
+  </data>
+  <data name="InteractiveDefaultSelect" xml:space="preserve">
+    <value>設為預設</value>
+  </data>
+  <data name="InteractiveDefaultSwitchMode" xml:space="preserve">
+    <value>切換順序</value>
+  </data>
+  <data name="InteractiveDefaultLoopMiddle" xml:space="preserve">
+    <value>持續循環播放中間檔案</value>
+  </data>
+  <data name="InteractiveDefaultInheritInterruption" xml:space="preserve">
+    <value>沿用媒體庫中斷設定</value>
+  </data>
+  <data name="InteractiveDefaultEnabled" xml:space="preserve">
+    <value>開啟</value>
+  </data>
+  <data name="InteractiveDefaultDisabled" xml:space="preserve">
+    <value>關閉</value>
+  </data>
+  <data name="InteractiveDefaultEdit" xml:space="preserve">
+    <value>編輯預設播放</value>
+  </data>
+  <data name="InteractiveDefaultAdd" xml:space="preserve">
+    <value>新增預設播放</value>
+  </data>
+  <data name="InteractiveDefaultListHint" xml:space="preserve">
+    <value>每組可新增多個媒體庫項目作為預設播放，支援檔案組合。反白項目用於互動結束後的預設播放；可點擊項目按鈕選擇，也可順序或隨機切換。互動項目播放期間只更新結束後的預設項目，互動項目的循環也會繼續；正在播放預設項目時，依目前預設項目的獨立中斷模式切換。</value>
+  </data>
+  <data name="InteractiveDefaultItemHint" xml:space="preserve">
+    <value>開啟中間循環時，開始檔案只播一次，中間檔案持續循環，切走時依規則播放結束檔案；關閉後循環完整的「開始→中間→結束」。單檔案始終循環。獨立中斷模式僅在切換預設播放時覆蓋媒體庫設定，沒有開始、結束檔案的組合也支援；觸發互動項目或切換分組時仍使用媒體庫的中斷設定。預設模式仍遵守最少中間檔案數量。</value>
+  </data>
+  <data name="InteractiveDefaultSwitchInterruption" xml:space="preserve">
+    <value>切換預設播放時的中斷模式</value>
+  </data>
 </root>

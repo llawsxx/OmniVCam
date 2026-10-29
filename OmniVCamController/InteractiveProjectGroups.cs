@@ -45,7 +45,21 @@ namespace OmniVCamController
             public Guid Id { get; set; } = Guid.NewGuid();
             public string Name { get; set; } = string.Empty;
             public InteractiveHotkey Hotkey { get; set; }
-            public Guid DefaultMediaId { get; set; }
+            public List<InteractiveDefaultPlaybackItem> DefaultPlaybacks { get; set; } = new List<InteractiveDefaultPlaybackItem>();
+            public Guid ActiveDefaultPlaybackId { get; set; }
+            public bool DefaultSwitchRandom { get; set; }
+            public InteractiveHotkey DefaultSwitchHotkey { get; set; }
+            public Guid DefaultMediaId
+            {
+                get { return SelectedInteractiveDefault(this)?.MediaId ?? Guid.Empty; }
+                set
+                {
+                    DefaultPlaybacks.Clear(); ActiveDefaultPlaybackId = Guid.Empty;
+                    if (value == Guid.Empty) return;
+                    var item = new InteractiveDefaultPlaybackItem { MediaId = value };
+                    DefaultPlaybacks.Add(item); ActiveDefaultPlaybackId = item.Id;
+                }
+            }
             public bool OverlapEnabled { get; set; } = true;
             public decimal OverlapSeconds { get; set; } = 0.1m;
             public string ObsStartScene { get; set; } = string.Empty;
@@ -112,8 +126,10 @@ namespace OmniVCamController
 
         private bool IsStaleInteractiveGroupRequest(InteractiveTriggerRequest request)
         {
-            return !request.IsGroupTransition && request.ProjectGroupId != Guid.Empty &&
-                (request.ProjectGroupId != activeInteractiveProjectGroupId || request.ProjectGroupVersion != interactiveProjectGroupVersion);
+            if (request.IsGroupTransition) return false;
+            if (request.ProjectGroupId != Guid.Empty &&
+                (request.ProjectGroupId != activeInteractiveProjectGroupId || request.ProjectGroupVersion != interactiveProjectGroupVersion)) return true;
+            return request.DefaultPlaybackId != Guid.Empty && SelectedInteractiveDefault(CurrentInteractiveProjectGroup)?.Id != request.DefaultPlaybackId;
         }
 
         private static InteractiveRouteItem CopyInteractiveProject(InteractiveRouteItem route)
@@ -157,24 +173,51 @@ namespace OmniVCamController
 
         private List<InteractivePlaybackEntry> BuildInteractiveGroupDefault(InteractiveProjectGroup group, bool reportMissing = false)
         {
-            var media = interactiveMedia.FirstOrDefault(item => item.RuntimeId == group.DefaultMediaId);
+            var selected = SelectedInteractiveDefault(group);
+            return BuildInteractiveDefaultPlayback(group, selected, reportMissing);
+        }
+
+        private InteractiveMediaItem ResolveInteractiveDefaultMedia(InteractiveProjectGroup group, InteractiveDefaultPlaybackItem selected, bool reportMissing)
+        {
+            var media = interactiveMedia.FirstOrDefault(item => item.RuntimeId == selected?.MediaId);
             if (media == null || !CanPlayInteractiveMedia(media) ||
                 (media.IsFileGroup ? EnumerateInteractiveMediaFiles(media).Any(path => !File.Exists(path)) : !File.Exists(media.Path)))
             {
-                if (reportMissing && group.DefaultMediaId != Guid.Empty)
+                if (reportMissing && selected != null)
                     AppendInteractiveLog(T("InteractiveDefaultVideoMissing") + (media?.Title ?? group.Name));
-                return new List<InteractivePlaybackEntry>();
+                return null;
             }
+            return media;
+        }
+
+        private List<InteractivePlaybackEntry> BuildInteractiveDefaultPlayback(InteractiveProjectGroup group, InteractiveDefaultPlaybackItem selected, bool reportMissing = false)
+        {
+            var media = ResolveInteractiveDefaultMedia(group, selected, reportMissing);
+            if (media == null) return new List<InteractivePlaybackEntry>();
             // Defaults repeat while preserving the library item's interruption policy and selection progress.
             var snapshot = media.IsFileGroup ? SnapshotInteractiveFileGroup(media) : LoadInteractiveMediaElement(SaveInteractiveMediaElement(media));
             snapshot.Title = string.Format(T("InteractiveGroupDefaultTitle"), group.Name) +
                 (string.IsNullOrWhiteSpace(media.Title) ? string.Empty : " / " + media.Title);
-            snapshot.Loop = true;
+            snapshot.Loop = !snapshot.IsFileGroup || selected.LoopMiddleFiles;
+            snapshot.DefaultSwitchInterruptionMode = selected.InterruptionMode;
+            // A boundary-free group normally uses PreventInterrupt for the whole pass.
+            // Represent it as phases when a default-switch override needs per-file handoff.
+            if (snapshot.IsFileGroup && selected.InterruptionMode.HasValue && !HasInteractiveGroupBoundaries(snapshot))
+            {
+                snapshot.FileGroupInterruptionMode = media.PreventInterrupt ?
+                    InteractiveGroupInterruptionMode.WholeGroup : InteractiveGroupInterruptionMode.Any;
+                snapshot.ForcePhasedPlayback = true;
+            }
             var entries = BuildInteractiveMediaEntries(snapshot, null);
             foreach (var entry in entries)
             {
                 entry.IsGroupDefault = true;
-                if (entry.GroupLoop != null) entry.GroupLoop.IsGroupDefault = true;
+                entry.DefaultPlaybackId = selected.Id;
+                if (entry.GroupLoop != null)
+                {
+                    entry.GroupLoop.IsGroupDefault = true;
+                    entry.GroupLoop.DefaultPlaybackId = selected.Id;
+                }
             }
             ApplyInteractiveGroupOverlap(entries, group);
             return entries;
@@ -234,7 +277,7 @@ namespace OmniVCamController
             {
                 RouteName = entries[0].Title, Source = T("InteractiveGroupDefaultVideo"), Immediate = true,
                 ProjectGroupId = activeInteractiveProjectGroupId, ProjectGroupVersion = interactiveProjectGroupVersion,
-                Entries = entries
+                Entries = entries, DefaultPlaybackId = entries[0].DefaultPlaybackId
             });
             interactiveForm?.RefreshRuntime();
             if (!processingInteractiveTriggers) _ = ProcessInteractiveTriggerRequestsAsync();
@@ -310,7 +353,7 @@ namespace OmniVCamController
                     new XAttribute("modifiers", state.InteractiveGroupSwitchHotkey == null ? string.Empty : state.InteractiveGroupSwitchHotkey.Modifiers.ToString())),
                 new XElement("Media", state.InteractiveMedia.Select(SaveInteractiveMediaElement)),
                 new XElement("Groups", groups.Select(group => new XElement("Group",
-                    new XAttribute("id", group.Id), new XAttribute("name", group.Name), new XAttribute("defaultMedia", group.DefaultMediaId),
+                    new XAttribute("id", group.Id), new XAttribute("name", group.Name), SaveInteractiveDefaults(group),
                     new XAttribute("overlapEnabled", group.OverlapEnabled), new XAttribute("overlapSeconds", group.OverlapSeconds),
                     new XAttribute("obsStartScene", group.ObsStartScene), new XAttribute("obsEndScene", group.ObsEndScene),
                     new XAttribute("obsEnterScene", group.ObsEnterScene), new XAttribute("obsExitScene", group.ObsExitScene),
@@ -360,6 +403,7 @@ namespace OmniVCamController
                     };
                     if (Guid.TryParse(GetAttribute(node, "id", null), out id) && id != Guid.Empty &&
                         !interactiveProjectGroups.Any(item => item.Id == id)) group.Id = id;
+                    LoadInteractiveDefaults(node, group);
                     if (node.Element("Routes") != null)
                         group.Routes.AddRange(node.Element("Routes").Elements("Route").Select(LoadInteractiveRouteElement));
                     interactiveProjectGroups.Add(group);
@@ -464,7 +508,7 @@ namespace OmniVCamController
                 using (var dialog = new GroupSwitchSettingsDialog(owner.interactiveGroupSwitchRandom, owner.interactiveGroupSwitchHotkey))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                    if (dialog.Hotkey != null && (owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
+                    if (dialog.Hotkey != null && (owner.HasInteractiveDefaultHotkey(dialog.Hotkey) || owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
                         owner.AllInteractiveProjectRoutes().Any(route => SameInteractiveHotkey(route.Hotkey, dialog.Hotkey))))
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     owner.interactiveGroupSwitchRandom = dialog.RandomOrder;
@@ -484,17 +528,22 @@ namespace OmniVCamController
                     string name = dialog.GroupName;
                     if (owner.interactiveProjectGroups.Any(group => (create || group != current) && string.Equals(group.Name, name, StringComparison.OrdinalIgnoreCase)))
                     { MessageBox.Show(this, T("InteractiveGroupNameExists")); return; }
-                    if (dialog.Hotkey != null && (owner.IsInteractiveGroupSwitchHotkey(dialog.Hotkey) || owner.interactiveProjectGroups.Any(group => (create || group != current) && SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
+                    if (dialog.Hotkey != null && (owner.IsInteractiveGroupSwitchHotkey(dialog.Hotkey) || owner.HasInteractiveDefaultHotkey(dialog.Hotkey) || owner.interactiveProjectGroups.Any(group => (create || group != current) && SameInteractiveHotkey(group.Hotkey, dialog.Hotkey)) ||
                         owner.AllInteractiveProjectRoutes().Any(route => SameInteractiveHotkey(route.Hotkey, dialog.Hotkey))))
+                    { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
+                    var defaults = new InteractiveProjectGroup { Hotkey = dialog.Hotkey }; dialog.ApplyDefaults(defaults);
+                    if (owner.InteractiveDefaultHotkeysConflict(defaults, create ? null : current) ||
+                        SameInteractiveHotkey(dialog.Hotkey, defaults.DefaultSwitchHotkey) || defaults.DefaultPlaybacks.Any(item => SameInteractiveHotkey(dialog.Hotkey, item.Hotkey)))
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (create)
                     {
-                        var group = new InteractiveProjectGroup { Name = name, Hotkey = dialog.Hotkey, DefaultMediaId = dialog.DefaultMediaId,
+                        var group = new InteractiveProjectGroup { Name = name, Hotkey = dialog.Hotkey,
                             OverlapEnabled = dialog.OverlapEnabled, OverlapSeconds = dialog.OverlapSeconds };
+                        dialog.ApplyDefaults(group);
                         if (dialog.CopyProjects) group.Routes.AddRange(current.Routes.Select(CopyInteractiveProject));
                         owner.interactiveProjectGroups.Add(group);
                     }
-                    else { current.Name = name; current.Hotkey = dialog.Hotkey; current.DefaultMediaId = dialog.DefaultMediaId;
+                    else { current.Name = name; current.Hotkey = dialog.Hotkey; dialog.ApplyDefaults(current);
                         current.OverlapEnabled = dialog.OverlapEnabled; current.OverlapSeconds = dialog.OverlapSeconds; }
                 }
                 ReloadAll();
@@ -591,7 +640,7 @@ namespace OmniVCamController
         {
             private readonly TextBox nameBox = new TextBox();
             private readonly HotkeyTextBox hotkeyBox = new HotkeyTextBox();
-            private readonly ComboBox defaultMediaBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            private readonly InteractiveProjectGroup defaultSettings = new InteractiveProjectGroup();
             private readonly CheckBox copyBox = new CheckBox { AutoSize = true };
             private readonly CheckBox overlapBox = new CheckBox { AutoSize = true };
             private readonly NumericUpDown overlapSecondsBox = new NumericUpDown { DecimalPlaces = 3, Minimum = 0, Maximum = 5, Increment = 0.01m, Width = 110 };
@@ -600,25 +649,26 @@ namespace OmniVCamController
             public bool CopyProjects => copyBox.Checked;
             public bool OverlapEnabled => overlapBox.Checked;
             public decimal OverlapSeconds => overlapSecondsBox.Value;
-            public Guid DefaultMediaId => (defaultMediaBox.SelectedItem as MediaChoice)?.Item.RuntimeId ?? Guid.Empty;
+            public Guid DefaultMediaId => defaultSettings.DefaultMediaId;
+            public void ApplyDefaults(InteractiveProjectGroup group) { CopyInteractiveDefaults(defaultSettings, group); }
             public ProjectGroupEditDialog(List<InteractiveMediaItem> media, InteractiveProjectGroup group)
             {
                 Text = T(group == null ? "InteractiveAddGroup" : "InteractiveEditGroup");
-                ShowIcon = false; StartPosition = FormStartPosition.CenterParent; Size = new Size(760, 390); MinimumSize = Size;
+                ShowIcon = false; StartPosition = FormStartPosition.CenterParent; Size = new Size(800, 490); MinimumSize = Size;
                 var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(10), AutoSize = true };
                 grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 AddDialogRow(grid, T("InteractiveGroupName"), nameBox, 0);
                 AddDialogRow(grid, T("InteractiveHotkey"), hotkeyBox, 1);
                 nameBox.Text = group?.Name ?? string.Empty;
                 hotkeyBox.Value = group?.Hotkey?.Clone();
-                defaultMediaBox.Items.Add(T("InteractiveNoDefaultMedia"));
-                foreach (var item in media) defaultMediaBox.Items.Add(new MediaChoice(item));
-                defaultMediaBox.SelectedIndex = 0;
-                for (int index = 1; index < defaultMediaBox.Items.Count; index++)
-                    if (((MediaChoice)defaultMediaBox.Items[index]).Item.RuntimeId == group?.DefaultMediaId)
-                        defaultMediaBox.SelectedIndex = index;
-                AddDialogRow(grid, T("InteractiveGroupDefaultVideo"), defaultMediaBox, 2);
-                var hint = new Label { Text = T("InteractiveGroupDefaultHint"), AutoSize = true, Dock = DockStyle.Fill };
+                if (group != null) CopyInteractiveDefaults(group, defaultSettings);
+                var defaultsButton = MakeButton(T("InteractiveDefaultSettings"), (_, __) =>
+                {
+                    using (var editor = new DefaultPlaybackSettingsDialog(media, defaultSettings))
+                        if (editor.ShowDialog(this) == DialogResult.OK) editor.Apply(defaultSettings);
+                });
+                AddDialogRow(grid, T("InteractiveGroupDefaultVideo"), defaultsButton, 2);
+                var hint = new Label { Text = T("InteractiveDefaultListHint"), AutoSize = true, Dock = DockStyle.Fill };
                 grid.Controls.Add(hint, 1, 3);
                 overlapBox.Text = T("InteractiveGroupOverlapEnabled"); overlapBox.Checked = group?.OverlapEnabled ?? true;
                 overlapSecondsBox.Value = group?.OverlapSeconds ?? 0.1m;

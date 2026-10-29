@@ -371,9 +371,10 @@ namespace OmniVCamController
                 RetainInteractiveTriggerAfterRuntimeChange(request, cancellationVersion);
                 return;
             }
+            if (DeferInteractiveDefaultSwitch(request)) return;
             if (await TryPlayInteractiveComboAsync(request)) return;
             if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
-            if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)
+            if (interactiveActive && interactiveCurrent != null && PreventsInteractiveInterruption(interactiveCurrent, request))
             {
                 await WaitForProtectedInteractiveMediaAsync(request);
                 return;
@@ -432,9 +433,10 @@ namespace OmniVCamController
                 RetainInteractiveTriggerAfterRuntimeChange(request, cancellationVersion);
                 return;
             }
+            if (DeferInteractiveDefaultSwitch(request)) return;
             if (await TryPlayInteractiveComboAsync(request)) return;
             if (await TryWaitForInteractivePhasedHandoffAsync(request)) return;
-            if (interactiveActive && interactiveCurrent != null && interactiveCurrent.PreventInterrupt)
+            if (interactiveActive && interactiveCurrent != null && PreventsInteractiveInterruption(interactiveCurrent, request))
             {
                 await WaitForProtectedInteractiveMediaAsync(request);
                 return;
@@ -443,7 +445,7 @@ namespace OmniVCamController
 
             interactiveStatusRevision++;
             var anyRun = interactiveCurrent?.PhaseRun;
-            bool arbitraryGroup = anyRun != null && anyRun.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.Any;
+            bool arbitraryGroup = anyRun != null && InteractiveInterruptionMode(interactiveCurrent, request) == InteractiveGroupInterruptionMode.Any;
             InteractivePlaybackEntry replaced = PrepareInteractiveRouteAppend();
             if (arbitraryGroup)
             {
@@ -580,10 +582,12 @@ namespace OmniVCamController
                 return new InteractivePlaybackEntry
                 {
                     IsGroupDefault = groupLoop?.IsGroupDefault == true,
+                    DefaultPlaybackId = groupLoop?.DefaultPlaybackId ?? Guid.Empty,
                     ObsPlayback = groupLoop?.ObsPlayback,
                     MediaId = media.RuntimeId,
                     PlaybackUnitId = playbackUnitId,
                     PreventInterrupt = media.PreventInterrupt,
+                    DefaultSwitchInterruptionMode = media.DefaultSwitchInterruptionMode,
                     Title = media.IsFileGroup ? media.Title + " / " + Path.GetFileName(path) :
                         (string.IsNullOrWhiteSpace(media.Title) ? GetInputTitle(path) : media.Title),
                     Path = path,
@@ -668,10 +672,11 @@ namespace OmniVCamController
 
             private void BuildUi()
             {
-                var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
+                var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(8) };
                 rootPanel = root;
                 EnableDoubleBuffering(root);
                 EnableDoubleBuffering(routeButtons);
+                root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -701,17 +706,18 @@ namespace OmniVCamController
                 routeButtons.WrapContents = true;
                 routeButtons.Padding = new Padding(0, 6, 0, 6);
                 root.Controls.Add(BuildProjectGroupPanel(), 0, 1);
-                root.Controls.Add(routeButtons, 0, 2);
+                root.Controls.Add(BuildDefaultPlaybackPanel(), 0, 2);
+                root.Controls.Add(routeButtons, 0, 3);
 
                 var lists = new SplitContainer { Size = new Size(1100, 400), Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
                 lists.Panel1.Controls.Add(BuildMediaPanel());
                 lists.Panel2.Controls.Add(BuildRoutePanel());
-                root.Controls.Add(lists, 0, 3);
+                root.Controls.Add(lists, 0, 4);
 
                 var bottom = new SplitContainer { Size = new Size(1100, 400), Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
                 bottom.Panel1.Controls.Add(BuildTextPanel(T("InteractiveQueuePanel"), queueBox, true));
                 bottom.Panel2.Controls.Add(BuildTextPanel(T("InteractiveOperations"), operationBox, true));
-                root.Controls.Add(bottom, 0, 4);
+                root.Controls.Add(bottom, 0, 5);
 
                 mediaView.Columns.Add(T("ColumnTitle"), 150);
                 mediaView.Columns.Add(T("InteractiveLoop"), 60);
@@ -807,6 +813,7 @@ namespace OmniVCamController
                 try
                 {
                     RefreshProjectGroups();
+                    RefreshDefaultPlaybackButtons();
                     RefreshRoutes();
                     RefreshRuntime();
                     RegisterRouteHotkeys();
@@ -1036,9 +1043,10 @@ namespace OmniVCamController
                     .Where(item => item != null).Select(item => item.RuntimeId).ToList();
                 if (ids.Count == 0) return;
                 owner.interactiveMedia.RemoveAll(item => ids.Contains(item.RuntimeId));
-                foreach (var group in owner.interactiveProjectGroups.Where(group => ids.Contains(group.DefaultMediaId)))
+                foreach (var group in owner.interactiveProjectGroups)
                 {
-                    group.DefaultMediaId = Guid.Empty;
+                    group.DefaultPlaybacks.RemoveAll(item => ids.Contains(item.MediaId));
+                    group.ActiveDefaultPlaybackId = SelectedInteractiveDefault(group)?.Id ?? Guid.Empty;
                 }
                 owner.interactiveGroupTransitions.RemoveAll(item => ids.Contains(item.MediaId));
                 foreach (InteractiveRouteItem route in owner.AllInteractiveProjectRoutes())
@@ -1048,6 +1056,7 @@ namespace OmniVCamController
                     ResetInteractiveCombinationSelection(route);
                 }
                 RefreshMedia();
+                RefreshDefaultPlaybackButtons();
                 RefreshRoutes();
                 RegisterRouteHotkeys();
                 owner.SaveActiveConnectionState();
@@ -1072,7 +1081,7 @@ namespace OmniVCamController
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var edited = new InteractiveRouteItem();
                     dialog.Apply(edited);
-                    if (owner.IsInteractiveGroupSwitchHotkey(edited.Hotkey) || owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, edited.Hotkey)))
+                    if (owner.IsInteractiveGroupSwitchHotkey(edited.Hotkey) || owner.HasInteractiveDefaultHotkey(edited.Hotkey) || owner.interactiveProjectGroups.Any(group => SameInteractiveHotkey(group.Hotkey, edited.Hotkey)))
                     { MessageBox.Show(this, T("InteractiveGroupHotkeyConflict")); return; }
                     if (route == null)
                     {
@@ -1107,6 +1116,7 @@ namespace OmniVCamController
                 UnregisterRouteHotkeys();
                 if (!IsHandleCreated || !Visible || !owner.interactiveWindowOpen || owner.closingMainForm || owner.interactiveHotkeysDisabled) return;
                 RegisterProjectGroupHotkeys();
+                RegisterDefaultPlaybackHotkeys();
                 int index = 0;
                 foreach (InteractiveRouteItem route in owner.interactiveRoutes)
                 {
@@ -1125,6 +1135,7 @@ namespace OmniVCamController
                     foreach (int id in registeredRoutes.Keys.ToList()) UnregisterHotKey(Handle, id);
                 registeredRoutes.Clear();
                 UnregisterProjectGroupHotkeys();
+                UnregisterDefaultPlaybackHotkeys();
             }
 
             protected override void OnVisibleChanged(EventArgs e)
@@ -1148,6 +1159,7 @@ namespace OmniVCamController
 
             protected override void WndProc(ref Message m)
             {
+                if (HandleDefaultPlaybackHotkey(m)) return;
                 const int WM_HOTKEY = 0x0312;
                 if (m.Msg == WM_HOTKEY && Visible && owner.interactiveWindowOpen && !owner.closingMainForm && !owner.interactiveHotkeysDisabled &&
                     groupSwitchHotkeyRegistered && m.WParam.ToInt32() == GroupSwitchHotkeyId)
@@ -1612,6 +1624,8 @@ namespace OmniVCamController
             public bool Loop { get; set; }
             public bool PreventInterrupt { get; set; }
             public bool IsFileGroup { get; set; }
+            public bool ForcePhasedPlayback { get; set; }
+            public InteractiveGroupInterruptionMode? DefaultSwitchInterruptionMode { get; set; }
             public List<string> FilePaths { get; set; } = new List<string>();
             public bool FileGroupRandom { get; set; }
             public bool FileGroupPlayAll { get; set; }
@@ -1693,6 +1707,8 @@ namespace OmniVCamController
             public bool PhaseMiddleCompleted { get; set; }
             public bool IsGroupTransition { get; set; }
             public bool IsGroupDefault { get; set; }
+            public Guid DefaultPlaybackId { get; set; }
+            public InteractiveGroupInterruptionMode? DefaultSwitchInterruptionMode { get; set; }
             public Guid MediaId { get; set; }
             public Guid PlaybackUnitId { get; set; }
             public long BackendFrameId { get; set; }
@@ -1713,10 +1729,12 @@ namespace OmniVCamController
 
         private sealed class InteractiveTriggerRequest
         {
+            public bool IsDefaultPlaybackSwitch { get; set; }
             public InteractiveFileGroupRun ComboRun { get; set; }
             public InteractiveRouteItem ComboRoute { get; set; }
             public bool IsGroupTransition { get; set; }
             public Guid ProjectGroupId { get; set; }
+            public Guid DefaultPlaybackId { get; set; }
             public int ProjectGroupVersion { get; set; }
             public string RouteName { get; set; } = string.Empty;
             public string Source { get; set; } = string.Empty;

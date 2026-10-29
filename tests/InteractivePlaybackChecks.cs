@@ -1660,14 +1660,18 @@ internal static partial class InteractivePlaybackChecks
             using (var dialog = (Form)Activator.CreateInstance(Nested("ProjectGroupEditDialog"), new object[] { media, a }))
             {
                 Check(Equals(Get(dialog, "DefaultMediaId"), Get(dayMedia, "RuntimeId")), "The group editor loads its library default");
-                var box = (ComboBox)Field(dialog, "defaultMediaBox");
-                box.SelectedIndex = media.IndexOf(nightMedia) + 1;
-                dialog.PerformLayout();
-                Check(Equals(Get(dialog, "DefaultMediaId"), Get(nightMedia, "RuntimeId")) && Equals(Get(a, "DefaultMediaId"), Get(dayMedia, "RuntimeId")),
-                    "Default media editing supports independent cancellation");
-                Check(box.Width > 100 && box.DropDownStyle == ComboBoxStyle.DropDownList, "Default selection uses a usable library-only picker");
-                box.SelectedIndex = 0;
-                Check((Guid)Get(dialog, "DefaultMediaId") == Guid.Empty, "The picker can disable default playback");
+                var settings = Field(dialog, "defaultSettings");
+                var items = (IList)Get(settings, "DefaultPlaybacks");
+                using (var editor = (Form)Activator.CreateInstance(Nested("DefaultPlaybackEditDialog"), new object[] { media, items[0] }))
+                {
+                    var box = (ComboBox)Field(editor, "mediaBox"); box.SelectedIndex = media.IndexOf(nightMedia);
+                    Invoke(editor, "Apply", items[0]);
+                    Check(Equals(Get(dialog, "DefaultMediaId"), Get(nightMedia, "RuntimeId")) && Equals(Get(a, "DefaultMediaId"), Get(dayMedia, "RuntimeId")),
+                        "Default media editing supports independent cancellation");
+                    Check(box.Width > 100 && box.DropDownStyle == ComboBoxStyle.DropDownList, "Default selection uses a usable library-only picker");
+                }
+                items.Clear();
+                Check((Guid)Get(dialog, "DefaultMediaId") == Guid.Empty, "An empty defaults list disables default playback");
             }
             var state = New("ConnectionTabState"); Set(state, "InteractiveProjectGroups", Field(owner, "interactiveProjectGroups"));
             Set(state, "InteractiveMedia", media);
@@ -1682,7 +1686,7 @@ internal static partial class InteractivePlaybackChecks
                 Equals(Get(loaded.First(group => Equals(Get(group, "Id"), Get(b, "Id"))), "DefaultMediaId"), Get(nightMedia, "RuntimeId")),
                 "Each group's independent default library reference survives connection XML round trips");
             Check(!xml.Descendants("Group").Any(group => group.Attribute("defaultVideo") != null), "No default video path is saved");
-            foreach (var group in xml.Element("Groups").Elements("Group")) group.Attribute("defaultMedia").Remove();
+            foreach (var group in xml.Element("Groups").Elements("Group")) group.Element("DefaultPlaybacks").Remove();
             Invoke(isolated, "LoadInteractivePlaybackElement", xml);
             Check(((IList)Field(isolated, "interactiveProjectGroups")).Cast<object>().All(group => (Guid)Get(group, "DefaultMediaId") == Guid.Empty),
                 "Groups without a default library reference have no implicit default media");
@@ -2380,6 +2384,7 @@ internal static partial class InteractivePlaybackChecks
             CheckBackendRestartRecovery();
             CheckInteractiveTriggerDelivery();
             CheckProjectGroups(assembly);
+            CheckInteractiveDefaultPlaybacks(assembly);
             CheckPersistence();
             CheckInteractiveObsScenes(assembly);
             Console.WriteLine("All interactive combination checks passed.");

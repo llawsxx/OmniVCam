@@ -23,11 +23,12 @@ namespace OmniVCamController
             public InteractivePlaybackEntry Outro { get; set; }
             public bool Ending { get; set; }
             public int CompletedMiddleFiles { get; set; }
+            public List<InteractivePlaybackEntry> DefaultHandoffMiddles { get; set; }
         }
 
         private static bool HasInteractiveGroupBoundaries(InteractiveMediaItem media)
         {
-            return media.IsFileGroup && (media.StartFilePaths.Count > 0 || media.EndFilePaths.Count > 0);
+            return media.IsFileGroup && (media.ForcePhasedPlayback || media.StartFilePaths.Count > 0 || media.EndFilePaths.Count > 0);
         }
 
         private static IEnumerable<string> EnumerateInteractiveMediaFiles(InteractiveMediaItem media)
@@ -61,6 +62,8 @@ namespace OmniVCamController
             return new InteractivePlaybackEntry
             {
                 PhaseRun = run, Phase = phase, GroupLoop = run.Loop, RouteId = run.RouteId,
+                DefaultPlaybackId = run.Loop?.DefaultPlaybackId ?? Guid.Empty,
+                DefaultSwitchInterruptionMode = run.Media.DefaultSwitchInterruptionMode,
                 IsGroupDefault = run.Loop?.IsGroupDefault == true, ObsPlayback = run.Loop?.ObsPlayback,
                 MediaId = run.Media.RuntimeId, PlaybackUnitId = run.PlaybackUnitId,
                 PreventInterrupt = run.Media.FileGroupInterruptionMode != InteractiveGroupInterruptionMode.Any,
@@ -135,32 +138,52 @@ namespace OmniVCamController
         private async Task<bool> TryWaitForInteractivePhasedHandoffAsync(InteractiveTriggerRequest request)
         {
             var run = interactiveActive ? interactiveCurrent?.PhaseRun : null;
-            if (run == null || run.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.Any) return false;
+            var mode = InteractiveInterruptionMode(interactiveCurrent, request);
+            if (run == null || mode == InteractiveGroupInterruptionMode.Any) return false;
+            var future = new[] { interactivePending }.Concat(interactiveQueue).Where(entry => entry != null &&
+                entry.PhaseRun == run && entry.Phase == InteractiveGroupPhase.Middle &&
+                entry.GroupIteration == interactiveCurrent.GroupIteration).ToList();
+            if (request.IsDefaultPlaybackSwitch && interactiveCurrent.IsGroupDefault && run.DefaultHandoffMiddles == null)
+                run.DefaultHandoffMiddles = future.ToList();
+            // A real project can supersede a waiting default switch and must then
+            // recover the library-protected tail that the switch would have skipped.
+            if (run.DefaultHandoffMiddles != null)
+            {
+                var original = run.DefaultHandoffMiddles;
+                int currentIndex = original.IndexOf(interactiveCurrent);
+                var restored = original.Skip(currentIndex + 1).Where(entry => entry != interactiveCurrent && !entry.PhaseMiddleCompleted).ToList();
+                restored.AddRange(future.Where(entry => !original.Contains(entry)));
+                future = restored.Select(entry => entry.BackendFrameId > 0 && entry != interactivePending ? RetainInteractiveComboPending(entry) : entry).ToList();
+                run.DefaultHandoffMiddles = future.ToList();
+            }
             run.Ending = true;
             if (run.Loop != null) run.Loop.Cancelled = true;
             var tail = new List<InteractivePlaybackEntry>();
-            if (run.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.WholeGroup &&
+            if (mode == InteractiveGroupInterruptionMode.WholeGroup &&
                 interactiveCurrent.Phase != InteractiveGroupPhase.End)
             {
-                // Complete the current middle pass, excluding any prefetched next loop iteration.
-                if (interactivePending != null) tail.Add(interactivePending);
-                tail.AddRange(interactiveQueue);
-                tail = tail.Where(entry => entry.PhaseRun == run && entry.Phase == InteractiveGroupPhase.Middle &&
-                    entry.GroupIteration == interactiveCurrent.GroupIteration).ToList();
+                // Complete this pass, including any tail reserved before an earlier default switch.
+                tail.AddRange(future);
             }
-            if (run.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.AfterMiddle &&
+            if (mode == InteractiveGroupInterruptionMode.AfterMiddle &&
                 interactiveCurrent.Phase != InteractiveGroupPhase.End)
             {
                 int minimum = Math.Min(10000, Math.Max(0, run.Media.FileGroupMinimumMiddleFiles));
                 int needed = Math.Max(0, minimum - run.CompletedMiddleFiles - (interactiveCurrent.Phase == InteractiveGroupPhase.Middle ? 1 : 0));
-                var future = new List<InteractivePlaybackEntry>();
-                if (interactivePending != null) future.Add(interactivePending);
-                future.AddRange(interactiveQueue);
-                tail.AddRange(future.Where(entry => entry.PhaseRun == run && entry.Phase == InteractiveGroupPhase.Middle).Take(needed));
+                tail.AddRange(future.Take(needed));
+                // A switch-only override must not change normal selection counts. Extend
+                // the protected tail only when this switch actually requests a minimum.
+                if (request.IsDefaultPlaybackSwitch && interactiveCurrent.IsGroupDefault)
+                    while (tail.Count < needed)
+                    {
+                        var middle = CreateInteractivePhasedEntry(run, SelectInteractiveMediaPath(run.Media, random), InteractiveGroupPhase.Middle);
+                        middle.GroupIteration = interactiveCurrent.GroupIteration;
+                        tail.Add(middle);
+                    }
             }
             if (interactiveCurrent.Phase != InteractiveGroupPhase.End && run.Outro != null) tail.Add(run.Outro);
             bool immediate = interactiveCurrent.Phase == InteractiveGroupPhase.Middle &&
-                run.Media.FileGroupInterruptionMode == InteractiveGroupInterruptionMode.ImmediateMiddle;
+                mode == InteractiveGroupInterruptionMode.ImmediateMiddle;
             var handoff = new InteractiveProtectedHandoff { FirstEntry = request.Entries[0], Request = request };
             interactiveProtectedHandoff = handoff;
             AppendInteractiveLog(T("InteractiveWaitingProtected") + interactiveCurrent.Title);
